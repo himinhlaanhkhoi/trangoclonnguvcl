@@ -1,266 +1,17 @@
 const express = require("express");
 const axios = require("axios");
 const fs = require("fs");
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 const API_URL = "https://chiquaquasunlon-207.onrender.com/data";
 
-const LEARNING_FILE = "./learning_data.json";
-const HISTORY_FILE = "./prediction_history.json";
-const MAX_HISTORY = 100;
-const REQUIRED_SESSIONS = 10;
-const AUTO_UPDATE_INTERVAL = 5000;
+// ============ STORAGE ============
+let gameHistory = [];           // 10 phiên mới nhất
+let currentPrediction = null;   // Dự đoán hiện tại
+let verifiedResults = [];       // Kết quả đã xác minh
+let lastFetchTime = null;
 
-let cachedSessions = [];
-let pendingPrediction = null;
-let lastUpdateTime = null;
-let isUpdating = false;
-
-let learningData = {
-    b52: {
-        patternWeights: {},
-        patternStats: {},
-        predictions: [],
-        totalPredictions: 0,
-        correctPredictions: 0,
-        streakAnalysis: { currentStreak: 0, bestStreak: 0, worstStreak: 0, wins: 0, losses: 0 },
-        recentAccuracy: [],
-        transitionMatrix: {},
-        reversalState: { active: false, activatedAt: null, consecutiveLosses: 0, reversalCount: 0, lastReversalResult: null },
-        lastUpdate: null
-    }
-};
-
-let verifiedPredictions = [];
-
-const DEFAULT_PATTERN_WEIGHTS = {
-    'cau_bet': 1.0, 'cau_dao_11': 1.0, 'cau_22': 1.0, 'cau_33': 1.0,
-    'cau_121': 1.0, 'cau_123': 1.0, 'cau_321': 1.0, 'cau_nhay_coc': 1.0,
-    'cau_nhip_nghieng': 1.0, 'cau_3van1': 1.0, 'cau_be_cau': 1.0,
-    'cau_chu_ky': 1.0, 'distribution': 1.0, 'dice_pattern': 1.0,
-    'sum_trend': 1.0, 'edge_cases': 1.0, 'momentum': 1.0,
-    'cau_tu_nhien': 1.0, 'dice_trend_line': 1.0, 'break_pattern': 1.0,
-    'fibonacci': 1.0, 'resistance_support': 1.0, 'wave': 1.0,
-    'golden_ratio': 1.0, 'day_gay': 1.0, 'cau_44': 1.0, 'cau_55': 1.0,
-    'cau_212': 1.0, 'cau_1221': 1.0, 'cau_2112': 1.0, 'cau_gap': 1.0,
-    'cau_ziczac': 1.0, 'cau_doi': 1.0, 'cau_rong': 1.0,
-    'smart_bet': 1.0, 'markov_chain': 1.2, 'moving_avg_drift': 1.1,
-    'sum_pressure': 1.1, 'volatility': 1.0
-};
-
-// ======================================================
-// DATA FETCHING
-// ======================================================
-async function fetchData() {
-    try {
-        const response = await axios.get(API_URL, { timeout: 10000 });
-        if (!response.data || !response.data.data || response.data.data.length === 0) {
-            return null;
-        }
-        // API trả về mảng data với phiên mới nhất ở đầu
-        return response.data.data;
-    } catch (error) {
-        console.error('❌ Lỗi fetch API:', error.message);
-        return null;
-    }
-}
-
-function normalizeData(rawData) {
-    if (!Array.isArray(rawData)) rawData = [rawData];
-    
-    return rawData.map(item => {
-        const d1 = item.xuc_xac_1 || item.Xuc_xac_1 || 0;
-        const d2 = item.xuc_xac_2 || item.Xuc_xac_2 || 0;
-        const d3 = item.xuc_xac_3 || item.Xuc_xac_3 || 0;
-        const tong = item.tong || item.Tong || (d1 + d2 + d3);
-        const ketQua = item.ket_qua || item.Ket_qua || (tong >= 11 ? "Tài" : "Xỉu");
-        const phien = item.phien || item.Phien || 0;
-        
-        return {
-            phien: phien,
-            dice: [d1, d2, d3],
-            Xuc_xac_1: d1, Xuc_xac_2: d2, Xuc_xac_3: d3,
-            Tong: tong, total: tong,
-            Ket_qua: (ketQua === "Tài" || ketQua === "tài") ? "Tài" : "Xỉu",
-            result: (ketQua === "Tài" || ketQua === "tài") ? "Tài" : "Xỉu"
-        };
-    }).filter(item => item.phien > 0 && item.Tong >= 3 && item.Tong <= 18);
-}
-
-// ======================================================
-// CẬP NHẬT DỮ LIỆU LIÊN TỤC - ĐÃ SỬA LOGIC XÁC MINH
-// ======================================================
-async function updateDataContinuously() {
-    if (isUpdating) return;
-    isUpdating = true;
-    
-    try {
-        const allData = await fetchData();
-        if (!allData || allData.length < REQUIRED_SESSIONS) {
-            isUpdating = false;
-            return;
-        }
-        
-        // Lấy 10 phiên mới nhất (đã có thứ tự mới nhất -> cũ nhất từ API)
-        const latest10Raw = allData.slice(0, REQUIRED_SESSIONS);
-        const newSessions = normalizeData(latest10Raw);
-        
-        // Sắp xếp theo phien giảm dần (mới nhất đầu) - đảm bảo thứ tự
-        newSessions.sort((a, b) => b.phien - a.phien);
-        
-        const latestPhien = newSessions[0].phien;
-        const oldLatestPhien = cachedSessions.length > 0 ? cachedSessions[0].phien : 0;
-        
-        // 🔥 PHÁT HIỆN PHIÊN MỚI - ĐÂY LÀ LÚC XÁC MINH DỰ ĐOÁN CŨ
-        if (latestPhien !== oldLatestPhien || cachedSessions.length === 0) {
-            const now = new Date().toLocaleTimeString();
-            console.log(`\n🔄 [${now}] PHIÊN MỚI: ${latestPhien} (cũ: ${oldLatestPhien || 'khởi tạo'})`);
-            
-            // ✅ XÁC MINH DỰ ĐOÁN CŨ (nếu có)
-            if (pendingPrediction && cachedSessions.length > 0) {
-                // Phiên dự đoán cũ chính là phiên mới nhất trong cache cũ
-                const predictedPhien = pendingPrediction.phien;
-                
-                // Tìm kết quả thực tế của phiên đó trong dữ liệu mới
-                const actualSession = newSessions.find(s => s.phien === predictedPhien);
-                
-                if (actualSession) {
-                    const actualResult = actualSession.Ket_qua;
-                    const isCorrect = pendingPrediction.prediction === actualResult;
-                    
-                    console.log(`✅ XÁC MINH DỰ ĐOÁN PHIÊN ${predictedPhien}:`);
-                    console.log(`   Dự đoán: ${pendingPrediction.prediction} (${pendingPrediction.confidence}%)`);
-                    console.log(`   Thực tế: ${actualResult}`);
-                    console.log(`   Kết quả: ${isCorrect ? 'THẮNG 🟢' : 'THUA 🔴'}`);
-                    
-                    // Lưu vào lịch sử đã xác minh
-                    verifiedPredictions.unshift({
-                        phien: predictedPhien,
-                        prediction: pendingPrediction.prediction,
-                        confidence: pendingPrediction.confidence,
-                        actual: actualResult,
-                        isCorrect: isCorrect,
-                        danh_gia: isCorrect ? 'thang' : 'thua',
-                        timestamp: new Date().toISOString()
-                    });
-                    
-                    // Giới hạn lịch sử
-                    if (verifiedPredictions.length > MAX_HISTORY) {
-                        verifiedPredictions = verifiedPredictions.slice(0, MAX_HISTORY);
-                    }
-                    
-                    updateLearningAfterVerification(isCorrect, pendingPrediction);
-                } else {
-                    console.log(`⚠️ Không tìm thấy kết quả cho phiên ${predictedPhien} trong dữ liệu mới`);
-                }
-            }
-            
-            // Cập nhật cache với 10 phiên mới nhất
-            cachedSessions = newSessions;
-            lastUpdateTime = new Date().toISOString();
-            
-            // 🔮 TẠO DỰ ĐOÁN MỚI cho phiên tiếp theo
-            const nextPhien = latestPhien + 1;
-            const prediction = calculateAdvancedPrediction(cachedSessions, 'b52');
-            
-            pendingPrediction = {
-                phien: nextPhien,
-                prediction: prediction.prediction,
-                confidence: prediction.confidence,
-                factors: prediction.factors,
-                timestamp: new Date().toISOString()
-            };
-            
-            console.log(`🔮 DỰ ĐOÁN PHIÊN ${nextPhien}: ${prediction.prediction} (${prediction.confidence}%)`);
-            console.log(`📊 10 phiên: ${cachedSessions.map(s => `${s.phien}(${s.Ket_qua})`).join(' → ')}`);
-            
-            saveAllData();
-        }
-        
-    } catch (error) {
-        console.error('❌ Lỗi cập nhật:', error.message);
-    }
-    
-    isUpdating = false;
-}
-
-function updateLearningAfterVerification(isCorrect, prediction) {
-    learningData.b52.totalPredictions++;
-    
-    if (isCorrect) {
-        learningData.b52.correctPredictions++;
-        learningData.b52.streakAnalysis.wins++;
-        if (learningData.b52.streakAnalysis.currentStreak >= 0) {
-            learningData.b52.streakAnalysis.currentStreak++;
-        } else {
-            learningData.b52.streakAnalysis.currentStreak = 1;
-        }
-        if (learningData.b52.streakAnalysis.currentStreak > learningData.b52.streakAnalysis.bestStreak) {
-            learningData.b52.streakAnalysis.bestStreak = learningData.b52.streakAnalysis.currentStreak;
-        }
-    } else {
-        learningData.b52.streakAnalysis.losses++;
-        if (learningData.b52.streakAnalysis.currentStreak <= 0) {
-            learningData.b52.streakAnalysis.currentStreak--;
-        } else {
-            learningData.b52.streakAnalysis.currentStreak = -1;
-        }
-        if (learningData.b52.streakAnalysis.currentStreak < learningData.b52.streakAnalysis.worstStreak) {
-            learningData.b52.streakAnalysis.worstStreak = learningData.b52.streakAnalysis.currentStreak;
-        }
-    }
-    
-    learningData.b52.recentAccuracy.push(isCorrect ? 1 : 0);
-    if (learningData.b52.recentAccuracy.length > 50) {
-        learningData.b52.recentAccuracy.shift();
-    }
-}
-
-// ======================================================
-// LEARNING SYSTEM
-// ======================================================
-function loadLearningData() {
-    try {
-        if (fs.existsSync(LEARNING_FILE)) {
-            const data = fs.readFileSync(LEARNING_FILE, 'utf8');
-            const parsed = JSON.parse(data);
-            if (parsed.b52) learningData = { ...learningData, ...parsed };
-        }
-        if (fs.existsSync(HISTORY_FILE)) {
-            const data = fs.readFileSync(HISTORY_FILE, 'utf8');
-            const parsed = JSON.parse(data);
-            if (parsed.verified) verifiedPredictions = parsed.verified || [];
-        }
-        console.log(`✅ Đã tải dữ liệu: ${verifiedPredictions.length} dự đoán đã xác minh`);
-    } catch (error) {
-        console.log('ℹ️ Khởi tạo dữ liệu mới');
-    }
-}
-
-function saveAllData() {
-    try {
-        fs.writeFileSync(LEARNING_FILE, JSON.stringify(learningData, null, 2));
-        fs.writeFileSync(HISTORY_FILE, JSON.stringify({ verified: verifiedPredictions }, null, 2));
-    } catch (error) {
-        console.error('❌ Lỗi lưu dữ liệu:', error.message);
-    }
-}
-
-function getAdaptiveConfidenceBoost(type) {
-    const recentAcc = learningData[type].recentAccuracy;
-    if (recentAcc.length < 10) return 0;
-    const accuracy = recentAcc.reduce((a, b) => a + b, 0) / recentAcc.length;
-    if (accuracy > 0.65) return 5;
-    if (accuracy > 0.55) return 2;
-    if (accuracy < 0.4) return -5;
-    if (accuracy < 0.45) return -2;
-    return 0;
-}
-
-// ======================================================
-// HELPER FUNCTIONS
-// ======================================================
+// ============ HELPER: Lấy kết quả dạng T/X ============
 function getResults(history) {
     return history.map(h => h.result === 'Tài' ? 'T' : 'X');
 }
@@ -271,28 +22,28 @@ function calcBreakProb(results, result, streak) {
         if (results[i] === results[i - 1]) cur++;
         else {
             if (results[i - 1] === result) {
-                if (cur === streak) same++; else if (cur > streak) longer++;
+                if (cur === streak) same++;
+                else if (cur > streak) longer++;
             }
             cur = 1;
         }
     }
     if (results[results.length - 1] === result) {
-        if (cur === streak) same++; else if (cur > streak) longer++;
+        if (cur === streak) same++;
+        else if (cur > streak) longer++;
     }
     let total = same + longer;
     return total > 0 ? same / total : 0.5;
 }
 
-// ======================================================
-// FULL 40+ THUẬT TOÁN
-// ======================================================
-
+// ============ 40+ THUẬT TOÁN ============
 function bietLayer(history, minLen, baseConf, weight) {
     let results = getResults(history);
     let n = results.length;
     let streak = 1;
     for (let i = n - 2; i >= 0; i--) {
-        if (results[i] === results[n - 1]) streak++; else break;
+        if (results[i] === results[n - 1]) streak++;
+        else break;
     }
     if (streak >= minLen) {
         let bp = calcBreakProb(results, results[n - 1], streak);
@@ -301,119 +52,128 @@ function bietLayer(history, minLen, baseConf, weight) {
     }
     return null;
 }
-function bietLayer1(h) { return bietLayer(h, 3, 50, 8); }
-function bietLayer2(h) { return bietLayer(h, 4, 55, 9); }
-function bietLayer3(h) { return bietLayer(h, 5, 60, 10); }
-function bietLayer4(h) { return bietLayer(h, 6, 65, 10); }
-function bietLayer5(h) { return bietLayer(h, 7, 70, 10); }
-function bietLayer6(h) { return bietLayer(h, 8, 75, 10); }
+function biet1(h) { return bietLayer(h, 3, 50, 8); }
+function biet2(h) { return bietLayer(h, 4, 55, 9); }
+function biet3(h) { return bietLayer(h, 5, 60, 10); }
+function biet4(h) { return bietLayer(h, 6, 65, 10); }
+function biet5(h) { return bietLayer(h, 7, 70, 10); }
+function biet6(h) { return bietLayer(h, 8, 75, 10); }
 
-function cau11Layer(h) {
-    let results = getResults(h);
-    if (results.length < 4) return null;
+function cau11(h) {
+    let r = getResults(h);
+    if (r.length < 4) return null;
     let is11 = true;
-    for (let i = results.length - 3; i < results.length; i++) {
-        if (results[i] === results[i - 1]) { is11 = false; break; }
+    for (let i = r.length - 3; i < r.length; i++) {
+        if (r[i] === r[i - 1]) { is11 = false; break; }
     }
     if (is11) {
         let len = 4;
-        for (let i = results.length - 4; i >= 0; i--) {
-            if (results[i] !== results[i + 1]) len++; else break;
+        for (let i = r.length - 4; i >= 0; i--) {
+            if (r[i] !== r[i + 1]) len++;
+            else break;
         }
-        return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: Math.min(90, 65 + len * 2), w: len >= 8 ? 12 : 8 };
+        return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: Math.min(90, 65 + len * 2), w: len >= 8 ? 12 : 8 };
     }
     return null;
 }
-function cau22Layer(h) {
-    let results = getResults(h);
-    if (results.length < 8) return null;
-    let last8 = results.slice(-8);
+
+function cau22(h) {
+    let r = getResults(h);
+    if (r.length < 8) return null;
+    let l8 = r.slice(-8);
     let is22 = true;
-    for (let i = 0; i < 8; i += 2) if (last8[i] !== last8[i + 1]) { is22 = false; break; }
-    if (is22 && last8[0] !== last8[2]) {
-        let phase = results.length % 2;
-        return { p: phase === 0 ? last8[7] : (last8[7] === 'T' ? 'X' : 'T'), c: 80, w: 10 };
+    for (let i = 0; i < 8; i += 2) if (l8[i] !== l8[i + 1]) { is22 = false; break; }
+    if (is22 && l8[0] !== l8[2]) {
+        let phase = r.length % 2;
+        return { p: phase === 0 ? l8[7] : (l8[7] === 'T' ? 'X' : 'T'), c: 80, w: 10 };
     }
     return null;
 }
-function cau33Layer(h) {
-    let results = getResults(h);
-    if (results.length < 12) return null;
-    let last12 = results.slice(-12);
+
+function cau33(h) {
+    let r = getResults(h);
+    if (r.length < 12) return null;
+    let l12 = r.slice(-12);
     let is33 = true;
     for (let i = 0; i < 12; i += 3) {
-        if (last12[i] !== last12[i + 1] || last12[i] !== last12[i + 2]) { is33 = false; break; }
+        if (l12[i] !== l12[i + 1] || l12[i] !== l12[i + 2]) { is33 = false; break; }
     }
-    if (is33 && last12[0] !== last12[3]) {
-        let phase = results.length % 3;
-        return { p: phase === 0 ? (last12[11] === 'T' ? 'X' : 'T') : last12[11], c: 82, w: 9 };
+    if (is33 && l12[0] !== l12[3]) {
+        let phase = r.length % 3;
+        return { p: phase === 0 ? (l12[11] === 'T' ? 'X' : 'T') : l12[11], c: 82, w: 9 };
     }
     return null;
 }
-function cau123Layer(h) {
-    let results = getResults(h);
-    if (results.length < 6) return null;
-    let l6 = results.slice(-6).join('');
+
+function cau123(h) {
+    let r = getResults(h);
+    if (r.length < 6) return null;
+    let l6 = r.slice(-6).join('');
     if (l6 === "TXXTTT") return { p: 'X', c: 77, w: 8 };
     if (l6 === "XTTXXX") return { p: 'T', c: 77, w: 8 };
     return null;
 }
-function cau321Layer(h) {
-    let results = getResults(h);
-    if (results.length < 6) return null;
-    let l6 = results.slice(-6).join('');
+
+function cau321(h) {
+    let r = getResults(h);
+    if (r.length < 6) return null;
+    let l6 = r.slice(-6).join('');
     if (l6 === "TTTXXT") return { p: 'X', c: 76, w: 8 };
     if (l6 === "XXXTTX") return { p: 'T', c: 76, w: 8 };
     return null;
 }
-function zigzagLayer(h) {
-    let results = getResults(h);
-    if (results.length < 7) return null;
-    let l7 = results.slice(-7);
+
+function zigzag(h) {
+    let r = getResults(h);
+    if (r.length < 7) return null;
+    let l7 = r.slice(-7);
     let sw = 0;
     for (let i = 1; i < 7; i++) if (l7[i] !== l7[i - 1]) sw++;
-    if (sw >= 5) return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: 68 + sw * 2, w: sw >= 7 ? 9 : 6 };
+    if (sw >= 5) return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: 68 + sw * 2, w: sw >= 7 ? 9 : 6 };
     return null;
 }
 
-function rongLayer(h) {
-    let results = getResults(h);
-    let r = 0;
-    for (let i = results.length - 1; i >= 0 && results[i] === 'T'; i--) r++;
-    if (r >= 4) return { p: r >= 6 ? 'X' : 'T', c: Math.min(95, 65 + r * 3), w: r >= 6 ? 14 : 8 };
+function rong(h) {
+    let r = getResults(h);
+    let c = 0;
+    for (let i = r.length - 1; i >= 0 && r[i] === 'T'; i--) c++;
+    if (c >= 4) return { p: c >= 6 ? 'X' : 'T', c: Math.min(95, 65 + c * 3), w: c >= 6 ? 14 : 8 };
     return null;
 }
-function hoLayer(h) {
-    let results = getResults(h);
-    let r = 0;
-    for (let i = results.length - 1; i >= 0 && results[i] === 'X'; i--) r++;
-    if (r >= 4) return { p: r >= 6 ? 'T' : 'X', c: Math.min(95, 65 + r * 3), w: r >= 6 ? 14 : 8 };
+
+function ho(h) {
+    let r = getResults(h);
+    let c = 0;
+    for (let i = r.length - 1; i >= 0 && r[i] === 'X'; i--) c++;
+    if (c >= 4) return { p: c >= 6 ? 'T' : 'X', c: Math.min(95, 65 + c * 3), w: c >= 6 ? 14 : 8 };
     return null;
 }
-function doiXungLayer(h) {
-    let results = getResults(h);
-    if (results.length < 10) return null;
-    let mid = Math.floor(results.length / 2);
-    let left = results.slice(0, mid), right = results.slice(mid).reverse();
+
+function doiXung(h) {
+    let r = getResults(h);
+    if (r.length < 10) return null;
+    let mid = Math.floor(r.length / 2);
+    let left = r.slice(0, mid), right = r.slice(mid).reverse();
     let m = 0;
     for (let i = 0; i < Math.min(left.length, right.length); i++) if (left[i] === right[i]) m++;
     let ratio = m / Math.min(left.length, right.length);
     if (ratio >= 0.8) {
-        let mp = mid - (results.length - mid);
-        if (mp >= 0 && mp < results.length) return { p: results[mp], c: 60 + ratio * 15, w: 6 };
+        let mp = mid - (r.length - mid);
+        if (mp >= 0 && mp < r.length) return { p: r[mp], c: 60 + ratio * 15, w: 6 };
     }
     return null;
 }
-function tamGiacLayer(h) {
-    let results = getResults(h);
-    if (results.length < 5) return null;
-    let l5 = results.slice(-5).join('');
+
+function tamGiac(h) {
+    let r = getResults(h);
+    if (r.length < 5) return null;
+    let l5 = r.slice(-5).join('');
     if (l5 === "TXTXT") return { p: 'X', c: 80, w: 7 };
     if (l5 === "XTXTX") return { p: 'T', c: 80, w: 7 };
     return null;
 }
 
-function diceSumLayer(h) {
+function diceSum(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let sum = (last.Xuc_xac_1 || 0) + (last.Xuc_xac_2 || 0) + (last.Xuc_xac_3 || 0);
@@ -433,7 +193,8 @@ function diceSumLayer(h) {
     }
     return null;
 }
-function diceTripleLayer(h) {
+
+function diceTriple(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let d1 = last.Xuc_xac_1 || 0, d2 = last.Xuc_xac_2 || 0, d3 = last.Xuc_xac_3 || 0;
@@ -449,7 +210,8 @@ function diceTripleLayer(h) {
     }
     return null;
 }
-function dicePairLayer(h) {
+
+function dicePair(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let d1 = last.Xuc_xac_1 || 0, d2 = last.Xuc_xac_2 || 0, d3 = last.Xuc_xac_3 || 0;
@@ -469,7 +231,8 @@ function dicePairLayer(h) {
     }
     return null;
 }
-function diceHighLowLayer(h) {
+
+function diceHighLow(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let d1 = last.Xuc_xac_1 || 0, d2 = last.Xuc_xac_2 || 0, d3 = last.Xuc_xac_3 || 0;
@@ -486,7 +249,7 @@ function diceHighLowLayer(h) {
     return null;
 }
 
-function scoreExtremeLayer(h) {
+function scoreExtreme(h) {
     let lastScore = h[h.length - 1].Tong || 0;
     if (lastScore >= 17) return { p: 'X', c: 85, w: 10 };
     if (lastScore >= 15) return { p: 'X', c: 72, w: 8 };
@@ -494,7 +257,8 @@ function scoreExtremeLayer(h) {
     if (lastScore <= 6) return { p: 'T', c: 68, w: 7 };
     return null;
 }
-function scoreMALayer(h) {
+
+function scoreMA(h) {
     if (h.length < 10) return null;
     let scores = h.slice(-10).map(i => i.Tong || 0);
     let ma5 = scores.slice(-5).reduce((a, b) => a + b, 0) / 5;
@@ -503,7 +267,8 @@ function scoreMALayer(h) {
     if (ma5 < ma10 - 2) return { p: 'X', c: 62, w: 6 };
     return null;
 }
-function scoreZoneLayer(h) {
+
+function scoreZone(h) {
     if (h.length < 3) return null;
     let scores = h.slice(-5).map(i => i.Tong || 0);
     let highCount = scores.filter(s => s >= 14).length;
@@ -512,7 +277,8 @@ function scoreZoneLayer(h) {
     if (lowCount >= 3) return { p: 'T', c: 68, w: 6 };
     return null;
 }
-function scoreBollingerLayer(h) {
+
+function scoreBollinger(h) {
     if (h.length < 10) return null;
     let scores = h.slice(-10).map(i => i.Tong || 0);
     let avg = scores.reduce((a, b) => a + b, 0) / 10;
@@ -525,53 +291,57 @@ function scoreBollingerLayer(h) {
     return null;
 }
 
-function trendShortLayer(h) {
-    let results = getResults(h);
-    let last5 = results.slice(-5);
+function trendShort(h) {
+    let r = getResults(h);
+    let last5 = r.slice(-5);
     let tCount = last5.filter(r => r === 'T').length;
     if (tCount >= 4) return { p: 'X', c: 62, w: 5 };
     if (tCount <= 1) return { p: 'T', c: 62, w: 5 };
     return null;
 }
-function trendMediumLayer(h) {
-    let results = getResults(h);
-    let last10 = results.slice(-10);
+
+function trendMedium(h) {
+    let r = getResults(h);
+    let last10 = r.slice(-10);
     let tCount = last10.filter(r => r === 'T').length;
     if (tCount >= 7) return { p: 'X', c: 68, w: 7 };
     if (tCount <= 3) return { p: 'T', c: 68, w: 7 };
     return null;
 }
-function switchRateLayer(h) {
-    let results = getResults(h);
-    if (results.length < 10) return null;
+
+function switchRate(h) {
+    let r = getResults(h);
+    if (r.length < 10) return null;
     let sw = 0;
-    for (let i = results.length - 9; i < results.length; i++) if (results[i] !== results[i - 1]) sw++;
-    if (sw >= 7) return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: 68, w: 7 };
+    for (let i = r.length - 9; i < r.length; i++) if (r[i] !== r[i - 1]) sw++;
+    if (sw >= 7) return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: 68, w: 7 };
     return null;
 }
-function cycleLayer(h) {
-    let results = getResults(h);
-    if (results.length < 30) return null;
+
+function cycle(h) {
+    let r = getResults(h);
+    if (r.length < 30) return null;
     let bestLag = 0, bestCorr = 0;
     for (let lag = 2; lag <= 10; lag++) {
-        if (results.length <= lag * 2) continue;
+        if (r.length <= lag * 2) continue;
         let matches = 0, total = 0;
-        for (let i = lag; i < Math.min(results.length, 50); i++) {
-            if (results[results.length - 1 - i] === results[results.length - 1 - i - lag]) matches++;
+        for (let i = lag; i < Math.min(r.length, 50); i++) {
+            if (r[r.length - 1 - i] === r[r.length - 1 - i - lag]) matches++;
             total++;
         }
         let corr = total > 0 ? matches / total : 0;
         if (Math.abs(corr - 0.5) > bestCorr) { bestCorr = Math.abs(corr - 0.5); bestLag = lag; }
     }
     if (bestLag > 0 && bestCorr > 0.1) {
-        return { p: results[results.length - 1 - bestLag], c: 50 + bestCorr * 30, w: 5 };
+        return { p: r[r.length - 1 - bestLag], c: 50 + bestCorr * 30, w: 5 };
     }
     return null;
 }
-function regimeLayer(h) {
-    let results = getResults(h);
-    if (results.length < 30) return null;
-    let last30 = results.slice(-30);
+
+function regime(h) {
+    let r = getResults(h);
+    if (r.length < 30) return null;
+    let last30 = r.slice(-30);
     let tCount = last30.filter(r => r === 'T').length;
     let sw = 0;
     for (let i = 1; i < 30; i++) if (last30[i] !== last30[i - 1]) sw++;
@@ -581,13 +351,13 @@ function regimeLayer(h) {
     return null;
 }
 
-function pattern3Layer(h) {
-    let results = getResults(h);
-    if (results.length < 4) return null;
-    let pattern = results.slice(-3).join('');
+function pattern3(h) {
+    let r = getResults(h);
+    if (r.length < 4) return null;
+    let pattern = r.slice(-3).join('');
     let nextCounts = { T: 0, X: 0 };
-    for (let i = 0; i < results.length - 3; i++) {
-        if (results.slice(i, i + 3).join('') === pattern) nextCounts[results[i + 3]]++;
+    for (let i = 0; i < r.length - 3; i++) {
+        if (r.slice(i, i + 3).join('') === pattern) nextCounts[r[i + 3]]++;
     }
     let total = nextCounts.T + nextCounts.X;
     if (total >= 5) {
@@ -596,13 +366,14 @@ function pattern3Layer(h) {
     }
     return null;
 }
-function pattern5Layer(h) {
-    let results = getResults(h);
-    if (results.length < 6) return null;
-    let pattern = results.slice(-5).join('');
+
+function pattern5(h) {
+    let r = getResults(h);
+    if (r.length < 6) return null;
+    let pattern = r.slice(-5).join('');
     let nextCounts = { T: 0, X: 0 };
-    for (let i = 0; i < results.length - 5; i++) {
-        if (results.slice(i, i + 5).join('') === pattern) nextCounts[results[i + 5]]++;
+    for (let i = 0; i < r.length - 5; i++) {
+        if (r.slice(i, i + 5).join('') === pattern) nextCounts[r[i + 5]]++;
     }
     let total = nextCounts.T + nextCounts.X;
     if (total >= 3) {
@@ -611,16 +382,17 @@ function pattern5Layer(h) {
     }
     return null;
 }
-function knnPatternLayer(h) {
-    let results = getResults(h);
-    if (results.length < 12) return null;
-    let query = results.slice(-10);
+
+function knnPattern(h) {
+    let r = getResults(h);
+    if (r.length < 12) return null;
+    let query = r.slice(-10);
     let distances = [];
-    for (let i = 0; i < results.length - 10; i++) {
-        let seg = results.slice(i, i + 10);
+    for (let i = 0; i < r.length - 10; i++) {
+        let seg = r.slice(i, i + 10);
         let dist = 0;
         for (let j = 0; j < 10; j++) if (seg[j] !== query[j]) dist++;
-        if (i + 10 < results.length) distances.push({ dist, next: results[i + 10] });
+        if (i + 10 < r.length) distances.push({ dist, next: r[i + 10] });
     }
     distances.sort((a, b) => a.dist - b.dist);
     let k = Math.min(7, distances.length);
@@ -630,13 +402,14 @@ function knnPatternLayer(h) {
     if (k >= 3) return { p: probT > 0.5 ? 'T' : 'X', c: 50 + Math.abs(probT - 0.5) * 60, w: 6 };
     return null;
 }
-function markovLayer(h, order) {
-    let results = getResults(h);
-    if (results.length <= order) return null;
-    let state = results.slice(-order).join(',');
+
+function markovL(h, order) {
+    let r = getResults(h);
+    if (r.length <= order) return null;
+    let state = r.slice(-order).join(',');
     let nextCounts = { T: 0, X: 0 };
-    for (let i = 0; i <= results.length - order - 1; i++) {
-        if (results.slice(i, i + order).join(',') === state) nextCounts[results[i + order]]++;
+    for (let i = 0; i <= r.length - order - 1; i++) {
+        if (r.slice(i, i + order).join(',') === state) nextCounts[r[i + order]]++;
     }
     let total = nextCounts.T + nextCounts.X;
     if (total >= 3) {
@@ -645,199 +418,327 @@ function markovLayer(h, order) {
     }
     return null;
 }
-function markov2L(h) { return markovLayer(h, 2); }
-function markov3L(h) { return markovLayer(h, 3); }
-function markov5L(h) { return markovLayer(h, 5); }
+function markov2(h) { return markovL(h, 2); }
+function markov3(h) { return markovL(h, 3); }
+function markov5(h) { return markovL(h, 5); }
 
-function allTaiLayer(h) {
-    let results = getResults(h);
-    if (results.slice(-5).every(r => r === 'T')) return { p: 'X', c: 78, w: 9 };
+function allTai(h) {
+    let r = getResults(h);
+    if (r.slice(-5).every(x => x === 'T')) return { p: 'X', c: 78, w: 9 };
     return null;
 }
-function allXiuLayer(h) {
-    let results = getResults(h);
-    if (results.slice(-5).every(r => r === 'X')) return { p: 'T', c: 78, w: 9 };
+
+function allXiu(h) {
+    let r = getResults(h);
+    if (r.slice(-5).every(x => x === 'X')) return { p: 'T', c: 78, w: 9 };
     return null;
 }
-function alternateRecentLayer(h) {
-    let results = getResults(h);
-    let last4 = results.slice(-4);
+
+function alternateRecent(h) {
+    let r = getResults(h);
+    let last4 = r.slice(-4);
     let isAlt = true;
     for (let i = 1; i < 4; i++) if (last4[i] === last4[i - 1]) { isAlt = false; break; }
-    if (isAlt) return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: 72, w: 7 };
+    if (isAlt) return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: 72, w: 7 };
     return null;
 }
-function decisionTreeLayer(h) {
-    let results = getResults(h);
-    if (results.length < 10) return null;
-    let last1 = results[results.length - 1], last2 = results[results.length - 2], last3 = results[results.length - 3];
-    let t5 = results.slice(-5).filter(r => r === 'T').length;
+
+function decisionTree(h) {
+    let r = getResults(h);
+    if (r.length < 10) return null;
+    let last1 = r[r.length - 1], last2 = r[r.length - 2], last3 = r[r.length - 3];
+    let t5 = r.slice(-5).filter(x => x === 'T').length;
     if (last1 === 'T' && last2 === 'T' && last3 === 'T') return { p: 'X', c: 72, w: 7 };
     if (last1 === 'X' && last2 === 'X' && last3 === 'X') return { p: 'T', c: 72, w: 7 };
     if (t5 >= 4) return { p: 'X', c: 62, w: 5 };
     if (t5 <= 1) return { p: 'T', c: 62, w: 5 };
     return { p: last1, c: 55, w: 3 };
 }
-function meanReversionLayer(h) {
-    let results = getResults(h);
-    if (results.length < 15) return null;
-    let tCount = results.filter(r => r === 'T').length;
-    let mean = tCount / results.length;
-    let last10 = results.slice(-10).filter(r => r === 'T').length / 10;
+
+function meanReversion(h) {
+    let r = getResults(h);
+    if (r.length < 15) return null;
+    let tCount = r.filter(x => x === 'T').length;
+    let mean = tCount / r.length;
+    let last10 = r.slice(-10).filter(x => x === 'T').length / 10;
     if (last10 > mean + 0.15) return { p: 'X', c: 62, w: 5 };
     if (last10 < mean - 0.15) return { p: 'T', c: 62, w: 5 };
     return null;
 }
 
-// ======================================================
-// SUPER ULTIMATE PREDICTION
-// ======================================================
-function superUltimatePrediction(history) {
-    let allPredictions = [];
+// ============ MAIN PREDICTION ============
+function superPredict(history) {
+    let all = [];
     let layers = [
-        bietLayer1, bietLayer2, bietLayer3, bietLayer4, bietLayer5, bietLayer6,
-        cau11Layer, cau22Layer, cau33Layer, cau123Layer, cau321Layer, zigzagLayer,
-        rongLayer, hoLayer, doiXungLayer, tamGiacLayer,
-        diceSumLayer, diceTripleLayer, dicePairLayer, diceHighLowLayer,
-        scoreExtremeLayer, scoreMALayer, scoreZoneLayer, scoreBollingerLayer,
-        trendShortLayer, trendMediumLayer, switchRateLayer, cycleLayer, regimeLayer,
-        pattern3Layer, pattern5Layer, knnPatternLayer, markov2L, markov3L, markov5L,
-        allTaiLayer, allXiuLayer, alternateRecentLayer, decisionTreeLayer, meanReversionLayer
+        biet1, biet2, biet3, biet4, biet5, biet6,
+        cau11, cau22, cau33, cau123, cau321, zigzag,
+        rong, ho, doiXung, tamGiac,
+        diceSum, diceTriple, dicePair, diceHighLow,
+        scoreExtreme, scoreMA, scoreZone, scoreBollinger,
+        trendShort, trendMedium, switchRate, cycle, regime,
+        pattern3, pattern5, knnPattern, markov2, markov3, markov5,
+        allTai, allXiu, alternateRecent, decisionTree, meanReversion
     ];
     for (let fn of layers) {
         let p = fn(history);
-        if (p) allPredictions.push(p);
+        if (p) all.push(p);
     }
-    return allPredictions;
+    return all;
 }
 
-function predict100Layers(history) {
+function predict(history) {
     let n = history.length;
-    if (n < 5) return { prediction: 'Chờ thêm dữ liệu', confidence: 0 };
-    let allPredictions = superUltimatePrediction(history);
-    if (allPredictions.length === 0) {
-        let results = getResults(history);
-        return { prediction: results[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50 };
+    if (n < 5) return { prediction: 'Tài', confidence: 50 };
+    
+    let all = superPredict(history);
+    
+    if (all.length === 0) {
+        let r = getResults(history);
+        return { prediction: r[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50 };
     }
+    
     let voteT = 0, voteX = 0, totalW = 0;
-    for (let p of allPredictions) {
+    for (let p of all) {
         let w = (p.w || 5) * (p.c / 100);
-        if (p.p === 'T') voteT += w; else voteX += w;
+        if (p.p === 'T') voteT += w;
+        else voteX += w;
         totalW += w;
     }
+    
     if (totalW === 0) {
-        let results = getResults(history);
-        return { prediction: results[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50 };
+        let r = getResults(history);
+        return { prediction: r[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50 };
     }
+    
     let probT = voteT / totalW;
     let finalPred = probT > 0.5 ? 'T' : 'X';
     let confidence = Math.round(Math.abs(probT - 0.5) * 2 * 100);
     confidence = Math.max(52, Math.min(98, confidence));
-    let sorted = [...allPredictions].sort((a, b) => (b.w || 5) * b.c - (a.w || 5) * a.c);
-    let top3 = sorted.slice(0, 3), top5 = sorted.slice(0, 5), top10 = sorted.slice(0, 10);
+    
+    let sorted = [...all].sort((a, b) => (b.w || 5) * b.c - (a.w || 5) * a.c);
+    let top3 = sorted.slice(0, 3);
+    let top5 = sorted.slice(0, 5);
+    let top10 = sorted.slice(0, 10);
     if (top10.every(p => p.p === top10[0].p)) confidence = Math.min(98, confidence + 15);
     else if (top5.every(p => p.p === top5[0].p)) confidence = Math.min(98, confidence + 10);
     else if (top3.every(p => p.p === top3[0].p)) confidence = Math.min(98, confidence + 5);
-    return { prediction: finalPred === 'T' ? 'Tài' : 'Xỉu', confidence, totalLayers: allPredictions.length };
+    
+    return {
+        prediction: finalPred === 'T' ? 'Tài' : 'Xỉu',
+        confidence,
+        totalLayers: all.length
+    };
 }
 
-function calculateAdvancedPrediction(data, type) {
-    const sessions = data.slice(0, REQUIRED_SESSIONS);
-    console.log(`\n🔮 PHÂN TÍCH ${REQUIRED_SESSIONS} PHIÊN`);
-    console.log(`📊 Mới nhất: Phiên ${sessions[0].phien} → ${sessions[0].Ket_qua}`);
-    let result = predict100Layers(sessions);
-    if (!result || result.confidence === 0) {
-        const results = getResults(sessions);
-        result = { prediction: results[results.length - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 52 };
-    }
-    console.log(`🎯 DỰ ĐOÁN: ${result.prediction} (${result.confidence}%)`);
-    return { prediction: result.prediction, confidence: result.confidence, factors: [`${result.totalLayers || 0} thuật toán`] };
-}
-
-// ======================================================
-// API ROUTES
-// ======================================================
-app.get("/taixiu", async (req, res) => {
+// ============ FETCH & NORMALIZE ============
+async function fetchAndNormalize() {
     try {
-        if (cachedSessions.length >= REQUIRED_SESSIONS && pendingPrediction) {
-            const latest = cachedSessions[0];
-            const winLossTable = verifiedPredictions.slice(0, 10).map(v => ({
-                phien: v.phien, du_doan: v.prediction.toLowerCase(),
-                ket_qua: v.actual.toLowerCase(), danh_gia: v.danh_gia
-            }));
-            return res.json({
-                id: "@vuaoccac",
-                phien_truoc: { Phien: latest.phien, Xuc_xac_1: latest.Xuc_xac_1, Xuc_xac_2: latest.Xuc_xac_2, Xuc_xac_3: latest.Xuc_xac_3, Tong: latest.Tong, Ket_qua: latest.Ket_qua },
-                phien_hien_tai: { Phien: pendingPrediction.phien, Du_doan: pendingPrediction.prediction, Do_tin_cay: pendingPrediction.confidence + "%" },
-                stats: { consecutiveLosses: countConsecutiveLosses(winLossTable) },
-                win_loss_table: winLossTable,
-                full_history_count: cachedSessions.length
-            });
-        }
-        // Fallback
-        const rawData = await fetchData();
-        if (!rawData || rawData.length < REQUIRED_SESSIONS) {
-            return res.json({ id: "@vuaoccac", phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Đang tải..." }, phien_hien_tai: { Phien: 0, Du_doan: "Đang tải...", Do_tin_cay: "0%" }, stats: { consecutiveLosses: 0 }, win_loss_table: [], full_history_count: 0 });
-        }
-        cachedSessions = normalizeData(rawData.slice(0, REQUIRED_SESSIONS));
-        cachedSessions.sort((a, b) => b.phien - a.phien);
-        let latest = cachedSessions[0];
-        let predict = calculateAdvancedPrediction(cachedSessions, 'b52');
-        pendingPrediction = { phien: latest.phien + 1, prediction: predict.prediction, confidence: predict.confidence, factors: predict.factors, timestamp: new Date().toISOString() };
-        res.json({
-            id: "@vuaoccac",
-            phien_truoc: { Phien: latest.phien, Xuc_xac_1: latest.Xuc_xac_1, Xuc_xac_2: latest.Xuc_xac_2, Xuc_xac_3: latest.Xuc_xac_3, Tong: latest.Tong, Ket_qua: latest.Ket_qua },
-            phien_hien_tai: { Phien: latest.phien + 1, Du_doan: predict.prediction, Do_tin_cay: predict.confidence + "%" },
-            stats: { consecutiveLosses: 0 }, win_loss_table: [], full_history_count: cachedSessions.length
-        });
-    } catch (err) {
-        res.json({ id: "@vuaoccac", phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Lỗi" }, phien_hien_tai: { Phien: 0, Du_doan: "Lỗi", Do_tin_cay: "0%" }, stats: { consecutiveLosses: 0 }, win_loss_table: [], full_history_count: 0 });
+        const res = await axios.get(API_URL, { timeout: 10000 });
+        if (!res.data || !res.data.data || res.data.data.length < 10) return null;
+        
+        // Lấy 10 phiên đầu tiên (mới nhất từ API)
+        const raw = res.data.data.slice(0, 10);
+        
+        return raw.map(item => {
+            const d1 = item.xuc_xac_1 || 0;
+            const d2 = item.xuc_xac_2 || 0;
+            const d3 = item.xuc_xac_3 || 0;
+            const tong = item.tong || (d1 + d2 + d3);
+            const ketQua = item.ket_qua || (tong >= 11 ? "Tài" : "Xỉu");
+            return {
+                phien: item.phien,
+                Xuc_xac_1: d1, Xuc_xac_2: d2, Xuc_xac_3: d3,
+                Tong: tong,
+                result: ketQua === "tài" ? "Tài" : (ketQua === "xỉu" ? "Xỉu" : ketQua),
+                Ket_qua: ketQua === "tài" ? "Tài" : (ketQua === "xỉu" ? "Xỉu" : ketQua)
+            };
+        }).sort((a, b) => b.phien - a.phien); // Mới nhất -> cũ nhất
+    } catch (e) {
+        console.error('Fetch error:', e.message);
+        return null;
     }
+}
+
+// ============ AUTO UPDATE ============
+async function autoUpdate() {
+    const sessions = await fetchAndNormalize();
+    if (!sessions) return;
+    
+    const latestPhien = sessions[0].phien;
+    const oldLatestPhien = gameHistory.length > 0 ? gameHistory[0].phien : 0;
+    
+    // Phát hiện phiên mới
+    if (latestPhien !== oldLatestPhien) {
+        console.log(`\n🔄 Phiên mới: ${latestPhien} (cũ: ${oldLatestPhien || 'khởi tạo'})`);
+        
+        // Xác minh dự đoán cũ
+        if (currentPrediction && gameHistory.length > 0) {
+            const predictedPhien = currentPrediction.phien;
+            const actual = sessions.find(s => s.phien === predictedPhien);
+            
+            if (actual) {
+                const isCorrect = currentPrediction.prediction === actual.result;
+                console.log(`✅ Xác minh phiên ${predictedPhien}: Dự đoán ${currentPrediction.prediction} | Thực tế ${actual.result} | ${isCorrect ? 'THẮNG' : 'THUA'}`);
+                
+                verifiedResults.unshift({
+                    phien: predictedPhien,
+                    du_doan: currentPrediction.prediction.toLowerCase(),
+                    ket_qua: actual.result.toLowerCase(),
+                    danh_gia: isCorrect ? 'thang' : 'thua'
+                });
+                
+                if (verifiedResults.length > 50) verifiedResults = verifiedResults.slice(0, 50);
+            }
+        }
+        
+        // Cập nhật history
+        gameHistory = sessions;
+        lastFetchTime = new Date().toISOString();
+        
+        // Dự đoán mới
+        const nextPhien = latestPhien + 1;
+        const pred = predict(gameHistory);
+        currentPrediction = {
+            phien: nextPhien,
+            prediction: pred.prediction,
+            confidence: pred.confidence,
+            timestamp: new Date().toISOString()
+        };
+        
+        console.log(`🔮 Dự đoán phiên ${nextPhien}: ${pred.prediction} (${pred.confidence}%)`);
+        console.log(`📊 Chuỗi: ${gameHistory.map(s => s.result).join(' → ')}`);
+    }
+}
+
+// ============ API ROUTES ============
+app.get("/taixiu", async (req, res) => {
+    // Nếu có dữ liệu cache, trả về ngay
+    if (gameHistory.length >= 10 && currentPrediction) {
+        const latest = gameHistory[0];
+        const winLoss = verifiedResults.slice(0, 10);
+        const consecutiveLosses = countConsecutive(winLoss);
+        
+        return res.json({
+            id: "@vuaoccac",
+            phien_truoc: {
+                Phien: latest.phien,
+                Xuc_xac_1: latest.Xuc_xac_1,
+                Xuc_xac_2: latest.Xuc_xac_2,
+                Xuc_xac_3: latest.Xuc_xac_3,
+                Tong: latest.Tong,
+                Ket_qua: latest.result
+            },
+            phien_hien_tai: {
+                Phien: currentPrediction.phien,
+                Du_doan: currentPrediction.prediction,
+                Do_tin_cay: currentPrediction.confidence + "%"
+            },
+            stats: { consecutiveLosses },
+            win_loss_table: winLoss,
+            full_history_count: gameHistory.length
+        });
+    }
+    
+    // Fallback: fetch ngay
+    const sessions = await fetchAndNormalize();
+    if (!sessions || sessions.length < 10) {
+        return res.json({
+            id: "@vuaoccac",
+            phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Đang tải..." },
+            phien_hien_tai: { Phien: 0, Du_doan: "Đang tải...", Do_tin_cay: "0%" },
+            stats: { consecutiveLosses: 0 },
+            win_loss_table: [],
+            full_history_count: 0
+        });
+    }
+    
+    gameHistory = sessions;
+    const latest = sessions[0];
+    const pred = predict(sessions);
+    currentPrediction = {
+        phien: latest.phien + 1,
+        prediction: pred.prediction,
+        confidence: pred.confidence,
+        timestamp: new Date().toISOString()
+    };
+    lastFetchTime = new Date().toISOString();
+    
+    res.json({
+        id: "@vuaoccac",
+        phien_truoc: {
+            Phien: latest.phien,
+            Xuc_xac_1: latest.Xuc_xac_1,
+            Xuc_xac_2: latest.Xuc_xac_2,
+            Xuc_xac_3: latest.Xuc_xac_3,
+            Tong: latest.Tong,
+            Ket_qua: latest.result
+        },
+        phien_hien_tai: {
+            Phien: latest.phien + 1,
+            Du_doan: pred.prediction,
+            Do_tin_cay: pred.confidence + "%"
+        },
+        stats: { consecutiveLosses: 0 },
+        win_loss_table: [],
+        full_history_count: sessions.length
+    });
 });
 
 app.get("/", async (req, res) => {
-    if (cachedSessions.length >= REQUIRED_SESSIONS && pendingPrediction) {
-        const latest = cachedSessions[0];
-        const winLossTable = verifiedPredictions.slice(0, 10).map(v => ({
-            phien: v.phien, du_doan: v.prediction.toLowerCase(),
-            ket_qua: v.actual.toLowerCase(), danh_gia: v.danh_gia
-        }));
+    if (gameHistory.length >= 10 && currentPrediction) {
+        const latest = gameHistory[0];
+        const winLoss = verifiedResults.slice(0, 10);
         return res.json({
             id: "@vuaoccac",
-            phien_truoc: { Phien: latest.phien, Xuc_xac_1: latest.Xuc_xac_1, Xuc_xac_2: latest.Xuc_xac_2, Xuc_xac_3: latest.Xuc_xac_3, Tong: latest.Tong, Ket_qua: latest.Ket_qua },
-            phien_hien_tai: { Phien: pendingPrediction.phien, Du_doan: pendingPrediction.prediction, Do_tin_cay: pendingPrediction.confidence + "%" },
-            stats: { consecutiveLosses: countConsecutiveLosses(winLossTable) },
-            win_loss_table: winLossTable,
-            full_history_count: cachedSessions.length,
-            verified_count: verifiedPredictions.length,
-            last_update: lastUpdateTime
+            phien_truoc: {
+                Phien: latest.phien,
+                Xuc_xac_1: latest.Xuc_xac_1,
+                Xuc_xac_2: latest.Xuc_xac_2,
+                Xuc_xac_3: latest.Xuc_xac_3,
+                Tong: latest.Tong,
+                Ket_qua: latest.result
+            },
+            phien_hien_tai: {
+                Phien: currentPrediction.phien,
+                Du_doan: currentPrediction.prediction,
+                Do_tin_cay: currentPrediction.confidence + "%"
+            },
+            stats: { consecutiveLosses: countConsecutive(winLoss) },
+            win_loss_table: winLoss,
+            full_history_count: gameHistory.length,
+            verified_count: verifiedResults.length,
+            last_update: lastFetchTime
         });
     }
-    res.json({ status: "Đang khởi tạo...", message: "Vui lòng đợi dữ liệu đầu tiên" });
+    res.json({ status: "Đang khởi tạo...", message: "Đợi dữ liệu từ API" });
 });
 
-function countConsecutiveLosses(winLossTable) {
+function countConsecutive(table) {
     let count = 0;
-    for (let i = 0; i < winLossTable.length; i++) {
-        if (winLossTable[i].danh_gia === "thua") count++; else break;
+    for (let i = 0; i < table.length; i++) {
+        if (table[i].danh_gia === 'thua') count++;
+        else break;
     }
     return count;
 }
 
-// ======================================================
-// KHỞI ĐỘNG
-// ======================================================
-loadLearningData();
-updateDataContinuously();
-setInterval(() => updateDataContinuously(), AUTO_UPDATE_INTERVAL);
+// ============ START ============
+console.log('='.repeat(60));
+console.log('🚀 KHỞI ĐỘNG TÀI XỈU AI SERVER');
+console.log('='.repeat(60));
+console.log(`📡 Port: ${PORT}`);
+console.log(`🔗 API: ${API_URL}`);
+console.log(`🔄 Tự động cập nhật mỗi 5 giây`);
+console.log(`🧠 40+ thuật toán`);
+console.log(`✅ Xác minh thắng/thua tự động`);
+console.log('='.repeat(60) + '\n');
+
+// Chạy lần đầu
+autoUpdate();
+
+// Cập nhật mỗi 5 giây
+setInterval(autoUpdate, 5000);
 
 app.listen(PORT, () => {
-    console.log('='.repeat(60));
-    console.log('🚀 TÀI XỈU AI SERVER - CẬP NHẬT LIÊN TỤC + XÁC MINH');
-    console.log('='.repeat(60));
-    console.log(`📡 Port: ${PORT} | 🔄 Cập nhật mỗi ${AUTO_UPDATE_INTERVAL/1000}s`);
-    console.log(`📊 Lấy ${REQUIRED_SESSIONS} phiên mới nhất từ API`);
-    console.log(`✅ Xác minh thắng/thua SAU KHI có kết quả thực tế`);
-    console.log(`🧠 40+ thuật toán (Biet, Cau, Rong Ho, Dice, Score, Trend, Pattern, Markov)`);
-    console.log('='.repeat(60));
+    console.log(`✅ Server đang chạy tại port ${PORT}`);
 });
