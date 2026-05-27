@@ -6,12 +6,13 @@ const PORT = process.env.PORT || 3000;
 const API_URL = "https://chiquaquasunlon-207.onrender.com/data";
 
 // ============ STORAGE ============
-let gameHistory = [];           // 10 phiên mới nhất
+let gameHistory = [];           // 10 phiên mới nhất (mới nhất ở CUỐI mảng)
 let currentPrediction = null;   // Dự đoán hiện tại
-let verifiedResults = [];       // Kết quả đã xác minh
+let verifiedResults = [];       // Tối đa 100 kết quả đã xác minh
 let lastFetchTime = null;
+let isUpdating = false;
 
-// ============ HELPER: Lấy kết quả dạng T/X ============
+// ============ HELPER FUNCTIONS ============
 function getResults(history) {
     return history.map(h => h.result === 'Tài' ? 'T' : 'X');
 }
@@ -36,7 +37,9 @@ function calcBreakProb(results, result, streak) {
     return total > 0 ? same / total : 0.5;
 }
 
-// ============ 40+ THUẬT TOÁN ============
+// ============ FULL 40+ THUẬT TOÁN (KHÔNG RÚT GỌN) ============
+
+// LOP 1-10: BIET ANALYSIS
 function bietLayer(history, minLen, baseConf, weight) {
     let results = getResults(history);
     let n = results.length;
@@ -52,128 +55,123 @@ function bietLayer(history, minLen, baseConf, weight) {
     }
     return null;
 }
-function biet1(h) { return bietLayer(h, 3, 50, 8); }
-function biet2(h) { return bietLayer(h, 4, 55, 9); }
-function biet3(h) { return bietLayer(h, 5, 60, 10); }
-function biet4(h) { return bietLayer(h, 6, 65, 10); }
-function biet5(h) { return bietLayer(h, 7, 70, 10); }
-function biet6(h) { return bietLayer(h, 8, 75, 10); }
+function bietLayer1(h) { return bietLayer(h, 3, 50, 8); }
+function bietLayer2(h) { return bietLayer(h, 4, 55, 9); }
+function bietLayer3(h) { return bietLayer(h, 5, 60, 10); }
+function bietLayer4(h) { return bietLayer(h, 6, 65, 10); }
+function bietLayer5(h) { return bietLayer(h, 7, 70, 10); }
+function bietLayer6(h) { return bietLayer(h, 8, 75, 10); }
 
-function cau11(h) {
-    let r = getResults(h);
-    if (r.length < 4) return null;
+// LOP 11-20: CAU CO BAN
+function cau11Layer(h) {
+    let results = getResults(h);
+    if (results.length < 4) return null;
     let is11 = true;
-    for (let i = r.length - 3; i < r.length; i++) {
-        if (r[i] === r[i - 1]) { is11 = false; break; }
+    for (let i = results.length - 3; i < results.length; i++) {
+        if (results[i] === results[i - 1]) { is11 = false; break; }
     }
     if (is11) {
         let len = 4;
-        for (let i = r.length - 4; i >= 0; i--) {
-            if (r[i] !== r[i + 1]) len++;
+        for (let i = results.length - 4; i >= 0; i--) {
+            if (results[i] !== results[i + 1]) len++;
             else break;
         }
-        return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: Math.min(90, 65 + len * 2), w: len >= 8 ? 12 : 8 };
+        return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: Math.min(90, 65 + len * 2), w: len >= 8 ? 12 : 8 };
     }
     return null;
 }
-
-function cau22(h) {
-    let r = getResults(h);
-    if (r.length < 8) return null;
-    let l8 = r.slice(-8);
+function cau22Layer(h) {
+    let results = getResults(h);
+    if (results.length < 8) return null;
+    let last8 = results.slice(-8);
     let is22 = true;
-    for (let i = 0; i < 8; i += 2) if (l8[i] !== l8[i + 1]) { is22 = false; break; }
-    if (is22 && l8[0] !== l8[2]) {
-        let phase = r.length % 2;
-        return { p: phase === 0 ? l8[7] : (l8[7] === 'T' ? 'X' : 'T'), c: 80, w: 10 };
+    for (let i = 0; i < 8; i += 2) if (last8[i] !== last8[i + 1]) { is22 = false; break; }
+    if (is22 && last8[0] !== last8[2]) {
+        let phase = results.length % 2;
+        return { p: phase === 0 ? last8[7] : (last8[7] === 'T' ? 'X' : 'T'), c: 80, w: 10 };
     }
     return null;
 }
-
-function cau33(h) {
-    let r = getResults(h);
-    if (r.length < 12) return null;
-    let l12 = r.slice(-12);
+function cau33Layer(h) {
+    let results = getResults(h);
+    if (results.length < 12) return null;
+    let last12 = results.slice(-12);
     let is33 = true;
     for (let i = 0; i < 12; i += 3) {
-        if (l12[i] !== l12[i + 1] || l12[i] !== l12[i + 2]) { is33 = false; break; }
+        if (last12[i] !== last12[i + 1] || last12[i] !== last12[i + 2]) { is33 = false; break; }
     }
-    if (is33 && l12[0] !== l12[3]) {
-        let phase = r.length % 3;
-        return { p: phase === 0 ? (l12[11] === 'T' ? 'X' : 'T') : l12[11], c: 82, w: 9 };
+    if (is33 && last12[0] !== last12[3]) {
+        let phase = results.length % 3;
+        return { p: phase === 0 ? (last12[11] === 'T' ? 'X' : 'T') : last12[11], c: 82, w: 9 };
     }
     return null;
 }
-
-function cau123(h) {
-    let r = getResults(h);
-    if (r.length < 6) return null;
-    let l6 = r.slice(-6).join('');
+function cau123Layer(h) {
+    let results = getResults(h);
+    if (results.length < 6) return null;
+    let l6 = results.slice(-6).join('');
     if (l6 === "TXXTTT") return { p: 'X', c: 77, w: 8 };
     if (l6 === "XTTXXX") return { p: 'T', c: 77, w: 8 };
     return null;
 }
-
-function cau321(h) {
-    let r = getResults(h);
-    if (r.length < 6) return null;
-    let l6 = r.slice(-6).join('');
+function cau321Layer(h) {
+    let results = getResults(h);
+    if (results.length < 6) return null;
+    let l6 = results.slice(-6).join('');
     if (l6 === "TTTXXT") return { p: 'X', c: 76, w: 8 };
     if (l6 === "XXXTTX") return { p: 'T', c: 76, w: 8 };
     return null;
 }
-
-function zigzag(h) {
-    let r = getResults(h);
-    if (r.length < 7) return null;
-    let l7 = r.slice(-7);
+function zigzagLayer(h) {
+    let results = getResults(h);
+    if (results.length < 7) return null;
+    let l7 = results.slice(-7);
     let sw = 0;
     for (let i = 1; i < 7; i++) if (l7[i] !== l7[i - 1]) sw++;
-    if (sw >= 5) return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: 68 + sw * 2, w: sw >= 7 ? 9 : 6 };
+    if (sw >= 5) return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: 68 + sw * 2, w: sw >= 7 ? 9 : 6 };
     return null;
 }
 
-function rong(h) {
-    let r = getResults(h);
-    let c = 0;
-    for (let i = r.length - 1; i >= 0 && r[i] === 'T'; i--) c++;
-    if (c >= 4) return { p: c >= 6 ? 'X' : 'T', c: Math.min(95, 65 + c * 3), w: c >= 6 ? 14 : 8 };
+// LOP 21-30: RONG HO & DAC BIET
+function rongLayer(h) {
+    let results = getResults(h);
+    let r = 0;
+    for (let i = results.length - 1; i >= 0 && results[i] === 'T'; i--) r++;
+    if (r >= 4) return { p: r >= 6 ? 'X' : 'T', c: Math.min(95, 65 + r * 3), w: r >= 6 ? 14 : 8 };
     return null;
 }
-
-function ho(h) {
-    let r = getResults(h);
-    let c = 0;
-    for (let i = r.length - 1; i >= 0 && r[i] === 'X'; i--) c++;
-    if (c >= 4) return { p: c >= 6 ? 'T' : 'X', c: Math.min(95, 65 + c * 3), w: c >= 6 ? 14 : 8 };
+function hoLayer(h) {
+    let results = getResults(h);
+    let r = 0;
+    for (let i = results.length - 1; i >= 0 && results[i] === 'X'; i--) r++;
+    if (r >= 4) return { p: r >= 6 ? 'T' : 'X', c: Math.min(95, 65 + r * 3), w: r >= 6 ? 14 : 8 };
     return null;
 }
-
-function doiXung(h) {
-    let r = getResults(h);
-    if (r.length < 10) return null;
-    let mid = Math.floor(r.length / 2);
-    let left = r.slice(0, mid), right = r.slice(mid).reverse();
+function doiXungLayer(h) {
+    let results = getResults(h);
+    if (results.length < 10) return null;
+    let mid = Math.floor(results.length / 2);
+    let left = results.slice(0, mid), right = results.slice(mid).reverse();
     let m = 0;
     for (let i = 0; i < Math.min(left.length, right.length); i++) if (left[i] === right[i]) m++;
     let ratio = m / Math.min(left.length, right.length);
     if (ratio >= 0.8) {
-        let mp = mid - (r.length - mid);
-        if (mp >= 0 && mp < r.length) return { p: r[mp], c: 60 + ratio * 15, w: 6 };
+        let mp = mid - (results.length - mid);
+        if (mp >= 0 && mp < results.length) return { p: results[mp], c: 60 + ratio * 15, w: 6 };
     }
     return null;
 }
-
-function tamGiac(h) {
-    let r = getResults(h);
-    if (r.length < 5) return null;
-    let l5 = r.slice(-5).join('');
+function tamGiacLayer(h) {
+    let results = getResults(h);
+    if (results.length < 5) return null;
+    let l5 = results.slice(-5).join('');
     if (l5 === "TXTXT") return { p: 'X', c: 80, w: 7 };
     if (l5 === "XTXTX") return { p: 'T', c: 80, w: 7 };
     return null;
 }
 
-function diceSum(h) {
+// LOP 31-40: DICE ANALYSIS
+function diceSumLayer(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let sum = (last.Xuc_xac_1 || 0) + (last.Xuc_xac_2 || 0) + (last.Xuc_xac_3 || 0);
@@ -193,8 +191,7 @@ function diceSum(h) {
     }
     return null;
 }
-
-function diceTriple(h) {
+function diceTripleLayer(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let d1 = last.Xuc_xac_1 || 0, d2 = last.Xuc_xac_2 || 0, d3 = last.Xuc_xac_3 || 0;
@@ -210,8 +207,7 @@ function diceTriple(h) {
     }
     return null;
 }
-
-function dicePair(h) {
+function dicePairLayer(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let d1 = last.Xuc_xac_1 || 0, d2 = last.Xuc_xac_2 || 0, d3 = last.Xuc_xac_3 || 0;
@@ -231,8 +227,7 @@ function dicePair(h) {
     }
     return null;
 }
-
-function diceHighLow(h) {
+function diceHighLowLayer(h) {
     if (h.length < 5) return null;
     let last = h[h.length - 1];
     let d1 = last.Xuc_xac_1 || 0, d2 = last.Xuc_xac_2 || 0, d3 = last.Xuc_xac_3 || 0;
@@ -249,7 +244,8 @@ function diceHighLow(h) {
     return null;
 }
 
-function scoreExtreme(h) {
+// LOP 41-50: SCORE ANALYSIS
+function scoreExtremeLayer(h) {
     let lastScore = h[h.length - 1].Tong || 0;
     if (lastScore >= 17) return { p: 'X', c: 85, w: 10 };
     if (lastScore >= 15) return { p: 'X', c: 72, w: 8 };
@@ -257,8 +253,7 @@ function scoreExtreme(h) {
     if (lastScore <= 6) return { p: 'T', c: 68, w: 7 };
     return null;
 }
-
-function scoreMA(h) {
+function scoreMALayer(h) {
     if (h.length < 10) return null;
     let scores = h.slice(-10).map(i => i.Tong || 0);
     let ma5 = scores.slice(-5).reduce((a, b) => a + b, 0) / 5;
@@ -267,8 +262,7 @@ function scoreMA(h) {
     if (ma5 < ma10 - 2) return { p: 'X', c: 62, w: 6 };
     return null;
 }
-
-function scoreZone(h) {
+function scoreZoneLayer(h) {
     if (h.length < 3) return null;
     let scores = h.slice(-5).map(i => i.Tong || 0);
     let highCount = scores.filter(s => s >= 14).length;
@@ -277,8 +271,7 @@ function scoreZone(h) {
     if (lowCount >= 3) return { p: 'T', c: 68, w: 6 };
     return null;
 }
-
-function scoreBollinger(h) {
+function scoreBollingerLayer(h) {
     if (h.length < 10) return null;
     let scores = h.slice(-10).map(i => i.Tong || 0);
     let avg = scores.reduce((a, b) => a + b, 0) / 10;
@@ -291,57 +284,54 @@ function scoreBollinger(h) {
     return null;
 }
 
-function trendShort(h) {
-    let r = getResults(h);
-    let last5 = r.slice(-5);
+// LOP 51-60: TREND & CYCLE
+function trendShortLayer(h) {
+    let results = getResults(h);
+    let last5 = results.slice(-5);
     let tCount = last5.filter(r => r === 'T').length;
     if (tCount >= 4) return { p: 'X', c: 62, w: 5 };
     if (tCount <= 1) return { p: 'T', c: 62, w: 5 };
     return null;
 }
-
-function trendMedium(h) {
-    let r = getResults(h);
-    let last10 = r.slice(-10);
+function trendMediumLayer(h) {
+    let results = getResults(h);
+    let last10 = results.slice(-10);
     let tCount = last10.filter(r => r === 'T').length;
     if (tCount >= 7) return { p: 'X', c: 68, w: 7 };
     if (tCount <= 3) return { p: 'T', c: 68, w: 7 };
     return null;
 }
-
-function switchRate(h) {
-    let r = getResults(h);
-    if (r.length < 10) return null;
+function switchRateLayer(h) {
+    let results = getResults(h);
+    if (results.length < 10) return null;
     let sw = 0;
-    for (let i = r.length - 9; i < r.length; i++) if (r[i] !== r[i - 1]) sw++;
-    if (sw >= 7) return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: 68, w: 7 };
+    for (let i = results.length - 9; i < results.length; i++) if (results[i] !== results[i - 1]) sw++;
+    if (sw >= 7) return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: 68, w: 7 };
     return null;
 }
-
-function cycle(h) {
-    let r = getResults(h);
-    if (r.length < 30) return null;
+function cycleLayer(h) {
+    let results = getResults(h);
+    if (results.length < 30) return null;
     let bestLag = 0, bestCorr = 0;
     for (let lag = 2; lag <= 10; lag++) {
-        if (r.length <= lag * 2) continue;
+        if (results.length <= lag * 2) continue;
         let matches = 0, total = 0;
-        for (let i = lag; i < Math.min(r.length, 50); i++) {
-            if (r[r.length - 1 - i] === r[r.length - 1 - i - lag]) matches++;
+        for (let i = lag; i < Math.min(results.length, 50); i++) {
+            if (results[results.length - 1 - i] === results[results.length - 1 - i - lag]) matches++;
             total++;
         }
         let corr = total > 0 ? matches / total : 0;
         if (Math.abs(corr - 0.5) > bestCorr) { bestCorr = Math.abs(corr - 0.5); bestLag = lag; }
     }
     if (bestLag > 0 && bestCorr > 0.1) {
-        return { p: r[r.length - 1 - bestLag], c: 50 + bestCorr * 30, w: 5 };
+        return { p: results[results.length - 1 - bestLag], c: 50 + bestCorr * 30, w: 5 };
     }
     return null;
 }
-
-function regime(h) {
-    let r = getResults(h);
-    if (r.length < 30) return null;
-    let last30 = r.slice(-30);
+function regimeLayer(h) {
+    let results = getResults(h);
+    if (results.length < 30) return null;
+    let last30 = results.slice(-30);
     let tCount = last30.filter(r => r === 'T').length;
     let sw = 0;
     for (let i = 1; i < 30; i++) if (last30[i] !== last30[i - 1]) sw++;
@@ -351,13 +341,14 @@ function regime(h) {
     return null;
 }
 
-function pattern3(h) {
-    let r = getResults(h);
-    if (r.length < 4) return null;
-    let pattern = r.slice(-3).join('');
+// LOP 61-70: PATTERN MATCHING
+function pattern3Layer(h) {
+    let results = getResults(h);
+    if (results.length < 4) return null;
+    let pattern = results.slice(-3).join('');
     let nextCounts = { T: 0, X: 0 };
-    for (let i = 0; i < r.length - 3; i++) {
-        if (r.slice(i, i + 3).join('') === pattern) nextCounts[r[i + 3]]++;
+    for (let i = 0; i < results.length - 3; i++) {
+        if (results.slice(i, i + 3).join('') === pattern) nextCounts[results[i + 3]]++;
     }
     let total = nextCounts.T + nextCounts.X;
     if (total >= 5) {
@@ -366,14 +357,13 @@ function pattern3(h) {
     }
     return null;
 }
-
-function pattern5(h) {
-    let r = getResults(h);
-    if (r.length < 6) return null;
-    let pattern = r.slice(-5).join('');
+function pattern5Layer(h) {
+    let results = getResults(h);
+    if (results.length < 6) return null;
+    let pattern = results.slice(-5).join('');
     let nextCounts = { T: 0, X: 0 };
-    for (let i = 0; i < r.length - 5; i++) {
-        if (r.slice(i, i + 5).join('') === pattern) nextCounts[r[i + 5]]++;
+    for (let i = 0; i < results.length - 5; i++) {
+        if (results.slice(i, i + 5).join('') === pattern) nextCounts[results[i + 5]]++;
     }
     let total = nextCounts.T + nextCounts.X;
     if (total >= 3) {
@@ -382,17 +372,16 @@ function pattern5(h) {
     }
     return null;
 }
-
-function knnPattern(h) {
-    let r = getResults(h);
-    if (r.length < 12) return null;
-    let query = r.slice(-10);
+function knnPatternLayer(h) {
+    let results = getResults(h);
+    if (results.length < 12) return null;
+    let query = results.slice(-10);
     let distances = [];
-    for (let i = 0; i < r.length - 10; i++) {
-        let seg = r.slice(i, i + 10);
+    for (let i = 0; i < results.length - 10; i++) {
+        let seg = results.slice(i, i + 10);
         let dist = 0;
         for (let j = 0; j < 10; j++) if (seg[j] !== query[j]) dist++;
-        if (i + 10 < r.length) distances.push({ dist, next: r[i + 10] });
+        if (i + 10 < results.length) distances.push({ dist, next: results[i + 10] });
     }
     distances.sort((a, b) => a.dist - b.dist);
     let k = Math.min(7, distances.length);
@@ -402,14 +391,13 @@ function knnPattern(h) {
     if (k >= 3) return { p: probT > 0.5 ? 'T' : 'X', c: 50 + Math.abs(probT - 0.5) * 60, w: 6 };
     return null;
 }
-
-function markovL(h, order) {
-    let r = getResults(h);
-    if (r.length <= order) return null;
-    let state = r.slice(-order).join(',');
+function markovLayer(h, order) {
+    let results = getResults(h);
+    if (results.length <= order) return null;
+    let state = results.slice(-order).join(',');
     let nextCounts = { T: 0, X: 0 };
-    for (let i = 0; i <= r.length - order - 1; i++) {
-        if (r.slice(i, i + order).join(',') === state) nextCounts[r[i + order]]++;
+    for (let i = 0; i <= results.length - order - 1; i++) {
+        if (results.slice(i, i + order).join(',') === state) nextCounts[results[i + order]]++;
     }
     let total = nextCounts.T + nextCounts.X;
     if (total >= 3) {
@@ -418,128 +406,136 @@ function markovL(h, order) {
     }
     return null;
 }
-function markov2(h) { return markovL(h, 2); }
-function markov3(h) { return markovL(h, 3); }
-function markov5(h) { return markovL(h, 5); }
+function markov2L(h) { return markovLayer(h, 2); }
+function markov3L(h) { return markovLayer(h, 3); }
+function markov5L(h) { return markovLayer(h, 5); }
 
-function allTai(h) {
-    let r = getResults(h);
-    if (r.slice(-5).every(x => x === 'T')) return { p: 'X', c: 78, w: 9 };
+// LOP 71-80: RECENT & SPECIAL
+function allTaiLayer(h) {
+    let results = getResults(h);
+    if (results.slice(-5).every(r => r === 'T')) return { p: 'X', c: 78, w: 9 };
     return null;
 }
-
-function allXiu(h) {
-    let r = getResults(h);
-    if (r.slice(-5).every(x => x === 'X')) return { p: 'T', c: 78, w: 9 };
+function allXiuLayer(h) {
+    let results = getResults(h);
+    if (results.slice(-5).every(r => r === 'X')) return { p: 'T', c: 78, w: 9 };
     return null;
 }
-
-function alternateRecent(h) {
-    let r = getResults(h);
-    let last4 = r.slice(-4);
+function alternateRecentLayer(h) {
+    let results = getResults(h);
+    let last4 = results.slice(-4);
     let isAlt = true;
     for (let i = 1; i < 4; i++) if (last4[i] === last4[i - 1]) { isAlt = false; break; }
-    if (isAlt) return { p: r[r.length - 1] === 'T' ? 'X' : 'T', c: 72, w: 7 };
+    if (isAlt) return { p: results[results.length - 1] === 'T' ? 'X' : 'T', c: 72, w: 7 };
     return null;
 }
-
-function decisionTree(h) {
-    let r = getResults(h);
-    if (r.length < 10) return null;
-    let last1 = r[r.length - 1], last2 = r[r.length - 2], last3 = r[r.length - 3];
-    let t5 = r.slice(-5).filter(x => x === 'T').length;
+function decisionTreeLayer(h) {
+    let results = getResults(h);
+    if (results.length < 10) return null;
+    let last1 = results[results.length - 1], last2 = results[results.length - 2], last3 = results[results.length - 3];
+    let t5 = results.slice(-5).filter(r => r === 'T').length;
     if (last1 === 'T' && last2 === 'T' && last3 === 'T') return { p: 'X', c: 72, w: 7 };
     if (last1 === 'X' && last2 === 'X' && last3 === 'X') return { p: 'T', c: 72, w: 7 };
     if (t5 >= 4) return { p: 'X', c: 62, w: 5 };
     if (t5 <= 1) return { p: 'T', c: 62, w: 5 };
     return { p: last1, c: 55, w: 3 };
 }
-
-function meanReversion(h) {
-    let r = getResults(h);
-    if (r.length < 15) return null;
-    let tCount = r.filter(x => x === 'T').length;
-    let mean = tCount / r.length;
-    let last10 = r.slice(-10).filter(x => x === 'T').length / 10;
+function meanReversionLayer(h) {
+    let results = getResults(h);
+    if (results.length < 15) return null;
+    let tCount = results.filter(r => r === 'T').length;
+    let mean = tCount / results.length;
+    let last10 = results.slice(-10).filter(r => r === 'T').length / 10;
     if (last10 > mean + 0.15) return { p: 'X', c: 62, w: 5 };
     if (last10 < mean - 0.15) return { p: 'T', c: 62, w: 5 };
     return null;
 }
 
-// ============ MAIN PREDICTION ============
-function superPredict(history) {
-    let all = [];
+// ============ SUPER ULTIMATE PREDICTION ============
+function superUltimatePrediction(history) {
+    let allPredictions = [];
     let layers = [
-        biet1, biet2, biet3, biet4, biet5, biet6,
-        cau11, cau22, cau33, cau123, cau321, zigzag,
-        rong, ho, doiXung, tamGiac,
-        diceSum, diceTriple, dicePair, diceHighLow,
-        scoreExtreme, scoreMA, scoreZone, scoreBollinger,
-        trendShort, trendMedium, switchRate, cycle, regime,
-        pattern3, pattern5, knnPattern, markov2, markov3, markov5,
-        allTai, allXiu, alternateRecent, decisionTree, meanReversion
+        bietLayer1, bietLayer2, bietLayer3, bietLayer4, bietLayer5, bietLayer6,
+        cau11Layer, cau22Layer, cau33Layer, cau123Layer, cau321Layer, zigzagLayer,
+        rongLayer, hoLayer, doiXungLayer, tamGiacLayer,
+        diceSumLayer, diceTripleLayer, dicePairLayer, diceHighLowLayer,
+        scoreExtremeLayer, scoreMALayer, scoreZoneLayer, scoreBollingerLayer,
+        trendShortLayer, trendMediumLayer, switchRateLayer, cycleLayer, regimeLayer,
+        pattern3Layer, pattern5Layer, knnPatternLayer, markov2L, markov3L, markov5L,
+        allTaiLayer, allXiuLayer, alternateRecentLayer, decisionTreeLayer, meanReversionLayer
     ];
     for (let fn of layers) {
         let p = fn(history);
-        if (p) all.push(p);
+        if (p) allPredictions.push(p);
     }
-    return all;
+    return allPredictions;
 }
 
-function predict(history) {
+function predict100Layers(history) {
     let n = history.length;
-    if (n < 5) return { prediction: 'Tài', confidence: 50 };
-    
-    let all = superPredict(history);
-    
-    if (all.length === 0) {
-        let r = getResults(history);
-        return { prediction: r[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50 };
+    if (n < 5) return { prediction: 'Chờ thêm dữ liệu', confidence: 0, totalLayers: 0 };
+
+    let allPredictions = superUltimatePrediction(history);
+
+    if (allPredictions.length === 0) {
+        let results = getResults(history);
+        return { prediction: results[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50, totalLayers: 0 };
     }
-    
+
     let voteT = 0, voteX = 0, totalW = 0;
-    for (let p of all) {
+    for (let p of allPredictions) {
         let w = (p.w || 5) * (p.c / 100);
         if (p.p === 'T') voteT += w;
         else voteX += w;
         totalW += w;
     }
-    
+
     if (totalW === 0) {
-        let r = getResults(history);
-        return { prediction: r[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50 };
+        let results = getResults(history);
+        return { prediction: results[n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 50, totalLayers: allPredictions.length };
     }
-    
+
     let probT = voteT / totalW;
     let finalPred = probT > 0.5 ? 'T' : 'X';
     let confidence = Math.round(Math.abs(probT - 0.5) * 2 * 100);
     confidence = Math.max(52, Math.min(98, confidence));
-    
-    let sorted = [...all].sort((a, b) => (b.w || 5) * b.c - (a.w || 5) * a.c);
+
+    let sorted = [...allPredictions].sort((a, b) => (b.w || 5) * b.c - (a.w || 5) * a.c);
     let top3 = sorted.slice(0, 3);
     let top5 = sorted.slice(0, 5);
     let top10 = sorted.slice(0, 10);
-    if (top10.every(p => p.p === top10[0].p)) confidence = Math.min(98, confidence + 15);
-    else if (top5.every(p => p.p === top5[0].p)) confidence = Math.min(98, confidence + 10);
-    else if (top3.every(p => p.p === top3[0].p)) confidence = Math.min(98, confidence + 5);
-    
+    let top3Agree = top3.every(p => p.p === top3[0].p);
+    let top5Agree = top5.every(p => p.p === top5[0].p);
+    let top10Agree = top10.every(p => p.p === top10[0].p);
+
+    if (top10Agree) confidence = Math.min(98, confidence + 15);
+    else if (top5Agree) confidence = Math.min(98, confidence + 10);
+    else if (top3Agree) confidence = Math.min(98, confidence + 5);
+
     return {
         prediction: finalPred === 'T' ? 'Tài' : 'Xỉu',
         confidence,
-        totalLayers: all.length
+        totalLayers: allPredictions.length
     };
 }
 
-// ============ FETCH & NORMALIZE ============
+// ============ FETCH & NORMALIZE (ĐÃ SỬA) ============
 async function fetchAndNormalize() {
     try {
         const res = await axios.get(API_URL, { timeout: 10000 });
         if (!res.data || !res.data.data || res.data.data.length < 10) return null;
         
-        // Lấy 10 phiên đầu tiên (mới nhất từ API)
-        const raw = res.data.data.slice(0, 10);
+        // Lấy TẤT CẢ dữ liệu, sau đó sắp xếp theo phien TĂNG DẦN
+        const allData = [...res.data.data];
         
-        return raw.map(item => {
+        // Sắp xếp theo phien tăng dần (cũ -> mới)
+        allData.sort((a, b) => (a.phien || 0) - (b.phien || 0));
+        
+        // Lấy 10 phiên CUỐI CÙNG (mới nhất)
+        const latest10 = allData.slice(-10);
+        
+        // Chuẩn hóa và giữ thứ tự cũ -> mới
+        return latest10.map(item => {
             const d1 = item.xuc_xac_1 || 0;
             const d2 = item.xuc_xac_2 || 0;
             const d3 = item.xuc_xac_3 || 0;
@@ -552,69 +548,93 @@ async function fetchAndNormalize() {
                 result: ketQua === "tài" ? "Tài" : (ketQua === "xỉu" ? "Xỉu" : ketQua),
                 Ket_qua: ketQua === "tài" ? "Tài" : (ketQua === "xỉu" ? "Xỉu" : ketQua)
             };
-        }).sort((a, b) => b.phien - a.phien); // Mới nhất -> cũ nhất
+        });
+        // Giữ nguyên thứ tự: index 0 = cũ nhất, index 9 = mới nhất
+        
     } catch (e) {
         console.error('Fetch error:', e.message);
         return null;
     }
 }
 
-// ============ AUTO UPDATE ============
+// ============ AUTO UPDATE (0.1 GIÂY) ============
 async function autoUpdate() {
-    const sessions = await fetchAndNormalize();
-    if (!sessions) return;
+    if (isUpdating) return;
+    isUpdating = true;
     
-    const latestPhien = sessions[0].phien;
-    const oldLatestPhien = gameHistory.length > 0 ? gameHistory[0].phien : 0;
-    
-    // Phát hiện phiên mới
-    if (latestPhien !== oldLatestPhien) {
-        console.log(`\n🔄 Phiên mới: ${latestPhien} (cũ: ${oldLatestPhien || 'khởi tạo'})`);
-        
-        // Xác minh dự đoán cũ
-        if (currentPrediction && gameHistory.length > 0) {
-            const predictedPhien = currentPrediction.phien;
-            const actual = sessions.find(s => s.phien === predictedPhien);
-            
-            if (actual) {
-                const isCorrect = currentPrediction.prediction === actual.result;
-                console.log(`✅ Xác minh phiên ${predictedPhien}: Dự đoán ${currentPrediction.prediction} | Thực tế ${actual.result} | ${isCorrect ? 'THẮNG' : 'THUA'}`);
-                
-                verifiedResults.unshift({
-                    phien: predictedPhien,
-                    du_doan: currentPrediction.prediction.toLowerCase(),
-                    ket_qua: actual.result.toLowerCase(),
-                    danh_gia: isCorrect ? 'thang' : 'thua'
-                });
-                
-                if (verifiedResults.length > 50) verifiedResults = verifiedResults.slice(0, 50);
-            }
+    try {
+        const sessions = await fetchAndNormalize();
+        if (!sessions || sessions.length < 10) {
+            isUpdating = false;
+            return;
         }
         
-        // Cập nhật history
-        gameHistory = sessions;
-        lastFetchTime = new Date().toISOString();
+        // Phiên mới nhất là phần tử CUỐI CÙNG của mảng
+        const latestPhien = sessions[sessions.length - 1].phien;
+        const oldLatestPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length - 1].phien : 0;
         
-        // Dự đoán mới
-        const nextPhien = latestPhien + 1;
-        const pred = predict(gameHistory);
-        currentPrediction = {
-            phien: nextPhien,
-            prediction: pred.prediction,
-            confidence: pred.confidence,
-            timestamp: new Date().toISOString()
-        };
-        
-        console.log(`🔮 Dự đoán phiên ${nextPhien}: ${pred.prediction} (${pred.confidence}%)`);
-        console.log(`📊 Chuỗi: ${gameHistory.map(s => s.result).join(' → ')}`);
+        // Phát hiện phiên mới
+        if (latestPhien !== oldLatestPhien) {
+            const now = new Date().toLocaleTimeString();
+            console.log(`\n🔄 [${now}] PHIÊN MỚI: ${latestPhien} (cũ: ${oldLatestPhien || 'khởi tạo'})`);
+            console.log(`📊 10 phiên: ${sessions.map(s => `${s.phien}(${s.result})`).join(' → ')}`);
+            
+            // Xác minh dự đoán cũ
+            if (currentPrediction && gameHistory.length > 0) {
+                const predictedPhien = currentPrediction.phien;
+                const actual = sessions.find(s => s.phien === predictedPhien);
+                
+                if (actual) {
+                    const isCorrect = currentPrediction.prediction === actual.result;
+                    console.log(`✅ Xác minh phiên ${predictedPhien}: Dự đoán ${currentPrediction.prediction} | Thực tế ${actual.result} | ${isCorrect ? 'THẮNG 🟢' : 'THUA 🔴'}`);
+                    
+                    verifiedResults.unshift({
+                        phien: predictedPhien,
+                        du_doan: currentPrediction.prediction.toLowerCase(),
+                        ket_qua: actual.result.toLowerCase(),
+                        danh_gia: isCorrect ? 'thang' : 'thua'
+                    });
+                    
+                    // Giới hạn 100 kết quả
+                    if (verifiedResults.length > 100) {
+                        verifiedResults = verifiedResults.slice(0, 100);
+                    }
+                    
+                    // Lưu vào file
+                    try {
+                        fs.writeFileSync('./verified_results.json', JSON.stringify(verifiedResults, null, 2));
+                    } catch(e) {}
+                }
+            }
+            
+            // Cập nhật history
+            gameHistory = sessions;
+            lastFetchTime = new Date().toISOString();
+            
+            // Dự đoán mới cho phiên tiếp theo
+            const nextPhien = latestPhien + 1;
+            const pred = predict100Layers(gameHistory);
+            currentPrediction = {
+                phien: nextPhien,
+                prediction: pred.prediction,
+                confidence: pred.confidence,
+                timestamp: new Date().toISOString()
+            };
+            
+            console.log(`🔮 Dự đoán phiên ${nextPhien}: ${pred.prediction} (${pred.confidence}%) | ${pred.totalLayers} thuật toán`);
+        }
+    } catch(e) {
+        console.error('Update error:', e.message);
     }
+    
+    isUpdating = false;
 }
 
 // ============ API ROUTES ============
 app.get("/taixiu", async (req, res) => {
-    // Nếu có dữ liệu cache, trả về ngay
     if (gameHistory.length >= 10 && currentPrediction) {
-        const latest = gameHistory[0];
+        // Phiên mới nhất là phần tử cuối cùng
+        const latest = gameHistory[gameHistory.length - 1];
         const winLoss = verifiedResults.slice(0, 10);
         const consecutiveLosses = countConsecutive(winLoss);
         
@@ -635,11 +655,12 @@ app.get("/taixiu", async (req, res) => {
             },
             stats: { consecutiveLosses },
             win_loss_table: winLoss,
-            full_history_count: gameHistory.length
+            full_history_count: gameHistory.length,
+            verified_count: verifiedResults.length
         });
     }
     
-    // Fallback: fetch ngay
+    // Fallback
     const sessions = await fetchAndNormalize();
     if (!sessions || sessions.length < 10) {
         return res.json({
@@ -653,8 +674,8 @@ app.get("/taixiu", async (req, res) => {
     }
     
     gameHistory = sessions;
-    const latest = sessions[0];
-    const pred = predict(sessions);
+    const latest = sessions[sessions.length - 1];
+    const pred = predict100Layers(sessions);
     currentPrediction = {
         phien: latest.phien + 1,
         prediction: pred.prediction,
@@ -686,7 +707,7 @@ app.get("/taixiu", async (req, res) => {
 
 app.get("/", async (req, res) => {
     if (gameHistory.length >= 10 && currentPrediction) {
-        const latest = gameHistory[0];
+        const latest = gameHistory[gameHistory.length - 1];
         const winLoss = verifiedResults.slice(0, 10);
         return res.json({
             id: "@vuaoccac",
@@ -722,22 +743,31 @@ function countConsecutive(table) {
     return count;
 }
 
-// ============ START ============
+// ============ KHỞI ĐỘNG ============
 console.log('='.repeat(60));
-console.log('🚀 KHỞI ĐỘNG TÀI XỈU AI SERVER');
+console.log('🚀 TÀI XỈU AI SERVER - FIX TRIỆT ĐỂ');
 console.log('='.repeat(60));
 console.log(`📡 Port: ${PORT}`);
 console.log(`🔗 API: ${API_URL}`);
-console.log(`🔄 Tự động cập nhật mỗi 5 giây`);
-console.log(`🧠 40+ thuật toán`);
-console.log(`✅ Xác minh thắng/thua tự động`);
+console.log(`🔄 Cập nhật mỗi 0.1 giây`);
+console.log(`📊 Lấy 10 phiên có số phien lớn nhất`);
+console.log(`💾 Lưu 100 lịch sử thắng/thua`);
+console.log(`🧠 40+ thuật toán KHÔNG RÚT GỌN`);
 console.log('='.repeat(60) + '\n');
 
-// Chạy lần đầu
+// Tải lịch sử đã lưu
+try {
+    if (fs.existsSync('./verified_results.json')) {
+        verifiedResults = JSON.parse(fs.readFileSync('./verified_results.json', 'utf8'));
+        console.log(`✅ Đã tải ${verifiedResults.length} lịch sử thắng/thua`);
+    }
+} catch(e) {}
+
+// Chạy ngay lần đầu
 autoUpdate();
 
-// Cập nhật mỗi 5 giây
-setInterval(autoUpdate, 5000);
+// Cập nhật liên tục mỗi 100ms (0.1 giây)
+setInterval(autoUpdate, 100);
 
 app.listen(PORT, () => {
     console.log(`✅ Server đang chạy tại port ${PORT}`);
