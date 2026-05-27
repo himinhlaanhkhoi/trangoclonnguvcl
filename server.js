@@ -6,13 +6,11 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const API_URL = "https://chiquaquasunlon-207.onrender.com/data";
 
-// File paths for learning data
 const LEARNING_FILE = "./learning_data.json";
 const HISTORY_FILE = "./prediction_history.json";
 const MAX_HISTORY = 100;
-const AUTO_SAVE_INTERVAL = 30000; // 30 seconds
+const REQUIRED_SESSIONS = 10;
 
-// Learning data storage
 let learningData = {
     b52: {
         patternWeights: {},
@@ -22,7 +20,7 @@ let learningData = {
         correctPredictions: 0,
         streakAnalysis: { currentStreak: 0, bestStreak: 0, worstStreak: 0, wins: 0, losses: 0 },
         recentAccuracy: [],
-        transitionMatrix: null,
+        transitionMatrix: {},
         reversalState: { active: false, activatedAt: null, consecutiveLosses: 0, reversalCount: 0, lastReversalResult: null },
         lastUpdate: null
     }
@@ -32,57 +30,67 @@ let predictionHistory = { b52: [] };
 let lastProcessedPhien = { b52: null };
 
 const DEFAULT_PATTERN_WEIGHTS = {
-    'cau_bet': 1.0, 'cau_dao_11': 1.0, 'cau_22': 1.0, 'cau_33': 1.0,
-    'cau_121': 1.0, 'cau_123': 1.0, 'cau_321': 1.0, 'cau_nhay_coc': 1.0,
-    'cau_nhip_nghieng': 1.0, 'cau_3van1': 1.0, 'cau_be_cau': 1.0,
-    'cau_chu_ky': 1.0, 'distribution': 1.0, 'dice_pattern': 1.0,
-    'sum_trend': 1.0, 'edge_cases': 1.0, 'momentum': 1.0,
-    'cau_tu_nhien': 1.0, 'dice_trend_line': 1.0, 'break_pattern': 1.0,
+    'cau_bet': 1.2, 'cau_dao_11': 1.1, 'cau_22': 1.0, 'cau_33': 1.0,
+    'cau_121': 1.0, 'cau_123': 1.0, 'cau_321': 1.0, 'cau_nhay_coc': 0.9,
+    'cau_nhip_nghieng': 1.0, 'cau_3van1': 0.9, 'cau_be_cau': 1.1,
+    'cau_chu_ky': 1.0, 'distribution': 1.0, 'dice_pattern': 1.1,
+    'sum_trend': 1.0, 'edge_cases': 1.1, 'momentum': 1.0,
+    'cau_tu_nhien': 0.8, 'dice_trend_line': 1.2, 'break_pattern': 1.3,
     'fibonacci': 1.0, 'resistance_support': 1.0, 'wave': 1.0,
-    'golden_ratio': 1.0, 'day_gay': 1.0, 'cau_44': 1.0, 'cau_55': 1.0,
-    'cau_212': 1.0, 'cau_1221': 1.0, 'cau_2112': 1.0, 'cau_gap': 1.0,
-    'cau_ziczac': 1.0, 'cau_doi': 1.0, 'cau_rong': 1.0,
-    'smart_bet': 1.0, 'markov_chain': 1.2, 'moving_avg_drift': 1.1,
-    'sum_pressure': 1.1, 'volatility': 1.0
+    'golden_ratio': 1.0, 'day_gay': 1.3, 'cau_44': 1.1, 'cau_55': 1.1,
+    'cau_212': 1.0, 'cau_1221': 1.0, 'cau_2112': 1.0, 'cau_gap': 0.9,
+    'cau_ziczac': 1.1, 'cau_doi': 1.0, 'cau_rong': 1.2,
+    'smart_bet': 1.2, 'markov_chain': 1.3, 'moving_avg_drift': 1.2,
+    'sum_pressure': 1.2, 'volatility': 1.1, 'neural_pattern': 1.4,
+    'deep_analysis': 1.3, 'probability_engine': 1.4, 'trend_reversal': 1.3
 };
-
-const REVERSAL_THRESHOLD = 3;
 
 // ======================================================
 // DATA FETCHING & NORMALIZATION
 // ======================================================
 async function fetchData() {
     try {
-        const response = await axios.get(API_URL, { timeout: 10000 });
-        return response.data;
+        const response = await axios.get(API_URL, { timeout: 15000 });
+        if (!response.data || !response.data.data || response.data.data.length === 0) {
+            console.error('API returned empty data');
+            return null;
+        }
+        const allData = response.data.data;
+        const last10 = allData.slice(0, REQUIRED_SESSIONS);
+        if (last10.length < REQUIRED_SESSIONS) {
+            console.error(`Only ${last10.length}/${REQUIRED_SESSIONS} sessions available`);
+            return null;
+        }
+        console.log(`Fetched ${REQUIRED_SESSIONS} sessions from API`);
+        return { data: last10, fullData: allData };
     } catch (error) {
         console.error('Error fetching data:', error.message);
         return null;
     }
 }
 
-function normalizeData(data) {
-    if (!Array.isArray(data)) data = [data];
-    return data.map(item => {
-        const d1 = item.xuc_xac_1 || item.x1 || item.Xuc_xac_1 || 0;
-        const d2 = item.xuc_xac_2 || item.x2 || item.Xuc_xac_2 || 0;
-        const d3 = item.xuc_xac_3 || item.x3 || item.Xuc_xac_3 || 0;
-        const tong = item.tong || item.total || item.Tong || (d1 + d2 + d3);
-        const ketQua = (item.ket_qua || item.result || item.Ket_qua || (tong >= 11 ? "Tài" : "Xỉu"));
-        
+function normalizeData(rawData) {
+    if (!Array.isArray(rawData)) rawData = [rawData];
+    return rawData.map((item, index) => {
+        const d1 = item.Xuc_xac_1 || item.x1 || item.xuc_xac_1 || 0;
+        const d2 = item.Xuc_xac_2 || item.x2 || item.xuc_xac_2 || 0;
+        const d3 = item.Xuc_xac_3 || item.x3 || item.xuc_xac_3 || 0;
+        const tong = item.Tong || item.tong || item.total || (d1 + d2 + d3);
+        const ketQua = item.Ket_qua || item.ket_qua || item.result || (tong >= 11 ? "Tài" : "Xỉu");
+        const phien = item.Phien || item.phien || item.session || item.id || 0;
         return {
-            phien: item.phien || item.session || item.id || item.Phien || 0,
-            dice: [d1, d2, d3],
+            phien, dice: [d1, d2, d3],
             Xuc_xac_1: d1, Xuc_xac_2: d2, Xuc_xac_3: d3,
             Tong: tong, total: tong,
-            Ket_qua: ketQua === "Tài" || ketQua === "tài" ? "Tài" : "Xỉu",
-            result: ketQua === "Tài" || ketQua === "tài" ? "Tài" : "Xỉu"
+            Ket_qua: (ketQua === "Tài" || ketQua === "tài") ? "Tài" : "Xỉu",
+            result: (ketQua === "Tài" || ketQua === "tài") ? "Tài" : "Xỉu",
+            index
         };
     }).filter(item => item.phien > 0 && item.Tong >= 3 && item.Tong <= 18);
 }
 
 // ======================================================
-// LEARNING SYSTEM FUNCTIONS
+// LEARNING SYSTEM
 // ======================================================
 function loadLearningData() {
     try {
@@ -90,7 +98,7 @@ function loadLearningData() {
             const data = fs.readFileSync(LEARNING_FILE, 'utf8');
             const parsed = JSON.parse(data);
             if (parsed.b52) learningData = { ...learningData, ...parsed };
-            console.log('✅ Learning data loaded');
+            console.log('Learning data loaded');
         }
     } catch (error) {
         console.error('Error loading learning data:', error.message);
@@ -128,24 +136,18 @@ function updatePatternPerformance(type, patternId, isCorrect) {
     initializePatternStats(type);
     const stats = learningData[type].patternStats[patternId];
     if (!stats) return;
-    
     stats.total++;
     if (isCorrect) stats.correct++;
-    
     stats.recentResults.push(isCorrect ? 1 : 0);
     if (stats.recentResults.length > 20) stats.recentResults.shift();
-    
     const recentAccuracy = stats.recentResults.reduce((a, b) => a + b, 0) / stats.recentResults.length;
     stats.accuracy = stats.total > 0 ? stats.correct / stats.total : 0.5;
-    
     const oldWeight = learningData[type].patternWeights[patternId];
     let newWeight = oldWeight;
-    
     if (stats.recentResults.length >= 5) {
         if (recentAccuracy > 0.6) newWeight = Math.min(2.0, oldWeight * 1.05);
         else if (recentAccuracy < 0.4) newWeight = Math.max(0.3, oldWeight * 0.95);
     }
-    
     learningData[type].patternWeights[patternId] = newWeight;
     stats.lastAdjustment = new Date().toISOString();
 }
@@ -168,7 +170,52 @@ function normalizeResult(result) {
 }
 
 // ======================================================
-// PATTERN DETECTION FUNCTIONS
+// HELPER FUNCTIONS
+// ======================================================
+function countReversals(results) {
+    let count = 0;
+    for (let i = 1; i < results.length; i++) {
+        if (results[i] !== results[i - 1]) count++;
+    }
+    return count;
+}
+
+function getCurrentStreak(results) {
+    let streak = 1;
+    for (let i = 1; i < results.length; i++) {
+        if (results[i] === results[0]) streak++;
+        else break;
+    }
+    return streak;
+}
+
+function calculateConditionalProb(results, target, streak) {
+    let count = 0, total = 0;
+    for (let i = streak; i < results.length; i++) {
+        const prevStreak = results.slice(i - streak, i).every(r => r === target);
+        if (prevStreak) {
+            total++;
+            if (results[i] !== target) count++;
+        }
+    }
+    return total > 0 ? count / total : 0.5;
+}
+
+function calculateReversalProb(results) {
+    let reversals = 0;
+    for (let i = 1; i < results.length; i++) {
+        if (results[i] !== results[i - 1]) reversals++;
+    }
+    return reversals / (results.length - 1);
+}
+
+function calculateSumProb(sums) {
+    const avg = sums.reduce((a, b) => a + b, 0) / sums.length;
+    return avg / 21;
+}
+
+// ======================================================
+// PATTERN DETECTION - ORIGINAL FUNCTIONS
 // ======================================================
 function analyzeCauBet(results, type) {
     if (results.length < 3) return { detected: false };
@@ -249,11 +296,6 @@ function analyzeEdgeCases(data, type) {
     return { detected: false };
 }
 
-// ======================================================
-// ADVANCED AI PREDICTION FUNCTIONS (TỪ CÁC FILE KHÁC)
-// ======================================================
-
-// Markov Chain
 function analyzeMarkovChain(results, data, type) {
     if (results.length < 20) return { detected: false };
     const transitions = { 'Tài->Tài': 0, 'Tài->Xỉu': 0, 'Xỉu->Tài': 0, 'Xỉu->Xỉu': 0 };
@@ -285,15 +327,13 @@ function analyzeMarkovChain(results, data, type) {
     if (Math.abs(probability - 0.5) > 0.1) {
         return {
             detected: true, type: 'markov_transition', prediction, confidence,
-            probability: (probability * 100).toFixed(1) + '%',
             name: `Markov Chain (${currentResult} → ${prediction}: ${(probability * 100).toFixed(0)}%)`,
-            patternId: 'markov_chain', analysis: { transitions, currentResult, probability }
+            patternId: 'markov_chain'
         };
     }
     return { detected: false };
 }
 
-// Moving Average Drift
 function analyzeMovingAverageDrift(data, type) {
     if (data.length < 20) return { detected: false };
     const sums = data.slice(0, 20).map(d => d.Tong);
@@ -307,13 +347,12 @@ function analyzeMovingAverageDrift(data, type) {
             detected: true, type: 'strong_drift', prediction,
             confidence: Math.round(14 * weight),
             name: `MA Drift (MA5:${ma5.toFixed(1)} MA10:${ma10.toFixed(1)})`,
-            patternId: 'moving_avg_drift', analysis: { ma5, ma10, shortTermDrift }
+            patternId: 'moving_avg_drift'
         };
     }
     return { detected: false };
 }
 
-// Sum Pressure
 function analyzeSumPressure(data, type) {
     if (data.length < 15) return { detected: false };
     const EXPECTED_MEAN = 10.5;
@@ -327,13 +366,12 @@ function analyzeSumPressure(data, type) {
             detected: true, type: 'mean_reversion', prediction,
             confidence: Math.round(Math.min(15, Math.abs(deviation) * 5 + 7) * weight),
             name: `Áp Lực Tổng (Avg:${avgSum.toFixed(1)} vs Mean:${EXPECTED_MEAN})`,
-            patternId: 'sum_pressure', analysis: { avgSum, deviation }
+            patternId: 'sum_pressure'
         };
     }
     return { detected: false };
 }
 
-// Volatility
 function analyzeVolatility(data, type) {
     if (data.length < 10) return { detected: false };
     const sums = data.slice(0, 10).map(d => d.Tong);
@@ -349,13 +387,12 @@ function analyzeVolatility(data, type) {
             prediction: lastResult === 'Tài' ? 'Xỉu' : 'Tài',
             confidence: Math.round(12 * weight),
             name: `Biến Động Cao (Avg:${avgChange.toFixed(1)}, Max:${maxChange})`,
-            patternId: 'volatility', analysis: { avgChange, maxChange }
+            patternId: 'volatility'
         };
     }
     return { detected: false };
 }
 
-// Day Gay (dây gãy)
 function analyzeDayGay(data, type) {
     if (data.length < 3) return { detected: false };
     const current = data[0], previous = data[1];
@@ -382,7 +419,6 @@ function analyzeDayGay(data, type) {
     return { detected: false };
 }
 
-// Fibonacci Pattern
 function analyzeFibonacciPattern(data, type) {
     if (data.length < 13) return { detected: false };
     const weight = getPatternWeight(type, 'fibonacci');
@@ -405,7 +441,6 @@ function analyzeFibonacciPattern(data, type) {
     return { detected: false };
 }
 
-// Break Pattern
 function analyzeBreakPattern(results, data, type) {
     if (results.length < 5) return { detected: false };
     const weight = getPatternWeight(type, 'break_pattern');
@@ -429,7 +464,6 @@ function analyzeBreakPattern(results, data, type) {
     return { detected: false };
 }
 
-// Smart Bet (xu hướng cực)
 function analyzeSmartBet(results, type) {
     if (results.length < 10) return { detected: false };
     const weight = getPatternWeight(type, 'smart_bet');
@@ -461,7 +495,6 @@ function analyzeSmartBet(results, type) {
     return { detected: false };
 }
 
-// Phân bố
 function analyzeDistribution(data, type, windowSize = 50) {
     const window = data.slice(0, windowSize);
     const taiCount = window.filter(d => d.Ket_qua === 'Tài').length;
@@ -475,115 +508,268 @@ function analyzeDistribution(data, type, windowSize = 50) {
 }
 
 // ======================================================
+// NÂNG CẤP: ADVANCED AI ALGORITHMS (MỚI)
+// ======================================================
+function analyzeNeuralPattern(sessions) {
+    if (sessions.length < REQUIRED_SESSIONS) return { detected: false };
+    const results = sessions.map(s => s.Ket_qua === 'Tài' ? 1 : 0);
+    const sums = sessions.map(s => s.Tong);
+    const patterns = {
+        last3Trend: results.slice(0, 3).reduce((a, b) => a + b, 0) / 3,
+        last5Trend: results.slice(0, 5).reduce((a, b) => a + b, 0) / 5,
+        fullTrend: results.reduce((a, b) => a + b, 0) / REQUIRED_SESSIONS,
+        sumVariance: Math.abs(sums[0] - sums.reduce((a, b) => a + b, 0) / REQUIRED_SESSIONS),
+        reversals: countReversals(results),
+        currentStreak: getCurrentStreak(results),
+        last3TaiCount: results.slice(0, 3).filter(r => r === 1).length
+    };
+    let taiScore = 0, xiuScore = 0;
+    if (patterns.last3TaiCount === 3) xiuScore += 30;
+    else if (patterns.last3TaiCount === 0) taiScore += 30;
+    if (patterns.currentStreak >= 4) {
+        if (results[0] === 1) xiuScore += 25;
+        else taiScore += 25;
+    } else if (patterns.currentStreak >= 3) {
+        if (results[0] === 1) xiuScore += 20;
+        else taiScore += 20;
+    }
+    if (patterns.fullTrend > 0.7) xiuScore += 15;
+    else if (patterns.fullTrend < 0.3) taiScore += 15;
+    if (patterns.sumVariance > 4) {
+        if (sums[0] > 10.5) xiuScore += 15;
+        else taiScore += 15;
+    }
+    if (patterns.reversals >= 5) {
+        if (results[0] === 1) xiuScore += 10;
+        else taiScore += 10;
+    }
+    const prediction = taiScore > xiuScore ? 'Tài' : 'Xỉu';
+    const confidence = Math.round(50 + Math.abs(taiScore - xiuScore));
+    return {
+        detected: true, prediction,
+        confidence: Math.min(95, confidence),
+        name: `Neural Pattern (T:${taiScore} vs X:${xiuScore})`,
+        patternId: 'neural_pattern'
+    };
+}
+
+function analyzeDeepPattern(sessions) {
+    if (sessions.length < REQUIRED_SESSIONS) return { detected: false };
+    const results = sessions.map(s => s.Ket_qua === 'Tài' ? 'T' : 'X');
+    const dices = sessions.map(s => [s.Xuc_xac_1, s.Xuc_xac_2, s.Xuc_xac_3]);
+    let patternScore = { T: 0, X: 0 };
+    for (let i = 0; i < dices.length - 1; i++) {
+        const currentSum = dices[i].reduce((a, b) => a + b, 0);
+        const nextSum = dices[i + 1] ? dices[i + 1].reduce((a, b) => a + b, 0) : 0;
+        if (currentSum - nextSum >= 5) patternScore.T += 10;
+        if (nextSum - currentSum >= 5) patternScore.X += 10;
+    }
+    const diceFrequency = {};
+    dices.flat().forEach(d => { diceFrequency[d] = (diceFrequency[d] || 0) + 1; });
+    const highDice = (diceFrequency[4] || 0) + (diceFrequency[5] || 0) + (diceFrequency[6] || 0);
+    const lowDice = (diceFrequency[1] || 0) + (diceFrequency[2] || 0) + (diceFrequency[3] || 0);
+    if (highDice > lowDice * 1.5) patternScore.X += 15;
+    if (lowDice > highDice * 1.5) patternScore.T += 15;
+    const resultString = results.join('');
+    if (resultString.match(/(TX){3,}/) || resultString.match(/(XT){3,}/)) {
+        if (results[0] === 'T') patternScore.X += 20;
+        else patternScore.T += 20;
+    }
+    if (resultString.match(/T{3,}/)) patternScore.X += 25;
+    if (resultString.match(/X{3,}/)) patternScore.T += 25;
+    const prediction = patternScore.T > patternScore.X ? 'Tài' : 'Xỉu';
+    const confidence = Math.round(55 + Math.abs(patternScore.T - patternScore.X) * 0.5);
+    return {
+        detected: true, prediction,
+        confidence: Math.min(92, confidence),
+        name: `Deep Analysis (T:${patternScore.T} vs X:${patternScore.X})`,
+        patternId: 'deep_analysis'
+    };
+}
+
+function analyzeProbabilityEngine(sessions) {
+    if (sessions.length < REQUIRED_SESSIONS) return { detected: false };
+    const results = sessions.map(s => s.Ket_qua === 'Tài' ? 'T' : 'X');
+    const sums = sessions.map(s => s.Tong);
+    const probabilities = {
+        after3Tai: calculateConditionalProb(results, 'T', 3),
+        after3Xiu: calculateConditionalProb(results, 'X', 3),
+        reversalProb: calculateReversalProb(results),
+        sumProb: calculateSumProb(sums)
+    };
+    let taiProb = 0, xiuProb = 0;
+    if (results.slice(0, 3).every(r => r === 'T')) xiuProb += probabilities.after3Tai * 100;
+    if (results.slice(0, 3).every(r => r === 'X')) taiProb += probabilities.after3Xiu * 100;
+    if (probabilities.reversalProb > 0.6) {
+        if (results[0] === 'T') xiuProb += 30;
+        else taiProb += 30;
+    }
+    if (probabilities.sumProb > 0.6) taiProb += 20;
+    else if (probabilities.sumProb < 0.4) xiuProb += 20;
+    const prediction = taiProb > xiuProb ? 'Tài' : 'Xỉu';
+    const confidence = Math.round(50 + Math.abs(taiProb - xiuProb));
+    return {
+        detected: true, prediction,
+        confidence: Math.min(93, Math.max(55, confidence)),
+        name: `Probability Engine (T:${taiProb.toFixed(0)}% vs X:${xiuProb.toFixed(0)}%)`,
+        patternId: 'probability_engine'
+    };
+}
+
+function analyzeTrendReversal(sessions) {
+    if (sessions.length < REQUIRED_SESSIONS) return { detected: false };
+    const results = sessions.map(s => s.Ket_qua === 'Tài' ? 1 : 0);
+    const sums = sessions.map(s => s.Tong);
+    const firstHalf = results.slice(5, 10);
+    const secondHalf = results.slice(0, 5);
+    const firstHalfTai = firstHalf.filter(r => r === 1).length;
+    const secondHalfTai = secondHalf.filter(r => r === 1).length;
+    const trendChange = secondHalfTai - firstHalfTai;
+    let prediction, confidence = 50;
+    if (Math.abs(trendChange) >= 3) {
+        prediction = trendChange > 0 ? 'Tài' : 'Xỉu';
+        confidence = 65 + Math.abs(trendChange) * 10;
+    } else if (Math.abs(trendChange) >= 2) {
+        prediction = trendChange > 0 ? 'Tài' : 'Xỉu';
+        confidence = 60 + Math.abs(trendChange) * 8;
+    } else {
+        prediction = secondHalfTai >= 3 ? 'Tài' : 'Xỉu';
+        confidence = 55;
+    }
+    const avgSum = sums.slice(0, 5).reduce((a, b) => a + b, 0) / 5;
+    if (avgSum > 12) { prediction = 'Xỉu'; confidence += 5; }
+    else if (avgSum < 9) { prediction = 'Tài'; confidence += 5; }
+    return {
+        detected: true, prediction,
+        confidence: Math.min(90, confidence),
+        name: `Trend Reversal (Change: ${trendChange})`,
+        patternId: 'trend_reversal'
+    };
+}
+
+// ======================================================
 // MAIN PREDICTION ENGINE
 // ======================================================
 function calculateAdvancedPrediction(data, type) {
-    const last50 = data.slice(0, 50);
-    const results = last50.map(d => d.Ket_qua);
+    const sessions = data.slice(0, REQUIRED_SESSIONS);
+    console.log(`\n=== ANALYZING ${REQUIRED_SESSIONS} SESSIONS ===`);
+    console.log(`Results: ${sessions.map(s => s.Ket_qua).join(' → ')}`);
+    console.log(`Sums: ${sessions.map(s => s.Tong).join(' → ')}`);
     
     initializePatternStats(type);
-    
     let predictions = [];
     let factors = [];
-    let allPatterns = [];
     
-    // Check all patterns
-    const patterns = [
-        { fn: analyzeCauBet, priority: 10 },
-        { fn: analyzeCauDao11, priority: 9 },
-        { fn: detectCyclePattern, priority: 7 },
-        { fn: analyzeEdgeCases, priority: 5 },
-        { fn: analyzeMarkovChain, priority: 12 },
-        { fn: analyzeMovingAverageDrift, priority: 11 },
-        { fn: analyzeSumPressure, priority: 11 },
-        { fn: analyzeVolatility, priority: 10 },
-        { fn: analyzeDayGay, priority: 13 },
-        { fn: analyzeFibonacciPattern, priority: 8 },
-        { fn: analyzeBreakPattern, priority: 12 },
-        { fn: analyzeSmartBet, priority: 9 }
+    const allAlgorithms = [
+        { fn: analyzeNeuralPattern, priority: 15, useData: true },
+        { fn: analyzeDeepPattern, priority: 14, useData: true },
+        { fn: analyzeProbabilityEngine, priority: 14, useData: true },
+        { fn: analyzeTrendReversal, priority: 13, useData: true },
+        { fn: analyzeDayGay, priority: 13, useData: true },
+        { fn: analyzeBreakPattern, priority: 12, useData: false },
+        { fn: analyzeMarkovChain, priority: 12, useData: false },
+        { fn: analyzeSmartBet, priority: 11, useData: false },
+        { fn: analyzeMovingAverageDrift, priority: 11, useData: true },
+        { fn: analyzeSumPressure, priority: 11, useData: true },
+        { fn: analyzeVolatility, priority: 10, useData: true },
+        { fn: analyzeCauBet, priority: 10, useData: false },
+        { fn: analyzeCauDao11, priority: 9, useData: false },
+        { fn: analyzeFibonacciPattern, priority: 8, useData: true },
+        { fn: analyzeEdgeCases, priority: 8, useData: true },
+        { fn: detectCyclePattern, priority: 7, useData: false }
     ];
     
-    patterns.forEach(({ fn, priority }) => {
-        const result = fn.name === 'analyzeBreakPattern' || fn.name === 'analyzeMarkovChain' 
-            ? fn(results, last50, type) 
-            : fn.name === 'detectCyclePattern' || fn.name === 'analyzeCauBet' || 
-              fn.name === 'analyzeCauDao11' || fn.name === 'analyzeSmartBet'
-                ? fn(results, type)
-                : fn(last50, type);
-        
-        if (result.detected) {
-            predictions.push({ 
-                prediction: result.prediction, 
-                confidence: result.confidence, 
-                priority, 
-                name: result.name 
-            });
-            factors.push(result.name);
-            allPatterns.push(result);
+    const results = sessions.map(s => s.Ket_qua);
+    
+    allAlgorithms.forEach(({ fn, priority, useData }) => {
+        let result;
+        try {
+            if (fn.name === 'analyzeBreakPattern' || fn.name === 'analyzeMarkovChain') {
+                result = fn(results, sessions, type);
+            } else if (fn.name === 'detectCyclePattern' || fn.name === 'analyzeCauBet' || 
+                       fn.name === 'analyzeCauDao11' || fn.name === 'analyzeSmartBet') {
+                result = fn(results, type);
+            } else {
+                result = fn(sessions, type);
+            }
+            
+            if (result && result.detected) {
+                predictions.push({ 
+                    prediction: result.prediction, 
+                    confidence: result.confidence, 
+                    priority, 
+                    name: result.name 
+                });
+                factors.push(result.name);
+                console.log(`  ✓ ${result.name}: ${result.prediction} (${result.confidence}%)`);
+            }
+        } catch (e) {
+            console.log(`  ✗ ${fn.name}: Error - ${e.message}`);
         }
     });
     
-    // Distribution analysis
-    const distribution = analyzeDistribution(last50, type);
+    // Distribution
+    const distribution = analyzeDistribution(data, type);
     if (distribution.imbalance > 0.2) {
         const minority = distribution.taiPercent < 50 ? 'Tài' : 'Xỉu';
         const weight = getPatternWeight(type, 'distribution');
         predictions.push({ 
-            prediction: minority, confidence: Math.round(6 * weight), 
-            priority: 5, name: 'Phân bố lệch' 
+            prediction: minority, confidence: Math.round(8 * weight), 
+            priority: 6, name: 'Phân bố lệch' 
         });
-        factors.push(`Phân bố lệch (T:${distribution.taiPercent.toFixed(0)}% - X:${distribution.xiuPercent.toFixed(0)}%)`);
     }
     
-    // Cầu tự nhiên fallback
+    // Fallback
     if (predictions.length === 0) {
-        const last10 = results.slice(0, Math.min(10, results.length));
-        const taiCount = last10.filter(r => r === 'Tài').length;
-        const pred = taiCount > last10.length - taiCount ? 'Tài' : 'Xỉu';
-        const weight = getPatternWeight(type, 'cau_tu_nhien');
-        predictions.push({ prediction: pred, confidence: Math.round(5 * weight), priority: 1, name: 'Cầu Tự Nhiên' });
-        factors.push('Cầu Tự Nhiên');
+        const last3 = results.slice(0, 3);
+        const taiCount = last3.filter(r => r === 'Tài').length;
+        predictions.push({ 
+            prediction: taiCount >= 2 ? 'Xỉu' : 'Tài', 
+            confidence: 55, priority: 1, name: 'Fallback' 
+        });
     }
     
-    // Sort by priority and confidence
+    // Sort and calculate
     predictions.sort((a, b) => b.priority - a.priority || b.confidence - a.confidence);
     
-    // Calculate final prediction
     const taiVotes = predictions.filter(p => p.prediction === 'Tài');
     const xiuVotes = predictions.filter(p => p.prediction === 'Xỉu');
     
-    const taiScore = taiVotes.reduce((sum, p) => sum + p.confidence * p.priority, 0);
-    const xiuScore = xiuVotes.reduce((sum, p) => sum + p.confidence * p.priority, 0);
+    const taiScore = taiVotes.reduce((sum, p) => sum + p.confidence * p.priority * 0.1, 0);
+    const xiuScore = xiuVotes.reduce((sum, p) => sum + p.confidence * p.priority * 0.1, 0);
     
     let finalPrediction = taiScore >= xiuScore ? 'Tài' : 'Xỉu';
     
-    // Calculate confidence
+    // Confidence calculation
     let baseConfidence = 50;
-    const topPredictions = predictions.slice(0, 3);
-    topPredictions.forEach(p => {
-        if (p.prediction === finalPrediction) baseConfidence += p.confidence;
-    });
+    const top3 = predictions.slice(0, 3);
+    const top3Agree = top3.filter(p => p.prediction === finalPrediction).length;
+    if (top3Agree === 3) baseConfidence += 25;
+    else if (top3Agree === 2) baseConfidence += 15;
+    else baseConfidence += 5;
     
     const agreementRatio = (finalPrediction === 'Tài' ? taiVotes.length : xiuVotes.length) / predictions.length;
-    baseConfidence += Math.round(agreementRatio * 10);
+    baseConfidence += Math.round(agreementRatio * 15);
+    baseConfidence += getAdaptiveConfidenceBoost(type);
     
-    const adaptiveBoost = getAdaptiveConfidenceBoost(type);
-    baseConfidence += adaptiveBoost;
+    let finalConfidence = Math.round(baseConfidence);
+    finalConfidence = Math.max(55, Math.min(95, finalConfidence));
     
-    const randomAdjust = (Math.random() * 4) - 2;
-    let finalConfidence = Math.round(baseConfidence + randomAdjust);
-    finalConfidence = Math.max(50, Math.min(85, finalConfidence));
+    console.log(`\n=== FINAL: ${finalPrediction} (${finalConfidence}%) ===`);
+    console.log(`Tai: ${taiScore.toFixed(1)} | Xiu: ${xiuScore.toFixed(1)}`);
+    console.log(`Algorithms: ${predictions.length} | Agreement: ${(agreementRatio * 100).toFixed(0)}%\n`);
     
     return {
         prediction: finalPrediction,
         confidence: finalConfidence,
-        factors,
-        allPatterns,
+        factors: factors.slice(0, 5),
         detailedAnalysis: {
-            totalPatterns: predictions.length,
+            totalAlgorithms: predictions.length,
             taiVotes: taiVotes.length,
             xiuVotes: xiuVotes.length,
-            topPattern: predictions[0]?.name || 'N/A',
+            taiScore: taiScore.toFixed(1),
+            xiuScore: xiuScore.toFixed(1),
+            topAlgorithms: top3.map(p => `${p.name}(${p.prediction})`),
             distribution
         }
     };
@@ -595,18 +781,15 @@ function calculateAdvancedPrediction(data, type) {
 function buildWinLossTable(history) {
     let winLossTable = [];
     let recentHistory = history.slice(-10);
-    
     for (let i = 0; i < recentHistory.length; i++) {
         let h = recentHistory[i];
         let prevHistory = history.slice(0, history.length - recentHistory.length + i);
         let predict = calculateAdvancedPrediction(prevHistory, 'b52');
-        
         let danhGia = "chưa xác định";
         if (predict.prediction && h.Ket_qua) {
             if (predict.prediction === h.Ket_qua) danhGia = "thang";
             else danhGia = "thua";
         }
-        
         winLossTable.push({
             phien: h.phien,
             du_doan: predict.prediction.toLowerCase(),
@@ -614,7 +797,6 @@ function buildWinLossTable(history) {
             danh_gia: danhGia
         });
     }
-    
     return winLossTable;
 }
 
@@ -632,13 +814,17 @@ function countConsecutiveLosses(winLossTable) {
 // ======================================================
 app.get("/taixiu", async (req, res) => {
     try {
+        console.log('\n' + '='.repeat(60));
+        console.log('REQUEST /taixiu');
+        
         const rawData = await fetchData();
-        if (!rawData) throw new Error("No data from API");
+        if (!rawData || !rawData.data) {
+            throw new Error("Cannot fetch data from API");
+        }
         
-        const dataArray = rawData.data || rawData || [];
-        let history = normalizeData(Array.isArray(dataArray) ? dataArray : [dataArray]);
+        const sessions = normalizeData(rawData.data);
         
-        if (history.length < 10) {
+        if (sessions.length < REQUIRED_SESSIONS) {
             return res.json({
                 id: "@vuaoccac",
                 phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Đang tải..." },
@@ -649,9 +835,9 @@ app.get("/taixiu", async (req, res) => {
             });
         }
         
-        let latest = history[history.length - 1];
-        let predict = calculateAdvancedPrediction(history, 'b52');
-        let winLossTable = buildWinLossTable(history);
+        let latest = sessions[0];
+        let predict = calculateAdvancedPrediction(sessions, 'b52');
+        let winLossTable = buildWinLossTable(sessions);
         let consecutiveLosses = countConsecutiveLosses(winLossTable);
         let currentPhien = latest.phien + 1;
         
@@ -672,7 +858,7 @@ app.get("/taixiu", async (req, res) => {
             },
             stats: { consecutiveLosses },
             win_loss_table: winLossTable,
-            full_history_count: history.length
+            full_history_count: sessions.length
         });
     } catch (err) {
         console.error("Error:", err.message);
@@ -690,16 +876,57 @@ app.get("/taixiu", async (req, res) => {
 app.get("/", async (req, res) => {
     try {
         const rawData = await fetchData();
-        if (!rawData) throw new Error("No data from API");
+        if (!rawData || !rawData.data) throw new Error("Cannot fetch data");
         
-        const dataArray = rawData.data || rawData || [];
-        let history = normalizeData(Array.isArray(dataArray) ? dataArray : [dataArray]);
+        const sessions = normalizeData(rawData.data);
+        if (sessions.length < REQUIRED_SESSIONS) {
+            return res.json({ status: "error", message: `Need ${REQUIRED_SESSIONS} sessions, got ${sessions.length}` });
+        }
         
-        if (history.length < 10) {
-            return res.json({
-                id: "@vuaoccac",
-                phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Đang tải..." },
-                phien_hien_tai: { Phien: 0, Du_doan: "Đang tải...", Do_tin_cay: "0%" },
-                stats: { consecutiveLosses: 0 },
-                win_loss_table: [],
-                full_history_count:
+        let latest = sessions[0];
+        let predict = calculateAdvancedPrediction(sessions, 'b52');
+        let winLossTable = buildWinLossTable(sessions);
+        let consecutiveLosses = countConsecutiveLosses(winLossTable);
+        let currentPhien = latest.phien + 1;
+        
+        res.json({
+            id: "@vuaoccac",
+            phien_truoc: {
+                Phien: latest.phien,
+                Xuc_xac_1: latest.Xuc_xac_1,
+                Xuc_xac_2: latest.Xuc_xac_2,
+                Xuc_xac_3: latest.Xuc_xac_3,
+                Tong: latest.Tong,
+                Ket_qua: latest.Ket_qua
+            },
+            phien_hien_tai: {
+                Phien: currentPhien,
+                Du_doan: predict.prediction,
+                Do_tin_cay: predict.confidence + "%"
+            },
+            stats: { consecutiveLosses },
+            win_loss_table: winLossTable,
+            full_history_count: sessions.length,
+            analysis: predict.detailedAnalysis
+        });
+    } catch (err) {
+        console.error("Error:", err.message);
+        res.json({ status: "error", message: err.message });
+    }
+});
+
+// ======================================================
+// START SERVER
+// ======================================================
+loadLearningData();
+
+app.listen(PORT, () => {
+    console.log('\n' + '='.repeat(60));
+    console.log('🚀 TÀI XỈU AI SERVER - NÂNG CẤP V3');
+    console.log('='.repeat(60));
+    console.log(`📡 Port: ${PORT}`);
+    console.log(`🔗 API: ${API_URL}`);
+    console.log(`📊 Sessions required: ${REQUIRED_SESSIONS}`);
+    console.log(`🧠 Algorithms: Neural Pattern + Deep Analysis + Probability Engine + 12+ classic`);
+    console.log('='.repeat(60) + '\n');
+});
