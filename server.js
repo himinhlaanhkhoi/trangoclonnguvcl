@@ -23,286 +23,522 @@ function getScores(history) {
     return history.map(h => h.Tong || 0);
 }
 
+function getDiceArray(history) {
+    return history.map(h => [h.Xuc_xac_1 || 0, h.Xuc_xac_2 || 0, h.Xuc_xac_3 || 0]);
+}
+
 // ======================================================
-// 🧠 SIÊU THUẬT TOÁN DỰ ĐOÁN CHUẨN XÁC
+// 🧠 BỘ NÃO PHÂN TÍCH ĐA DẠNG TẤT CẢ LOẠI CẦU
 // ======================================================
 
-function superAccuratePredict(sessions) {
-    const results = getResults(sessions);
-    const scores = getScores(sessions);
-    const n = results.length;
-    
-    console.log(`\n🔮 PHÂN TÍCH ${n} PHIÊN: ${results.join(' → ')}`);
-    console.log(`📊 Tổng: ${scores.join(' → ')}`);
-    
-    // ============ 1. PHÂN TÍCH STREAK (BỆT) - QUAN TRỌNG NHẤT ============
-    let streakType = results[n - 1];
-    let streakLen = 1;
-    let streakScores = [scores[n - 1]];
-    
-    for (let i = n - 2; i >= 0; i--) {
-        if (results[i] === streakType) {
-            streakLen++;
-            streakScores.unshift(scores[i]);
-        } else {
-            break;
-        }
+class BrainAnalyzer {
+    constructor(sessions) {
+        this.sessions = sessions;
+        this.results = getResults(sessions);
+        this.scores = getScores(sessions);
+        this.dices = getDiceArray(sessions);
+        this.n = this.results.length;
+        this.allPredictions = [];
     }
-    
-    const avgStreakScore = streakScores.reduce((a, b) => a + b, 0) / streakScores.length;
-    const lastScore = scores[n - 1];
-    const prevScore = n >= 2 ? scores[n - 2] : lastScore;
-    const scoreDiff = lastScore - prevScore;
-    
-    console.log(`📈 Streak: ${streakLen} phiên ${streakType} | Điểm TB streak: ${avgStreakScore.toFixed(1)} | Biến động: ${scoreDiff}`);
-    
-    // ============ 2. PHÂN TÍCH PATTERN 3-5 PHIÊN CUỐI ============
-    const last3 = results.slice(-3).join('');
-    const last5 = results.slice(-5).join('');
-    
-    console.log(`📊 Pattern 3: ${last3} | Pattern 5: ${last5}`);
-    
-    // ============ 3. PHÂN TÍCH XU HƯỚNG TỔNG ĐIỂM ============
-    const last3Scores = scores.slice(-3);
-    const last5Scores = scores.slice(-5);
-    const avg3 = last3Scores.reduce((a, b) => a + b, 0) / 3;
-    const avg5 = last5Scores.reduce((a, b) => a + b, 0) / 5;
-    const avgAll = scores.reduce((a, b) => a + b, 0) / n;
-    
-    const scoreTrend = avg3 - avg5;
-    const scoreBias = avgAll - 10.5;
-    
-    console.log(`📊 TB 3 phiên: ${avg3.toFixed(1)} | TB 5 phiên: ${avg5.toFixed(1)} | Xu hướng: ${scoreTrend > 0 ? 'Tăng' : 'Giảm'}`);
-    
-    // ============ 4. PHÂN TÍCH ĐẢO CHIỀU ============
-    let reversals = 0;
-    for (let i = 1; i < n; i++) {
-        if (results[i] !== results[i - 1]) reversals++;
-    }
-    const reversalRate = reversals / (n - 1);
-    
-    console.log(`📊 Tỉ lệ đảo: ${(reversalRate * 100).toFixed(0)}% (${reversals}/${n - 1})`);
-    
-    // ============ 5. PHÂN TÍCH CÂN BẰNG ============
-    const taiCount = results.filter(r => r === 'T').length;
-    const xiuCount = n - taiCount;
-    const imbalance = taiCount - xiuCount;
-    
-    console.log(`📊 Cân bằng: ${taiCount}T - ${xiuCount}X (Lệch: ${imbalance})`);
-    
-    // ============ 6. TÍNH ĐIỂM DỰ ĐOÁN ============
-    let taiScore = 0;
-    let xiuScore = 0;
-    let reasons = [];
-    
-    // --- STREAK ANALYSIS (Trọng số cao nhất) ---
-    if (streakLen >= 7) {
-        // Bệt rất dài -> Bẻ cầu
-        if (streakType === 'T') {
-            xiuScore += 35;
-            reasons.push(`Bệt ${streakLen}T -> Bẻ Xỉu`);
-        } else {
-            taiScore += 35;
-            reasons.push(`Bệt ${streakLen}X -> Bẻ Tài`);
+
+    // ============ 1. PHÂN TÍCH CẦU SIÊU NGẮN (1-2 PHIÊN) ============
+    analyzeUltraShortCau() {
+        const last1 = this.results[this.n - 1];
+        const last2 = this.n >= 2 ? this.results[this.n - 2] : null;
+        const lastScore = this.scores[this.n - 1];
+        const prevScore = this.n >= 2 ? this.scores[this.n - 2] : lastScore;
+        
+        // Cầu 1 phiên: Dựa vào tổng điểm
+        if (lastScore >= 17) {
+            this.addPrediction('X', 85, 'Cầu 1 phiên: Tổng ≥17 → Bẻ Xỉu mạnh', 'ultra_short');
+        } else if (lastScore >= 15) {
+            this.addPrediction('X', 72, 'Cầu 1 phiên: Tổng ≥15 → Bẻ Xỉu', 'ultra_short');
+        } else if (lastScore <= 4) {
+            this.addPrediction('T', 85, 'Cầu 1 phiên: Tổng ≤4 → Bẻ Tài mạnh', 'ultra_short');
+        } else if (lastScore <= 6) {
+            this.addPrediction('T', 70, 'Cầu 1 phiên: Tổng ≤6 → Bẻ Tài', 'ultra_short');
         }
-    } else if (streakLen >= 5) {
-        // Bệt dài -> Cân nhắc bẻ
-        if (Math.abs(scoreDiff) >= 5) {
-            // Biến động mạnh -> Bẻ
-            if (streakType === 'T') {
-                xiuScore += 28;
-                reasons.push(`Bệt ${streakLen}T + Biến động ${scoreDiff} -> Bẻ Xỉu`);
-            } else {
-                taiScore += 28;
-                reasons.push(`Bệt ${streakLen}X + Biến động ${scoreDiff} -> Bẻ Tài`);
+        
+        // Cầu 2 phiên: Phân tích cặp
+        if (last2) {
+            const pair = last2 + last1;
+            const pairPatterns = {
+                'TT': { pred: 'X', conf: 65, reason: 'Cầu 2 phiên TT → Áp lực Xỉu' },
+                'XX': { pred: 'T', conf: 65, reason: 'Cầu 2 phiên XX → Áp lực Tài' },
+                'TX': { pred: 'T', conf: 62, reason: 'Cầu 2 phiên TX → Đảo Tài' },
+                'XT': { pred: 'X', conf: 62, reason: 'Cầu 2 phiên XT → Đảo Xỉu' },
+            };
+            if (pairPatterns[pair]) {
+                const p = pairPatterns[pair];
+                this.addPrediction(p.pred, p.conf, p.reason, 'ultra_short');
             }
-        } else if (lastScore >= 16 || lastScore <= 5) {
-            // Điểm cực đoan -> Bẻ
-            if (streakType === 'T') {
-                xiuScore += 25;
-                reasons.push(`Bệt ${streakLen}T + Điểm cực ${lastScore} -> Bẻ Xỉu`);
-            } else {
-                taiScore += 25;
-                reasons.push(`Bệt ${streakLen}X + Điểm cực ${lastScore} -> Bẻ Tài`);
-            }
-        } else {
-            // Tiếp tục theo streak
-            if (streakType === 'T') {
-                taiScore += 18;
-                reasons.push(`Bệt ${streakLen}T -> Tiếp Tài`);
-            } else {
-                xiuScore += 18;
-                reasons.push(`Bệt ${streakLen}X -> Tiếp Xỉu`);
+            
+            // Biến động điểm giữa 2 phiên
+            const diff = Math.abs(lastScore - prevScore);
+            if (diff >= 6) {
+                this.addPrediction(last1 === 'T' ? 'X' : 'T', 68, `Cầu 2 phiên: Biến động mạnh ${diff} → Đảo chiều`, 'ultra_short');
             }
         }
-    } else if (streakLen >= 3) {
-        // Bệt vừa -> Theo nhưng yếu hơn
-        if (streakType === 'T') {
-            taiScore += 12;
-            reasons.push(`Streak ${streakLen}T -> Theo Tài`);
-        } else {
-            xiuScore += 12;
-            reasons.push(`Streak ${streakLen}X -> Theo Xỉu`);
-        }
-    } else {
-        // Streak ngắn -> Đảo chiều nhẹ
-        if (streakType === 'T') {
-            xiuScore += 8;
-            reasons.push(`Streak ngắn ${streakLen}T -> Đảo Xỉu`);
-        } else {
-            taiScore += 8;
-            reasons.push(`Streak ngắn ${streakLen}X -> Đảo Tài`);
-        }
     }
-    
-    // --- PATTERN ANALYSIS ---
-    const strongPatterns = {
-        'TTT': { pred: 'X', score: 25, reason: '3T liên tiếp -> Bẻ Xỉu' },
-        'XXX': { pred: 'T', score: 25, reason: '3X liên tiếp -> Bẻ Tài' },
-        'TXT': { pred: 'X', score: 15, reason: 'T-X-T -> Theo Xỉu' },
-        'XTX': { pred: 'T', score: 15, reason: 'X-T-X -> Theo Tài' },
-        'TTTTT': { pred: 'X', score: 30, reason: '5T -> Bẻ Xỉu mạnh' },
-        'XXXXX': { pred: 'T', score: 30, reason: '5X -> Bẻ Tài mạnh' },
-    };
-    
-    if (strongPatterns[last3]) {
-        const p = strongPatterns[last3];
-        if (p.pred === 'T') taiScore += p.score;
-        else xiuScore += p.score;
-        reasons.push(p.reason);
-    }
-    
-    if (strongPatterns[last5]) {
-        const p = strongPatterns[last5];
-        if (p.pred === 'T') taiScore += p.score;
-        else xiuScore += p.score;
-        reasons.push(p.reason);
-    }
-    
-    // --- SCORE ANALYSIS ---
-    if (lastScore >= 17) {
-        xiuScore += 30;
-        reasons.push(`Tổng ${lastScore} ≥ 17 -> Bẻ Xỉu mạnh`);
-    } else if (lastScore >= 15) {
-        xiuScore += 18;
-        reasons.push(`Tổng ${lastScore} ≥ 15 -> Bẻ Xỉu`);
-    } else if (lastScore <= 4) {
-        taiScore += 30;
-        reasons.push(`Tổng ${lastScore} ≤ 4 -> Bẻ Tài mạnh`);
-    } else if (lastScore <= 6) {
-        taiScore += 18;
-        reasons.push(`Tổng ${lastScore} ≤ 6 -> Bẻ Tài`);
-    }
-    
-    // Xu hướng tổng điểm
-    if (avg3 > 13) {
-        xiuScore += 12;
-        reasons.push(`TB 3 phiên ${avg3.toFixed(1)} > 13 -> Áp lực Xỉu`);
-    } else if (avg3 < 8) {
-        taiScore += 12;
-        reasons.push(`TB 3 phiên ${avg3.toFixed(1)} < 8 -> Áp lực Tài`);
-    }
-    
-    // Biến động tổng
-    if (Math.abs(scoreTrend) >= 2) {
-        if (scoreTrend > 0) {
-            xiuScore += 10;
-            reasons.push('Tổng đang tăng mạnh -> Bẻ Xỉu');
-        } else {
-            taiScore += 10;
-            reasons.push('Tổng đang giảm mạnh -> Bẻ Tài');
-        }
-    }
-    
-    // --- REVERSAL ANALYSIS ---
-    if (reversalRate > 0.7) {
-        // Đảo chiều nhiều -> Tiếp tục đảo
-        if (results[n - 1] === 'T') {
-            xiuScore += 15;
-            reasons.push('Đảo chiều cao -> Tiếp tục Xỉu');
-        } else {
-            taiScore += 15;
-            reasons.push('Đảo chiều cao -> Tiếp tục Tài');
-        }
-    } else if (reversalRate < 0.3) {
-        // Ít đảo -> Theo xu hướng
-        if (results[n - 1] === 'T') {
-            taiScore += 10;
-            reasons.push('Ít đảo -> Theo Tài');
-        } else {
-            xiuScore += 10;
-            reasons.push('Ít đảo -> Theo Xỉu');
-        }
-    }
-    
-    // --- BALANCE ANALYSIS ---
-    if (Math.abs(imbalance) >= 6) {
-        if (imbalance > 0) {
-            xiuScore += 18;
-            reasons.push(`Lệch ${imbalance} về Tài -> Cân bằng Xỉu`);
-        } else {
-            taiScore += 18;
-            reasons.push(`Lệch ${Math.abs(imbalance)} về Xỉu -> Cân bằng Tài`);
-        }
-    }
-    
-    // ============ 7. QUYẾT ĐỊNH CUỐI CÙNG ============
-    console.log(`\n📊 ĐIỂM SỐ: Tài = ${taiScore.toFixed(1)} | Xỉu = ${xiuScore.toFixed(1)}`);
-    
-    const totalScore = taiScore + xiuScore;
-    let finalPrediction;
-    let confidence;
-    
-    if (totalScore === 0) {
-        // Fallback: đảo kết quả cuối
-        finalPrediction = results[n - 1] === 'T' ? 'X' : 'T';
-        confidence = 55;
-        reasons.push('Fallback: Đảo kết quả cuối');
-    } else {
-        const taiProb = taiScore / totalScore;
-        const xiuProb = xiuScore / totalScore;
-        const maxProb = Math.max(taiProb, xiuProb);
-        const minProb = Math.min(taiProb, xiuProb);
+
+    // ============ 2. PHÂN TÍCH CẦU NGẮN (3-4 PHIÊN) ============
+    analyzeShortCau() {
+        const last3 = this.results.slice(-3).join('');
+        const last4 = this.results.slice(-4).join('');
+        const last3Scores = this.scores.slice(-3);
+        const avg3 = last3Scores.reduce((a, b) => a + b, 0) / 3;
         
-        finalPrediction = taiProb > xiuProb ? 'T' : 'X';
+        // Pattern 3 phiên
+        const patterns3 = {
+            'TTT': { pred: 'X', conf: 80, reason: 'Cầu 3 phiên TTT → Bẻ Xỉu' },
+            'XXX': { pred: 'T', conf: 80, reason: 'Cầu 3 phiên XXX → Bẻ Tài' },
+            'TXT': { pred: 'X', conf: 72, reason: 'Cầu 3 phiên TXT → Theo Xỉu (đan xen)' },
+            'XTX': { pred: 'T', conf: 72, reason: 'Cầu 3 phiên XTX → Theo Tài (đan xen)' },
+            'TTX': { pred: 'T', conf: 65, reason: 'Cầu 3 phiên TTX → Tiếp Tài' },
+            'TXX': { pred: 'T', conf: 63, reason: 'Cầu 3 phiên TXX → Đảo Tài' },
+            'XTT': { pred: 'X', conf: 63, reason: 'Cầu 3 phiên XTT → Đảo Xỉu' },
+            'XXT': { pred: 'X', conf: 65, reason: 'Cầu 3 phiên XXT → Tiếp Xỉu' },
+        };
         
-        // Tính confidence dựa trên:
-        // 1. Mức độ vượt trội (maxProb - minProb)
-        // 2. Tổng điểm (totalScore càng cao = càng nhiều yếu tố ủng hộ)
-        const dominance = maxProb - minProb;
-        const scoreFactor = Math.min(1, totalScore / 100);
+        if (patterns3[last3]) {
+            const p = patterns3[last3];
+            this.addPrediction(p.pred, p.conf, p.reason, 'short');
+        }
         
-        confidence = Math.round(55 + dominance * 40 + scoreFactor * 10);
+        // Pattern 4 phiên
+        const patterns4 = {
+            'TXTX': { pred: 'X', conf: 78, reason: 'Cầu 4 phiên TXTX → Zigzag theo Xỉu' },
+            'XTXT': { pred: 'T', conf: 78, reason: 'Cầu 4 phiên XTXT → Zigzag theo Tài' },
+            'TTXX': { pred: 'X', conf: 75, reason: 'Cầu 4 phiên TTXX → Cầu 2-2 theo Xỉu' },
+            'XXTT': { pred: 'T', conf: 75, reason: 'Cầu 4 phiên XXTT → Cầu 2-2 theo Tài' },
+            'TTTX': { pred: 'X', conf: 74, reason: 'Cầu 4 phiên TTTX → 3-1 bẻ Xỉu' },
+            'XXXT': { pred: 'T', conf: 74, reason: 'Cầu 4 phiên XXXT → 3-1 bẻ Tài' },
+        };
         
-        // Thêm noise nhỏ để confidence không đứng im
+        if (patterns4[last4]) {
+            const p = patterns4[last4];
+            this.addPrediction(p.pred, p.conf, p.reason, 'short');
+        }
+        
+        // Phân tích tổng 3 phiên
+        if (avg3 > 13) {
+            this.addPrediction('X', 68, `Cầu ngắn: TB 3 phiên ${avg3.toFixed(1)} > 13 → Áp lực Xỉu`, 'short');
+        } else if (avg3 < 8) {
+            this.addPrediction('T', 68, `Cầu ngắn: TB 3 phiên ${avg3.toFixed(1)} < 8 → Áp lực Tài`, 'short');
+        }
+    }
+
+    // ============ 3. PHÂN TÍCH CẦU TRUNG BÌNH (5-7 PHIÊN) ============
+    analyzeMediumCau() {
+        const last5 = this.results.slice(-5).join('');
+        const last6 = this.results.slice(-6).join('');
+        const last7 = this.results.slice(-7).join('');
+        const last5Scores = this.scores.slice(-5);
+        const avg5 = last5Scores.reduce((a, b) => a + b, 0) / 5;
+        
+        // Pattern 5 phiên
+        const patterns5 = {
+            'TTTTT': { pred: 'X', conf: 88, reason: 'Cầu 5 phiên TTTTT → Bẻ Xỉu cực mạnh' },
+            'XXXXX': { pred: 'T', conf: 88, reason: 'Cầu 5 phiên XXXXX → Bẻ Tài cực mạnh' },
+            'TXTXT': { pred: 'X', conf: 80, reason: 'Cầu 5 phiên TXTXT → Zigzag 5 theo Xỉu' },
+            'XTXTX': { pred: 'T', conf: 80, reason: 'Cầu 5 phiên XTXTX → Zigzag 5 theo Tài' },
+            'TTTXX': { pred: 'X', conf: 76, reason: 'Cầu 5 phiên TTTXX → 3-2 bẻ Xỉu' },
+            'XXXTT': { pred: 'T', conf: 76, reason: 'Cầu 5 phiên XXXTT → 3-2 bẻ Tài' },
+        };
+        
+        if (patterns5[last5]) {
+            const p = patterns5[last5];
+            this.addPrediction(p.pred, p.conf, p.reason, 'medium');
+        }
+        
+        // Phân tích 5 phiên tổng quát
+        const taiCount5 = this.results.slice(-5).filter(r => r === 'T').length;
+        if (taiCount5 >= 4) {
+            this.addPrediction('X', 72, `Cầu trung: ${taiCount5}/5 Tài → Áp lực Xỉu`, 'medium');
+        } else if (taiCount5 <= 1) {
+            this.addPrediction('T', 72, `Cầu trung: ${taiCount5}/5 Tài → Áp lực Tài`, 'medium');
+        }
+        
+        // Phân tích 7 phiên
+        const taiCount7 = this.results.slice(-7).filter(r => r === 'T').length;
+        if (taiCount7 >= 6) {
+            this.addPrediction('X', 75, `Cầu trung: ${taiCount7}/7 Tài → Áp lực Xỉu mạnh`, 'medium');
+        } else if (taiCount7 <= 1) {
+            this.addPrediction('T', 75, `Cầu trung: ${taiCount7}/7 Tài → Áp lực Tài mạnh`, 'medium');
+        }
+        
+        // Xu hướng tổng điểm 5 phiên
+        if (avg5 > 12) {
+            this.addPrediction('X', 65, `Cầu trung: TB 5 phiên ${avg5.toFixed(1)} > 12`, 'medium');
+        } else if (avg5 < 9) {
+            this.addPrediction('T', 65, `Cầu trung: TB 5 phiên ${avg5.toFixed(1)} < 9`, 'medium');
+        }
+    }
+
+    // ============ 4. PHÂN TÍCH CẦU DÀI (8-10 PHIÊN) ============
+    analyzeLongCau() {
+        const last8 = this.results.slice(-8).join('');
+        const last10 = this.results.slice(-10).join('');
+        
+        // Pattern 8 phiên
+        if (last8 === 'TTTTXXXX') {
+            this.addPrediction('X', 79, 'Cầu dài 4-4 TTTTXXXX → Theo Xỉu', 'long');
+        } else if (last8 === 'XXXXTTTT') {
+            this.addPrediction('T', 79, 'Cầu dài 4-4 XXXTTTT → Theo Tài', 'long');
+        }
+        
+        // Phân tích 10 phiên
+        const taiCount10 = this.results.filter(r => r === 'T').length;
+        const xiuCount10 = this.n - taiCount10;
+        const imbalance10 = Math.abs(taiCount10 - xiuCount10);
+        
+        if (imbalance10 >= 6) {
+            this.addPrediction(
+                taiCount10 > xiuCount10 ? 'X' : 'T',
+                75,
+                `Cầu dài: Lệch ${imbalance10}/10 → Cân bằng`,
+                'long'
+            );
+        }
+        
+        // Phân tích streak dài
+        let streakType = this.results[this.n - 1];
+        let streakLen = 1;
+        for (let i = this.n - 2; i >= 0; i--) {
+            if (this.results[i] === streakType) streakLen++;
+            else break;
+        }
+        
+        if (streakLen >= 8) {
+            this.addPrediction(streakType === 'T' ? 'X' : 'T', 88, `Cầu dài: Bệt ${streakLen} → Bẻ mạnh`, 'long');
+        } else if (streakLen >= 6) {
+            this.addPrediction(streakType === 'T' ? 'X' : 'T', 78, `Cầu dài: Bệt ${streakLen} → Bẻ`, 'long');
+        } else if (streakLen >= 4) {
+            this.addPrediction(streakType, 68, `Cầu dài: Bệt ${streakLen} → Tiếp tục`, 'long');
+        }
+    }
+
+    // ============ 5. PHÂN TÍCH CẦU ĐẶC BIỆT ============
+    analyzeSpecialCau() {
+        const results = this.results;
+        const scores = this.scores;
+        const n = this.n;
+        
+        // Cầu Zigzag (đan xen liên tục)
+        let zigzagLen = 0;
+        for (let i = 1; i < n; i++) {
+            if (results[n - i] !== results[n - i - 1]) zigzagLen++;
+            else break;
+        }
+        if (zigzagLen >= 5) {
+            this.addPrediction(
+                results[n - 1] === 'T' ? 'X' : 'T',
+                80,
+                `Cầu Zigzag ${zigzagLen} phiên → Tiếp tục đan xen`,
+                'special'
+            );
+        } else if (zigzagLen >= 3) {
+            this.addPrediction(
+                results[n - 1] === 'T' ? 'X' : 'T',
+                70,
+                `Cầu Zigzag ${zigzagLen} phiên → Theo đan xen`,
+                'special'
+            );
+        }
+        
+        // Cầu bệt ngầm (streak dài nhưng điểm biến động)
+        let hiddenStreakType = results[n - 1];
+        let hiddenStreakLen = 1;
+        for (let i = n - 2; i >= 0; i--) {
+            if (results[i] === hiddenStreakType) hiddenStreakLen++;
+            else break;
+        }
+        
+        if (hiddenStreakLen >= 4) {
+            const streakScores = scores.slice(n - hiddenStreakLen);
+            const avgStreakScore = streakScores.reduce((a, b) => a + b, 0) / streakScores.length;
+            const variance = streakScores.reduce((a, b) => a + Math.pow(b - avgStreakScore, 2), 0) / streakScores.length;
+            
+            if (variance > 8) {
+                // Streak có biến động cao → Có thể là cầu ẩn
+                this.addPrediction(
+                    hiddenStreakType === 'T' ? 'X' : 'T',
+                    72,
+                    `Cầu bệt ẩn: Streak ${hiddenStreakLen} nhưng biến động cao → Bẻ`,
+                    'special'
+                );
+            }
+        }
+        
+        // Cầu gãy đột ngột (pattern bị phá vỡ)
+        if (n >= 6) {
+            const firstHalf = results.slice(-6, -3);
+            const secondHalf = results.slice(-3);
+            
+            // Kiểm tra nếu 3 phiên đầu có pattern rõ ràng, 3 phiên sau phá vỡ
+            const firstAllSame = firstHalf.every(r => r === firstHalf[0]);
+            const secondAllSame = secondHalf.every(r => r === secondHalf[0]);
+            
+            if (firstAllSame && !secondAllSame && firstHalf[0] !== secondHalf[0]) {
+                this.addPrediction(
+                    secondHalf[secondHalf.length - 1],
+                    68,
+                    'Cầu gãy: Pattern cũ bị phá → Theo hướng mới',
+                    'special'
+                );
+            }
+        }
+        
+        // Cầu hồi (mean reversion) - Tổng điểm quá cao/thấp
+        const lastScore = scores[n - 1];
+        const avgAll = scores.reduce((a, b) => a + b, 0) / n;
+        const stdDev = Math.sqrt(scores.reduce((a, b) => a + Math.pow(b - avgAll, 2), 0) / n);
+        
+        if (Math.abs(lastScore - avgAll) > 2 * stdDev) {
+            this.addPrediction(
+                lastScore > avgAll ? 'X' : 'T',
+                75,
+                `Cầu hồi: Điểm ${lastScore} lệch ${(lastScore - avgAll).toFixed(1)} so với TB ${avgAll.toFixed(1)}`,
+                'special'
+            );
+        }
+    }
+
+    // ============ 6. PHÂN TÍCH CẦU ĐẢO CHIỀU ============
+    analyzeReversalCau() {
+        const results = this.results;
+        const n = this.n;
+        
+        // Đếm số lần đảo chiều trong các khung thời gian
+        let reversals3 = 0, reversals5 = 0, reversals10 = 0;
+        
+        for (let i = 1; i < Math.min(3, n); i++) {
+            if (results[n - i] !== results[n - i - 1]) reversals3++;
+        }
+        for (let i = 1; i < Math.min(5, n); i++) {
+            if (results[n - i] !== results[n - i - 1]) reversals5++;
+        }
+        for (let i = 1; i < Math.min(10, n); i++) {
+            if (results[n - i] !== results[n - i - 1]) reversals10++;
+        }
+        
+        const rate3 = reversals3 / Math.min(2, n - 1);
+        const rate5 = reversals5 / Math.min(4, n - 1);
+        const rate10 = reversals10 / Math.min(9, n - 1);
+        
+        // Đảo chiều đồng bộ ở nhiều khung
+        if (rate3 >= 0.7 && rate5 >= 0.6 && rate10 >= 0.5) {
+            this.addPrediction(
+                results[n - 1] === 'T' ? 'X' : 'T',
+                82,
+                `Cầu đảo đồng bộ: R3=${(rate3*100).toFixed(0)}% R5=${(rate5*100).toFixed(0)}% → Đảo`,
+                'reversal'
+            );
+        }
+        
+        // Đảo chiều đơn lẻ
+        if (rate3 >= 1.0) {
+            this.addPrediction(
+                results[n - 1] === 'T' ? 'X' : 'T',
+                68,
+                'Cầu đảo 3 phiên: Đảo liên tục → Tiếp tục đảo',
+                'reversal'
+            );
+        }
+        
+        // Không đảo (bệt)
+        if (rate5 <= 0.2 && rate10 <= 0.3) {
+            this.addPrediction(
+                results[n - 1],
+                70,
+                `Cầu bệt ổn định: R5=${(rate5*100).toFixed(0)}% → Theo xu hướng`,
+                'reversal'
+            );
+        }
+    }
+
+    // ============ 7. PHÂN TÍCH CẦU XÚC XẮC ============
+    analyzeDiceCau() {
+        const lastDice = this.dices[this.n - 1];
+        const prevDice = this.n >= 2 ? this.dices[this.n - 2] : null;
+        
+        // Phân tích xúc xắc hiện tại
+        const highCount = lastDice.filter(d => d >= 4).length;
+        const lowCount = lastDice.filter(d => d <= 3).length;
+        const hasPair = new Set(lastDice).size <= 2;
+        const isTriple = new Set(lastDice).size === 1;
+        
+        if (isTriple) {
+            const val = lastDice[0];
+            if (val >= 4) {
+                this.addPrediction('X', 78, `Cầu xúc xắc: Bộ 3 ${val} → Bẻ Xỉu`, 'dice');
+            } else {
+                this.addPrediction('T', 78, `Cầu xúc xắc: Bộ 3 ${val} → Bẻ Tài`, 'dice');
+            }
+        } else if (hasPair) {
+            const pairVal = lastDice.find((d, i) => lastDice.indexOf(d) !== i);
+            if (pairVal >= 4) {
+                this.addPrediction('X', 65, `Cầu xúc xắc: Cặp ${pairVal} → Áp lực Xỉu`, 'dice');
+            } else {
+                this.addPrediction('T', 65, `Cầu xúc xắc: Cặp ${pairVal} → Áp lực Tài`, 'dice');
+            }
+        }
+        
+        // So sánh với phiên trước
+        if (prevDice) {
+            let sameCount = 0, upCount = 0, downCount = 0;
+            for (let i = 0; i < 3; i++) {
+                if (lastDice[i] === prevDice[i]) sameCount++;
+                else if (lastDice[i] > prevDice[i]) upCount++;
+                else downCount++;
+            }
+            
+            if (sameCount === 2 && upCount === 1) {
+                this.addPrediction('X', 72, 'Cầu xúc xắc: 2 giữ + 1 tăng → Xỉu', 'dice');
+            } else if (sameCount === 2 && downCount === 1) {
+                this.addPrediction('T', 72, 'Cầu xúc xắc: 2 giữ + 1 giảm → Tài', 'dice');
+            } else if (upCount === 3) {
+                this.addPrediction('X', 68, 'Cầu xúc xắc: 3 tăng → Xỉu', 'dice');
+            } else if (downCount === 3) {
+                this.addPrediction('T', 68, 'Cầu xúc xắc: 3 giảm → Tài', 'dice');
+            }
+        }
+        
+        // Phân tích tần suất xúc xắc toàn bộ
+        const allDice = this.dices.flat();
+        const freq = {};
+        allDice.forEach(d => freq[d] = (freq[d] || 0) + 1);
+        
+        const highFreq = (freq[4] || 0) + (freq[5] || 0) + (freq[6] || 0);
+        const lowFreq = (freq[1] || 0) + (freq[2] || 0) + (freq[3] || 0);
+        
+        if (highFreq > lowFreq * 1.5) {
+            this.addPrediction('X', 65, `Cầu xúc xắc: Áp đảo số cao (${highFreq} vs ${lowFreq})`, 'dice');
+        } else if (lowFreq > highFreq * 1.5) {
+            this.addPrediction('T', 65, `Cầu xúc xắc: Áp đảo số thấp (${lowFreq} vs ${highFreq})`, 'dice');
+        }
+    }
+
+    // ============ HELPER ============
+    addPrediction(prediction, confidence, reason, category) {
+        this.allPredictions.push({
+            prediction,
+            confidence: Math.min(95, Math.max(50, confidence)),
+            reason,
+            category,
+            weight: this.getCategoryWeight(category)
+        });
+    }
+
+    getCategoryWeight(category) {
+        const weights = {
+            'ultra_short': 0.7,
+            'short': 0.8,
+            'medium': 0.85,
+            'long': 0.9,
+            'special': 0.85,
+            'reversal': 0.8,
+            'dice': 0.75
+        };
+        return weights[category] || 0.7;
+    }
+
+    // ============ CHẠY TẤT CẢ PHÂN TÍCH ============
+    analyze() {
+        console.log(`\n🧠 BỘ NÃO PHÂN TÍCH ${this.n} PHIÊN:`);
+        console.log(`📊 Kết quả: ${this.results.join(' → ')}`);
+        console.log(`📊 Tổng: ${this.scores.join(' → ')}`);
+        console.log(`\n📋 CHI TIẾT PHÂN TÍCH:`);
+        
+        this.analyzeUltraShortCau();
+        this.analyzeShortCau();
+        this.analyzeMediumCau();
+        this.analyzeLongCau();
+        this.analyzeSpecialCau();
+        this.analyzeReversalCau();
+        this.analyzeDiceCau();
+        
+        console.log(`\n📊 TỔNG: ${this.allPredictions.length} dự đoán từ các loại cầu`);
+        
+        // Hiển thị tất cả dự đoán
+        this.allPredictions.forEach((p, i) => {
+            console.log(`  ${i + 1}. [${p.category}] ${p.prediction === 'T' ? 'Tài' : 'Xỉu'} (${p.confidence}%) - ${p.reason}`);
+        });
+        
+        return this.getFinalPrediction();
+    }
+
+    getFinalPrediction() {
+        if (this.allPredictions.length === 0) {
+            return { prediction: this.results[this.n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 55 };
+        }
+        
+        // Tính điểm có trọng số
+        let totalWeight = 0;
+        let taiWeightedScore = 0;
+        let xiuWeightedScore = 0;
+        
+        this.allPredictions.forEach(p => {
+            const effectiveWeight = p.weight * (p.confidence / 100);
+            if (p.prediction === 'T') taiWeightedScore += effectiveWeight;
+            else xiuWeightedScore += effectiveWeight;
+            totalWeight += effectiveWeight;
+        });
+        
+        if (totalWeight === 0) {
+            return { prediction: this.results[this.n - 1] === 'T' ? 'Xỉu' : 'Tài', confidence: 55 };
+        }
+        
+        const taiProb = taiWeightedScore / totalWeight;
+        const prediction = taiProb > 0.5 ? 'T' : 'X';
+        
+        // Tính confidence
+        const agreement = this.allPredictions.filter(p => p.prediction === prediction).length / this.allPredictions.length;
+        const maxProb = Math.max(taiProb, 1 - taiProb);
+        
+        let confidence = Math.round(maxProb * 100);
+        
+        // Boost từ agreement
+        if (agreement > 0.7) confidence = Math.min(95, confidence + 8);
+        else if (agreement > 0.5) confidence = Math.min(95, confidence + 4);
+        
+        // Thêm noise nhỏ
         confidence += Math.floor(Math.random() * 5 - 2);
-        
-        // Giới hạn
         confidence = Math.max(55, Math.min(95, confidence));
+        
+        const result = prediction === 'T' ? 'Tài' : 'Xỉu';
+        
+        // Lấy top reasons
+        const topReasons = this.allPredictions
+            .filter(p => p.prediction === prediction)
+            .sort((a, b) => b.confidence - a.confidence)
+            .slice(0, 5)
+            .map(p => p.reason);
+        
+        console.log(`\n🎯 DỰ ĐOÁN CUỐI: ${result} (${confidence}%)`);
+        console.log(`📊 Tài: ${(taiProb * 100).toFixed(0)}% | Xỉu: ${((1 - taiProb) * 100).toFixed(0)}%`);
+        console.log(`📊 Đồng thuận: ${(agreement * 100).toFixed(0)}% (${this.allPredictions.length} nguồn)`);
+        console.log(`📝 Top lý do:\n  ${topReasons.join('\n  ')}`);
+        
+        return {
+            prediction: result,
+            confidence,
+            totalSources: this.allPredictions.length,
+            topReasons,
+            analysis: {
+                taiProb: (taiProb * 100).toFixed(0) + '%',
+                xiuProb: ((1 - taiProb) * 100).toFixed(0) + '%',
+                agreement: (agreement * 100).toFixed(0) + '%',
+                categories: [...new Set(this.allPredictions.map(p => p.category))]
+            }
+        };
     }
-    
-    const result = finalPrediction === 'T' ? 'Tài' : 'Xỉu';
-    
-    console.log(`\n🎯 DỰ ĐOÁN: ${result} (${confidence}%)`);
-    console.log(`📝 Lý do: ${reasons.slice(0, 5).join(' | ')}`);
-    console.log(`📊 ${'='.repeat(40)}\n`);
-    
-    return {
-        prediction: result,
-        confidence,
-        reasons: reasons.slice(0, 5),
-        analysis: {
-            streak: `${streakLen}${streakType}`,
-            pattern3: last3,
-            pattern5: last5,
-            avg3: avg3.toFixed(1),
-            avg5: avg5.toFixed(1),
-            reversalRate: (reversalRate * 100).toFixed(0) + '%',
-            imbalance,
-            taiScore: taiScore.toFixed(1),
-            xiuScore: xiuScore.toFixed(1)
-        }
-    };
+}
+
+// ============ SUPER PREDICT ============
+function superPredict(sessions) {
+    const brain = new BrainAnalyzer(sessions);
+    return brain.analyze();
 }
 
 // ============ FETCH & NORMALIZE ============
@@ -366,9 +602,8 @@ async function autoUpdate() {
             gameHistory = sessions;
             lastFetchTime = new Date().toISOString();
             const nextPhien = latestPhien + 1;
-            const pred = superAccuratePredict(gameHistory);
+            const pred = superPredict(gameHistory);
             currentPrediction = { phien: nextPhien, prediction: pred.prediction, confidence: pred.confidence, analysis: pred.analysis, timestamp: new Date().toISOString() };
-            console.log(`🔄 Phiên ${nextPhien}: ${pred.prediction} (${pred.confidence}%)`);
         }
     } catch(e) { console.error('Update error:', e.message); }
     isUpdating = false;
@@ -403,7 +638,7 @@ app.get("/taixiu", async (req, res) => {
     }
     gameHistory = sessions;
     const latest = sessions[sessions.length - 1];
-    const pred = superAccuratePredict(sessions);
+    const pred = superPredict(sessions);
     currentPrediction = { phien: latest.Phien + 1, prediction: pred.prediction, confidence: pred.confidence, analysis: pred.analysis, timestamp: new Date().toISOString() };
     lastFetchTime = new Date().toISOString();
     res.json({
@@ -440,13 +675,18 @@ app.get("/", async (req, res) => {
 
 // ============ START ============
 console.log('='.repeat(60));
-console.log('🚀 TÀI XỈU AI - SIÊU CHUẨN XÁC V2');
+console.log('🚀 TÀI XỈU AI - BỘ NÃO PHÂN TÍCH ĐA DẠNG CẦU');
 console.log('='.repeat(60));
 console.log(`📡 Port: ${PORT} | 🔗 API: ${API_URL}`);
-console.log(`🔄 Cập nhật mỗi 0.1 giây`);
-console.log(`💾 100 phiên thắng/thua`);
-console.log(`🎯 Phân tích: Streak + Pattern + Score + Reversal + Balance`);
-console.log(`📊 Quyết định dựa trên điểm số có trọng số`);
+console.log(`🔄 Cập nhật mỗi 0.1 giây | 💾 100 phiên thắng/thua`);
+console.log(`🧠 7 LOẠI PHÂN TÍCH CẦU:`);
+console.log(`  1. Cầu siêu ngắn (1-2 phiên)`);
+console.log(`  2. Cầu ngắn (3-4 phiên)`);
+console.log(`  3. Cầu trung bình (5-7 phiên)`);
+console.log(`  4. Cầu dài (8-10 phiên)`);
+console.log(`  5. Cầu đặc biệt (zigzag, ẩn, gãy, hồi)`);
+console.log(`  6. Cầu đảo chiều (đồng bộ, đơn lẻ)`);
+console.log(`  7. Cầu xúc xắc (bộ 3, cặp, xu hướng)`);
 console.log('='.repeat(60));
 
 try {
