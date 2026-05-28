@@ -75,7 +75,7 @@ const PATTERN_DATABASE = {
 // Algo 1: Ultra Pattern Recognition
 function algo1_ultraPatternRecognition(history) {
     const tx = getResults(history).map(t => t.toLowerCase());
-    if (tx.length < 20) return null;
+    if (tx.length < 10) return null;
     
     const fullPattern = tx.join('');
     let patternMatches = { t: 0, x: 0 };
@@ -108,12 +108,12 @@ function algo1_ultraPatternRecognition(history) {
 
 // Algo 2: Quantum Adaptive AI
 function algo2_quantumAdaptiveAI(history) {
-    if (history.length < 25) return null;
+    if (history.length < 10) return null;
     const tx = getResults(history);
     const scores = getScores(history);
     
     let quantumT = 0.5, quantumX = 0.5;
-    const recentCount = Math.min(20, history.length);
+    const recentCount = Math.min(10, history.length);
     
     for (let i = history.length - recentCount; i < history.length; i++) {
         const weight = 0.04;
@@ -126,7 +126,7 @@ function algo2_quantumAdaptiveAI(history) {
         }
     }
     
-    const recentAvg = scores.slice(-10).reduce((a, b) => a + b, 0) / 10;
+    const recentAvg = scores.slice(-5).reduce((a, b) => a + b, 0) / 5;
     if (recentAvg > 11.2) { quantumT *= 0.85; quantumX *= 1.15; }
     else if (recentAvg < 9.8) { quantumT *= 1.15; quantumX *= 0.85; }
     
@@ -140,11 +140,11 @@ function algo2_quantumAdaptiveAI(history) {
 
 // Algo 3: Deep Trend Analysis
 function algo3_deepTrendAnalysis(history) {
-    if (history.length < 20) return null;
+    if (history.length < 10) return null;
     const tx = getResults(history);
     const scores = getScores(history);
     
-    const periods = [5, 10, 15, 20];
+    const periods = [5, 8, 10];
     const trends = { t: 0, x: 0 };
     
     periods.forEach(period => {
@@ -157,7 +157,7 @@ function algo3_deepTrendAnalysis(history) {
     });
     
     const totalAvg = scores.reduce((a, b) => a + b, 0) / scores.length;
-    const recentAvg = scores.slice(-8).reduce((a, b) => a + b, 0) / 8;
+    const recentAvg = scores.slice(-5).reduce((a, b) => a + b, 0) / 5;
     
     if (recentAvg > totalAvg + 0.8) trends.t += 1.5;
     if (recentAvg < totalAvg - 0.8) trends.x += 1.5;
@@ -170,9 +170,9 @@ function algo3_deepTrendAnalysis(history) {
 // Algo 4: Smart Bridge Detection (BẮT CẦU BỆT SIÊU CHUẨN)
 function algo4_smartBridgeDetection(history) {
     const tx = getResults(history);
-    if (tx.length < 12) return null;
+    if (tx.length < 8) return null;
     
-    const recentTx = tx.slice(-20);
+    const recentTx = tx.slice(-10);
     const lastResult = recentTx[recentTx.length - 1];
     
     // Đếm streak hiện tại
@@ -184,32 +184,26 @@ function algo4_smartBridgeDetection(history) {
     
     // BẮT CẦU BỆT (THEO CẦU)
     if (runLength >= 2 && runLength <= 4) {
-        // Kiểm tra pattern mạnh
-        const patternStr = recentTx.slice(-8).join('').toLowerCase();
-        const strongPatterns = ['tttt', 'xxxx', 'ttxx', 'xxtt'];
+        const patternStr = recentTx.slice(-6).join('').toLowerCase();
+        const strongPatterns = ['ttt', 'xxx', 'ttxx', 'xxtt'];
         let inStrong = strongPatterns.some(p => patternStr.includes(p));
         
         if (inStrong) return lastResult;
         
-        // Kiểm tra xu hướng tổng
-        const tCount10 = tx.slice(-10).filter(t => t === 'T').length;
-        if (lastResult === 'T' && tCount10 >= 6) return 'T';
-        if (lastResult === 'X' && tCount10 <= 4) return 'X';
+        const tCount5 = tx.slice(-5).filter(t => t === 'T').length;
+        if (lastResult === 'T' && tCount5 >= 3) return 'T';
+        if (lastResult === 'X' && tCount5 <= 2) return 'X';
         
         return lastResult;
     }
     
     // BẺ CẦU KHI STREAK DÀI
     if (runLength >= 5) {
-        // Kiểm tra điểm số có hỗ trợ bẻ cầu không
         const lastScore = getScores(history)[history.length - 1];
         if (lastResult === 'T' && lastScore >= 15) return 'X';
         if (lastResult === 'X' && lastScore <= 6) return 'T';
         
-        // Streak rất dài → bẻ
         if (runLength >= 7) return lastResult === 'T' ? 'X' : 'T';
-        
-        // Streak 5-6 → 70% bẻ
         if (runLength >= 5) return lastResult === 'T' ? 'X' : 'T';
     }
     
@@ -225,23 +219,23 @@ function algo4_smartBridgeDetection(history) {
 
 // Algo 5: Volatility Prediction
 function algo5_volatilityPrediction(history) {
-    if (history.length < 25) return null;
+    if (history.length < 10) return null;
     const scores = getScores(history);
+    const recent5 = scores.slice(-5);
     const recent10 = scores.slice(-10);
-    const recent20 = scores.slice(-20);
     
+    const vol5 = calculateVolatility(recent5);
     const vol10 = calculateVolatility(recent10);
-    const vol20 = calculateVolatility(recent20);
     
-    if (vol10 > vol20 * 1.5) {
-        const avgRecent = recent10.reduce((a, b) => a + b, 0) / 10;
+    if (vol5 > vol10 * 1.5) {
+        const avgRecent = recent5.reduce((a, b) => a + b, 0) / 5;
         if (avgRecent > 11.0) return 'X';
         if (avgRecent < 10.0) return 'T';
-    } else if (vol10 < vol20 * 0.7) {
-        const tx = getResults(history).slice(-10);
+    } else if (vol5 < vol10 * 0.7) {
+        const tx = getResults(history).slice(-5);
         const tCount = tx.filter(t => t === 'T').length;
-        if (tCount > 7) return 'T';
-        if (tCount < 3) return 'X';
+        if (tCount >= 4) return 'T';
+        if (tCount <= 1) return 'X';
     }
     return null;
 }
@@ -249,7 +243,7 @@ function algo5_volatilityPrediction(history) {
 // Algo 6: Pattern Fusion AI
 function algo6_patternFusionAI(history) {
     const tx = getResults(history).map(t => t.toLowerCase());
-    if (tx.length < 25) return null;
+    if (tx.length < 10) return null;
     
     const patternTypes = [
         { length: 3, weight: 0.3 },
@@ -299,13 +293,13 @@ function algo6_patternFusionAI(history) {
 
 // Algo 7: Real-time Adaptive AI
 function algo7_realtimeAdaptiveAI(history) {
-    if (history.length < 18) return null;
+    if (history.length < 10) return null;
     const tx = getResults(history);
     const scores = getScores(history);
     
-    const rsi = calculateRSI(tx.slice(-14));
-    const bias = calculateBias(tx.slice(-20));
-    const momentum = calculateMomentum(scores.slice(-10));
+    const rsi = calculateRSI(tx.slice(-10));
+    const bias = calculateBias(tx.slice(-10));
+    const momentum = calculateMomentum(scores.slice(-5));
     
     let tScore = 0, xScore = 0;
     
@@ -325,13 +319,14 @@ function algo7_realtimeAdaptiveAI(history) {
 
 // ============ HELPER FUNCTIONS ============
 function calculateVolatility(numbers) {
+    if (numbers.length < 2) return 0;
     const mean = numbers.reduce((a, b) => a + b, 0) / numbers.length;
     const variance = numbers.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / numbers.length;
     return Math.sqrt(variance);
 }
 
 function calculateRSI(txArray) {
-    if (txArray.length < 14) return 50;
+    if (txArray.length < 10) return 50;
     let gains = 0, losses = 0;
     for (let i = 1; i < txArray.length; i++) {
         if (txArray[i] === 'T' && txArray[i-1] === 'X') gains++;
@@ -373,17 +368,7 @@ class AdvancedDeepLearningAI {
     }
     
     updatePerformance(actualTx) {
-        const algos = {
-            'ultra_pattern': algo1_ultraPatternRecognition,
-            'quantum_ai': algo2_quantumAdaptiveAI,
-            'deep_trend': algo3_deepTrendAnalysis,
-            'smart_bridge': algo4_smartBridgeDetection,
-            'volatility': algo5_volatilityPrediction,
-            'pattern_fusion': algo6_patternFusionAI,
-            'realtime_ai': algo7_realtimeAdaptiveAI
-        };
-        
-        Object.entries(algos).forEach(([id, fn]) => {
+        Object.keys(this.algorithmWeights).forEach(id => {
             const lastPred = this.recentPredictions[id];
             if (lastPred) {
                 const correct = lastPred === actualTx;
@@ -405,7 +390,7 @@ class AdvancedDeepLearningAI {
     }
     
     predict(history) {
-        if (history.length < 12) return { prediction: 'Tài', confidence: 50, algorithms: 0 };
+        if (history.length < 8) return { prediction: 'Tài', confidence: 50, algorithms: 0 };
         
         const predictions = [];
         
@@ -442,15 +427,13 @@ class AdvancedDeepLearningAI {
         const totalVotes = votes.T + votes.X;
         const confidence = Math.round((Math.max(votes.T, votes.X) / totalVotes) * 100);
         
-        // Điều chỉnh confidence
         let adjustedConf = Math.max(55, Math.min(95, confidence));
         
-        // Kiểm tra đồng thuận
         const agreement = predictions.filter(p => p.prediction === finalPred).length / predictions.length;
         if (agreement >= 0.7) adjustedConf = Math.min(95, adjustedConf + 5);
         
-        // Thêm noise nhỏ
         adjustedConf += Math.floor(Math.random() * 4 - 2);
+        adjustedConf = Math.max(55, Math.min(95, adjustedConf));
         
         return {
             prediction: finalPred === 'T' ? 'Tài' : 'Xỉu',
@@ -468,50 +451,14 @@ class AdvancedDeepLearningAI {
             tx: (record.Tong || 0) >= 11 ? 'T' : 'X'
         };
         
-        if (this.history.length >= 12) {
+        if (this.history.length >= 8) {
             this.updatePerformance(parsed.tx);
         }
         
         this.history.push(parsed);
-        if (this.history.length > 500) this.history = this.history.slice(-400);
+        if (this.history.length > 300) this.history = this.history.slice(-200);
         
         return parsed;
-    }
-    
-    loadHistory(historyData) {
-        this.history = historyData.map(item => ({
-            session: item.Phien || 0,
-            dice: [item.Xuc_xac_1 || 0, item.Xuc_xac_2 || 0, item.Xuc_xac_3 || 0],
-            total: item.Tong || 0,
-            result: item.Ket_qua || '',
-            tx: (item.Tong || 0) >= 11 ? 'T' : 'X'
-        }));
-        
-        if (this.history.length >= 20) {
-            for (let i = 15; i < this.history.length - 1; i++) {
-                const pastHistory = this.history.slice(0, i + 1);
-                const actualTx = this.history[i + 1]?.tx;
-                if (!actualTx) continue;
-                
-                const algos = {
-                    'ultra_pattern': algo1_ultraPatternRecognition,
-                    'smart_bridge': algo4_smartBridgeDetection,
-                    'deep_trend': algo3_deepTrendAnalysis
-                };
-                
-                Object.entries(algos).forEach(([id, fn]) => {
-                    try {
-                        const pred = fn(pastHistory.map(h => ({ Ket_qua: h.tx === 'T' ? 'Tài' : 'Xỉu', Tong: h.total, Xuc_xac_1: h.dice[0], Xuc_xac_2: h.dice[1], Xuc_xac_3: h.dice[2] })));
-                        if (pred) {
-                            const perf = this.algorithmPerformance[id];
-                            const correct = pred === actualTx;
-                            perf.total++;
-                            if (correct) perf.correct++;
-                        }
-                    } catch(e) {}
-                });
-            }
-        }
     }
 }
 
@@ -520,15 +467,10 @@ const aiEngine = new AdvancedDeepLearningAI();
 
 // ============ SUPER PREDICT ============
 function superPredict(sessions) {
-    // Load history vào AI engine nếu chưa có
-    if (aiEngine.history.length === 0 && sessions.length >= 20) {
-        aiEngine.loadHistory(sessions);
-    }
-    
     return aiEngine.predict(sessions);
 }
 
-// ============ FETCH & NORMALIZE (20 PHIÊN) ============
+// ============ FETCH & NORMALIZE (10 PHIÊN) ============
 async function fetchAndNormalize() {
     try {
         const res = await axios.get(API_URL, { timeout: 10000 });
@@ -537,11 +479,11 @@ async function fetchAndNormalize() {
             if (allData.data && Array.isArray(allData.data)) allData = allData.data;
             else return null;
         }
-        if (allData.length < 20) return null;
+        if (allData.length < 10) return null;
         allData.sort((a, b) => (a.Phien || 0) - (b.Phien || 0));
-        const latest20 = allData.slice(-20); // Lấy 20 phiên
+        const latest10 = allData.slice(-10);
         allSessions = allData.slice(-100);
-        return latest20.map(item => ({
+        return latest10.map(item => ({
             Phien: item.Phien || 0,
             Xuc_xac_1: item.Xuc_xac_1 || 0,
             Xuc_xac_2: item.Xuc_xac_2 || 0,
@@ -558,7 +500,7 @@ async function autoUpdate() {
     isUpdating = true;
     try {
         const sessions = await fetchAndNormalize();
-        if (!sessions || sessions.length < 20) { isUpdating = false; return; }
+        if (!sessions || sessions.length < 10) { isUpdating = false; return; }
         
         const latestPhien = sessions[sessions.length - 1].Phien;
         const oldLatestPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length - 1].Phien : 0;
@@ -615,7 +557,7 @@ async function autoUpdate() {
 
 // ============ API ROUTES ============
 app.get("/taixiu", async (req, res) => {
-    if (gameHistory.length >= 20 && currentPrediction) {
+    if (gameHistory.length >= 10 && currentPrediction) {
         const latest = gameHistory[gameHistory.length - 1];
         const winLoss = verifiedResults.slice(0, 100);
         let consLosses = 0;
@@ -638,7 +580,7 @@ app.get("/taixiu", async (req, res) => {
     }
     
     const sessions = await fetchAndNormalize();
-    if (!sessions || sessions.length < 20) {
+    if (!sessions || sessions.length < 10) {
         return res.json({ id: "@vuaoccac", phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Đang tải..." }, phien_hien_tai: { Phien: 0, Du_doan: "Đang tải...", Do_tin_cay: "0%" }, stats: { consecutiveLosses: 0, winRate: "0%", recentWinRate: "N/A", totalPredictions: 0, totalWins: 0, consecutiveCorrect: 0, consecutiveWrong: 0, algorithms: 0 }, win_loss_table: [], full_history_count: 0 });
     }
     
@@ -659,7 +601,7 @@ app.get("/taixiu", async (req, res) => {
 });
 
 app.get("/", async (req, res) => {
-    if (gameHistory.length >= 20 && currentPrediction) {
+    if (gameHistory.length >= 10 && currentPrediction) {
         const latest = gameHistory[gameHistory.length - 1];
         const winLoss = verifiedResults.slice(0, 100);
         let consLosses = 0;
@@ -682,19 +624,19 @@ app.get("/", async (req, res) => {
 
 // ============ START ============
 console.log('='.repeat(60));
-console.log('🚀 TÀI XỈU AI - ADVANCED DEEP LEARNING V3');
+console.log('🚀 TÀI XỈU AI - ADVANCED DEEP LEARNING');
 console.log('='.repeat(60));
 console.log(`📡 Port: ${PORT} | 🔗 API: ${API_URL}`);
-console.log(`🔄 Cập nhật mỗi 0.1 giây | 📊 20 phiên phân tích`);
-console.log(`🧠 7 THUẬT TOÁN AI CHUYÊN SÂU:`);
+console.log(`🔄 Cập nhật mỗi 0.1 giây | 📊 10 phiên phân tích`);
+console.log(`🧠 7 THUẬT TOÁN AI:`);
 console.log(`  1. Ultra Pattern Recognition (100+ patterns)`);
 console.log(`  2. Quantum Adaptive AI`);
 console.log(`  3. Deep Trend Analysis`);
-console.log(`  4. Smart Bridge Detection (BẮT BỆT SIÊU CHUẨN)`);
+console.log(`  4. Smart Bridge Detection (BẮT BỆT CHUẨN)`);
 console.log(`  5. Volatility Prediction`);
 console.log(`  6. Pattern Fusion AI`);
 console.log(`  7. Real-time Adaptive AI`);
-console.log(`📈 Tự học & cập nhật trọng số theo hiệu suất thực tế`);
+console.log(`📈 Tự học & cập nhật trọng số theo hiệu suất`);
 console.log('='.repeat(60));
 
 try {
