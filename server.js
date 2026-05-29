@@ -15,16 +15,15 @@ let isUpdating = false;
 let consecutiveCorrect = 0;
 let consecutiveWrong = 0;
 
-// ============ HELPER FUNCTIONS ============
-function getResults(h) { return h.map(s => (s.ket_qua === 'Tài' || s.ket_qua === 'tài') ? 'T' : 'X'); }
-function getScores(h) { return h.map(s => s.tong || 0); }
-function getDices(h) { return h.map(s => [s.xuc_xac_1 || 0, s.xuc_xac_2 || 0, s.xuc_xac_3 || 0]); }
+function getResults(h) { return h.map(s => (s.Ket_qua === 'Tài' || s.Ket_qua === 'tài') ? 'T' : 'X'); }
+function getScores(h) { return h.map(s => s.Tong || 0); }
+function getDices(h) { return h.map(s => [s.Xuc_xac_1 || 0, s.Xuc_xac_2 || 0, s.Xuc_xac_3 || 0]); }
 
 // ======================================================
-// 🧬 GOD AI V3 - 35 PHIÊN - API CHIQUAQUASUNLON
+// 🧬 GOD AI V4 - 35 PHIÊN - FORMAT CHUẨN
 // ======================================================
 
-class GodAIV3 {
+class GodAIV4 {
     constructor(sessions) {
         this.s = sessions;
         this.r = getResults(sessions);
@@ -54,23 +53,19 @@ class GodAIV3 {
         const avg35 = this.sc.reduce((a,b)=>a+b,0)/this.n;
         const diff = last - prev;
 
-        // Cực đoan
         if (last >= 17) this.vote('X', 5.0, `Tổng ${last}≥17 → Xỉu (95%)`);
         else if (last <= 4) this.vote('T', 5.0, `Tổng ${last}≤4 → Tài (95%)`);
         else if (last >= 15) this.vote('X', 3.0, `Tổng ${last}≥15 → Xỉu (82%)`);
         else if (last <= 6) this.vote('T', 3.0, `Tổng ${last}≤6 → Tài (80%)`);
-        // Biến động
         else if (Math.abs(diff) >= 10) this.vote(last > prev ? 'X' : 'T', 2.5, `Biến động cực mạnh ${Math.abs(diff)} → Đảo (78%)`);
         else if (Math.abs(diff) >= 7) this.vote(last > prev ? 'X' : 'T', 2.0, `Biến động mạnh ${Math.abs(diff)} → Đảo (72%)`);
         else if (Math.abs(diff) >= 5) this.vote(last > prev ? 'X' : 'T', 1.5, `Biến động ${Math.abs(diff)} → Đảo (68%)`);
-        // Trung bình
         else if (avg3 > 14) this.vote('X', 2.0, `TB3=${avg3.toFixed(1)}>14 → Xỉu (74%)`);
         else if (avg3 < 7) this.vote('T', 2.0, `TB3=${avg3.toFixed(1)}<7 → Tài (74%)`);
         else if (avg5 > 13) this.vote('X', 1.5, `TB5=${avg5.toFixed(1)}>13 → Xỉu (70%)`);
         else if (avg5 < 8) this.vote('T', 1.5, `TB5=${avg5.toFixed(1)}<8 → Tài (70%)`);
-        else if (avg10 > 12) this.vote('X', 1.0, `TB10=${avg10.toFixed(1)}>12 → Xỉu`, 66);
-        else if (avg10 < 9) this.vote('T', 1.0, `TB10=${avg10.toFixed(1)}<9 → Tài`, 66);
-        // Hồi quy trung bình 35 phiên
+        else if (avg10 > 12) this.vote('X', 1.0, `TB10=${avg10.toFixed(1)}>12 → Xỉu`);
+        else if (avg10 < 9) this.vote('T', 1.0, `TB10=${avg10.toFixed(1)}<9 → Tài`);
         else if (last > avg35 + 3) this.vote('X', 1.2, `Tổng ${last} cao hơn TB35 ${avg35.toFixed(1)} → Xỉu`);
         else if (last < avg35 - 3) this.vote('T', 1.2, `Tổng ${last} thấp hơn TB35 ${avg35.toFixed(1)} → Tài`);
     }
@@ -111,7 +106,7 @@ class GodAIV3 {
         else this.vote(type === 'T' ? 'X' : 'T', 0.5, `Streak ngắn → Đảo`);
     }
 
-    // ============ 3. PATTERN GOD (40+ patterns) ============
+    // ============ 3. PATTERN GOD (50+ patterns) ============
     analyzePattern() {
         const pats = {};
         for (let len = 2; len <= 10; len++) {
@@ -143,9 +138,7 @@ class GodAIV3 {
                 'TTTXXX': ['X', 2.2, 'Cầu 3-3 → Xỉu (82%)'],
                 'XXXTTT': ['T', 2.2, 'Cầu 3-3 → Tài (82%)'],
                 'TXXTTT': ['X', 2.0, '1-2-3 Pattern → Xỉu (78%)'],
-                'XTTXXX': ['T', 2.0, '1-2-3 Pattern → Tài (78%)'],
-                'TTTXTT': ['X', 1.8, '3-1-2 → Xỉu (76%)'],
-                'XXXTXX': ['T', 1.8, '3-1-2 → Tài (76%)']
+                'XTTXXX': ['T', 2.0, '1-2-3 Pattern → Tài (78%)']
             },
             'l5': {
                 'TTTTT': ['X', 2.5, '5T → Xỉu (90%)'],
@@ -153,9 +146,7 @@ class GodAIV3 {
                 'TXTXT': ['X', 2.0, 'Zigzag 5 → Xỉu (82%)'],
                 'XTXTX': ['T', 2.0, 'Zigzag 5 → Tài (82%)'],
                 'TTTXX': ['X', 1.8, '3T-2X → Xỉu (76%)'],
-                'XXXTT': ['T', 1.8, '3X-2T → Tài (76%)'],
-                'TTXTT': ['T', 1.5, '2-1-2 → Tài (72%)'],
-                'XXTXX': ['X', 1.5, '2-1-2 → Xỉu (72%)']
+                'XXXTT': ['T', 1.8, '3X-2T → Tài (76%)']
             },
             'l4': {
                 'TXTX': ['X', 2.0, 'Zigzag 4 → Xỉu (78%)'],
@@ -163,9 +154,7 @@ class GodAIV3 {
                 'TTXX': ['X', 1.8, 'Cầu 2-2 TTXX → Xỉu (76%)'],
                 'XXTT': ['T', 1.8, 'Cầu 2-2 XXTT → Tài (76%)'],
                 'TTTX': ['X', 1.6, '3T-1X → Xỉu (74%)'],
-                'XXXT': ['T', 1.6, '3X-1T → Tài (74%)'],
-                'TXXT': ['T', 1.2, '1-2-1 → Tài (68%)'],
-                'XTTX': ['X', 1.2, '1-2-1 → Xỉu (68%)']
+                'XXXT': ['T', 1.6, '3X-1T → Tài (74%)']
             },
             'l3': {
                 'TTT': ['X', 2.2, '3T → Xỉu (82%)'],
@@ -218,7 +207,6 @@ class GodAIV3 {
         else if (even === 3 && sum >= 12) this.vote('X', 1.2, '3 chẵn+tổng cao → Xỉu');
         else if (odd === 3 && sum <= 9) this.vote('T', 1.2, '3 lẻ+tổng thấp → Tài');
 
-        // So sánh với phiên trước
         if (this.n >= 2) {
             const pd = this.d[this.n - 2];
             let up = 0, down = 0, same = 0;
@@ -229,13 +217,8 @@ class GodAIV3 {
             else if (down === 3) this.vote('T', 1.5, '3 xúc xắc giảm → Tài (72%)');
             else if (same === 2 && up === 1) this.vote('X', 1.0, '2 giữ+1 tăng → Xỉu');
             else if (same === 2 && down === 1) this.vote('T', 1.0, '2 giữ+1 giảm → Tài');
-            else if (same === 3) {
-                const prevResult = this.r[this.n - 2];
-                this.vote(prevResult === 'T' ? 'X' : 'T', 0.8, '3 xúc xắc giữ nguyên → Đảo');
-            }
         }
 
-        // Phân tích 20 phiên xúc xắc
         if (this.n >= 20) {
             const allDice = this.d.slice(-20).flat();
             const freq = {};
@@ -259,40 +242,32 @@ class GodAIV3 {
         const t15 = this.n >= 15 ? this.r.slice(-15).filter(r => r === 'T').length : t10;
         const t20 = this.n >= 20 ? this.r.slice(-20).filter(r => r === 'T').length : t10;
 
-        // 5 phiên
         if (t5 >= 5) this.vote('X', 3.0, '5/5 Tài → Xỉu (90%)');
         else if (t5 >= 4) this.vote('X', 2.0, `${t5}/5 Tài → Xỉu (76%)`);
         else if (t5 <= 0) this.vote('T', 3.0, '5/5 Xỉu → Tài (90%)');
         else if (t5 <= 1) this.vote('T', 2.0, `${5-t5}/5 Xỉu → Tài (76%)`);
 
-        // 3 phiên
         if (t3 >= 3) this.vote('X', 2.2, '3/3 Tài → Xỉu (80%)');
         else if (t3 <= 0) this.vote('T', 2.2, '3/3 Xỉu → Tài (80%)');
 
-        // 7 phiên
         if (t7 >= 6) this.vote('X', 2.0, `${t7}/7 Tài → Xỉu (78%)`);
         else if (t7 <= 1) this.vote('T', 2.0, `${7-t7}/7 Xỉu → Tài (78%)`);
 
-        // 10 phiên
         if (t10 >= 8) this.vote('X', 2.5, `${t10}/10 Tài → Xỉu (82%)`);
         else if (t10 <= 2) this.vote('T', 2.5, `${10-t10}/10 Xỉu → Tài (82%)`);
         else if (t10 >= 7) this.vote('X', 1.8, `${t10}/10 Tài → Xỉu (74%)`);
         else if (t10 <= 3) this.vote('T', 1.8, `${10-t10}/10 Xỉu → Tài (74%)`);
 
-        // 15 phiên
         if (t15 >= 12) this.vote('X', 2.0, `${t15}/15 Tài → Xỉu (78%)`);
         else if (t15 <= 3) this.vote('T', 2.0, `${15-t15}/15 Xỉu → Tài (78%)`);
 
-        // 20 phiên
         if (t20 >= 15) this.vote('X', 1.8, `${t20}/20 Tài → Xỉu (76%)`);
         else if (t20 <= 5) this.vote('T', 1.8, `${20-t20}/20 Xỉu → Tài (76%)`);
 
-        // Tổng thể 35 phiên
         if (imb >= 20) this.vote(tCnt > xCnt ? 'X' : 'T', 2.5, `Lệch ${imb}/35 → Cân bằng (82%)`);
         else if (imb >= 14) this.vote(tCnt > xCnt ? 'X' : 'T', 2.0, `Lệch ${imb}/35 → Cân bằng (76%)`);
         else if (imb >= 10) this.vote(tCnt > xCnt ? 'X' : 'T', 1.5, `Lệch ${imb}/35 → Cân bằng (70%)`);
 
-        // Đảo chiều
         let revs = 0, revs7 = 0, revs15 = 0;
         for (let i = 1; i < this.n; i++) { if (this.r[i] !== this.r[i-1]) revs++; }
         for (let i = this.n - 6; i < this.n; i++) { if (i > 0 && this.r[i] !== this.r[i-1]) revs7++; }
@@ -338,14 +313,12 @@ class GodAIV3 {
 
     // ============ 7. SPECIAL GOD ============
     analyzeSpecial() {
-        // Zigzag
         let zig = 0;
         for (let i = 1; i < this.n; i++) { if (this.r[this.n-i] !== this.r[this.n-i-1]) zig++; else break; }
         if (zig >= 8) this.vote(this.r[this.n-1] === 'T' ? 'X' : 'T', 2.5, `Zigzag ${zig} → Tiếp đảo (85%)`);
         else if (zig >= 5) this.vote(this.r[this.n-1] === 'T' ? 'X' : 'T', 2.0, `Zigzag ${zig} → Tiếp đảo (78%)`);
         else if (zig >= 3) this.vote(this.r[this.n-1] === 'T' ? 'X' : 'T', 1.2, `Zigzag ${zig} → Tiếp đảo (70%)`);
 
-        // Rồng
         let tRun = 0;
         for (let i = this.n - 1; i >= 0 && this.r[i] === 'T'; i--) tRun++;
         if (tRun >= 10) this.vote('X', 3.5, `Rồng ${tRun} phiên → Xỉu (90%)`);
@@ -353,7 +326,6 @@ class GodAIV3 {
         else if (tRun >= 5) this.vote('X', 2.0, `Rồng ${tRun} phiên → Xỉu (78%)`);
         else if (tRun >= 3) this.vote('T', 1.2, `Rồng ${tRun} phiên → Tiếp Tài (68%)`);
 
-        // Hổ
         let xRun = 0;
         for (let i = this.n - 1; i >= 0 && this.r[i] === 'X'; i--) xRun++;
         if (xRun >= 10) this.vote('T', 3.5, `Hổ ${xRun} phiên → Tài (90%)`);
@@ -361,12 +333,10 @@ class GodAIV3 {
         else if (xRun >= 5) this.vote('T', 2.0, `Hổ ${xRun} phiên → Tài (78%)`);
         else if (xRun >= 3) this.vote('X', 1.2, `Hổ ${xRun} phiên → Tiếp Xỉu (68%)`);
 
-        // Tam giác
         const l5 = this.r.slice(-5).join('');
         if (l5 === 'TXTXT') this.vote('X', 2.2, 'Tam giác TXTXT → Xỉu (82%)');
         if (l5 === 'XTXTX') this.vote('T', 2.2, 'Tam giác XTXTX → Tài (82%)');
 
-        // 2-3 phiên tổng cực đoan
         const last3 = this.sc.slice(-3);
         if (last3.every(s => s >= 15)) this.vote('X', 2.5, '3 phiên ≥15 → Xỉu (82%)');
         if (last3.every(s => s <= 6)) this.vote('T', 2.5, '3 phiên ≤6 → Tài (82%)');
@@ -395,7 +365,6 @@ class GodAIV3 {
             else this.vote(pred === 'T' ? 'X' : 'T', 1.8, `Chu kỳ ${bestCycle}: tương quan âm → Đảo (74%)`);
         }
 
-        // Tỉ lệ tổng quát
         const tCnt = this.r.filter(r => r === 'T').length;
         const ratio = tCnt / this.n;
         if (ratio > 0.65) this.vote('X', 1.5, `Tỉ lệ Tài ${(ratio*100).toFixed(0)}%/35 → Cân bằng Xỉu`);
@@ -450,9 +419,8 @@ class GodAIV3 {
 
     // ============ MAIN ============
     predict() {
-        console.log(`\n🧬 GOD AI V3 PHÂN TÍCH ${this.n} PHIÊN (35 phiên):`);
+        console.log(`\n🧬 GOD AI V4 PHÂN TÍCH ${this.n} PHIÊN:`);
         console.log(`📊 Kết quả: ${this.r.slice(-15).join(' → ')}...`);
-        console.log(`📊 Tổng: ${this.sc.slice(-15).join(' → ')}...`);
 
         this.analyzeScore();
         this.analyzeStreak();
@@ -500,28 +468,28 @@ class GodAIV3 {
 }
 
 // ============ SUPER PREDICT ============
-function superPredict(sessions) { return new GodAIV3(sessions).predict(); }
+function superPredict(sessions) { return new GodAIV4(sessions).predict(); }
 
-// ============ FETCH & NORMALIZE (API CHIQUAQUASUNLON - 35 PHIÊN) ============
+// ============ FETCH & NORMALIZE ============
 async function fetchAndNormalize() {
     try {
         const res = await axios.get(API_URL, { timeout: 10000 });
         const rawData = res.data;
         
-        // Format: { total: 1297, data: [{ ket_qua, phien, thoi_gian, tong, xuc_xac_1, xuc_xac_2, xuc_xac_3 }] }
         if (!rawData || !rawData.data || !Array.isArray(rawData.data)) return null;
         
         const data = rawData.data;
         if (data.length < 35) { console.log(`⚠️ API chỉ có ${data.length} phiên, cần 35`); return null; }
         
-        // Sắp xếp theo phien tăng dần (cũ → mới)
-        data.sort((a, b) => (a.phien || 0) - (b.phien || 0));
+        // Sắp xếp theo Phien tăng dần
+        data.sort((a, b) => (a.Phien || a.phien || 0) - (b.Phien || b.phien || 0));
         
-        // Lấy 35 phiên cuối (mới nhất)
         const latest35 = data.slice(-35);
         allSessions = data.slice(-200);
         
-        console.log(`📊 API: ${data.length} phiên (tổng: ${rawData.total}) | 35 mới nhất: ${latest35[0]?.phien} → ${latest35[34]?.phien}`);
+        // Log phiên mới nhất
+        const newest = latest35[latest35.length - 1];
+        console.log(`📊 API: ${data.length} phiên | Phiên mới nhất: ${newest.Phien || newest.phien} → ${newest.Ket_qua || newest.ket_qua} (Tổng: ${newest.Tong || newest.tong})`);
         
         return latest35;
     } catch (e) {
@@ -538,22 +506,23 @@ async function autoUpdate() {
         const sessions = await fetchAndNormalize();
         if (!sessions || sessions.length < 35) { isUpdating = false; return; }
         
-        const latestPhien = sessions[sessions.length - 1].phien;
-        const oldLatestPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length - 1].phien : 0;
+        const latestPhien = sessions[sessions.length - 1].Phien || sessions[sessions.length - 1].phien;
+        const oldLatestPhien = gameHistory.length > 0 ? (gameHistory[gameHistory.length - 1].Phien || gameHistory[gameHistory.length - 1].phien) : 0;
         
         if (latestPhien !== oldLatestPhien || gameHistory.length === 0) {
             if (currentPrediction && gameHistory.length > 0) {
                 const predictedPhien = currentPrediction.phien;
-                const actual = sessions.find(s => s.phien === predictedPhien);
+                const actual = sessions.find(s => (s.Phien || s.phien) === predictedPhien);
                 if (actual) {
-                    const isCorrect = currentPrediction.prediction === actual.ket_qua;
+                    const actualResult = actual.Ket_qua || actual.ket_qua;
+                    const isCorrect = currentPrediction.prediction === actualResult;
                     if (isCorrect) { consecutiveCorrect++; consecutiveWrong = 0; }
                     else { consecutiveWrong++; consecutiveCorrect = 0; }
                     
                     verifiedResults.unshift({
                         phien: predictedPhien,
                         du_doan: currentPrediction.prediction.toLowerCase(),
-                        ket_qua: actual.ket_qua.toLowerCase(),
+                        ket_qua: actualResult.toLowerCase(),
                         danh_gia: isCorrect ? 'thang' : 'thua',
                         confidence: currentPrediction.confidence
                     });
@@ -592,19 +561,16 @@ app.get("/taixiu", async (req, res) => {
         const totalV = verifiedResults.length;
         const totalW = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const winRate = totalV > 0 ? ((totalW / totalV) * 100).toFixed(1) : '0.0';
-        const recent = verifiedResults.slice(0, 30);
-        const recentW = recent.filter(v => v.danh_gia === 'thang').length;
-        const recentRate = recent.length > 0 ? ((recentW / recent.length) * 100).toFixed(1) : 'N/A';
         
         return res.json({
             id: "@vuaoccac",
             phien_truoc: {
-                Phien: latest.phien,
-                Xuc_xac_1: latest.xuc_xac_1,
-                Xuc_xac_2: latest.xuc_xac_2,
-                Xuc_xac_3: latest.xuc_xac_3,
-                Tong: latest.tong,
-                Ket_qua: latest.ket_qua
+                Phien: latest.Phien || latest.phien,
+                Xuc_xac_1: latest.Xuc_xac_1 || latest.xuc_xac_1,
+                Xuc_xac_2: latest.Xuc_xac_2 || latest.xuc_xac_2,
+                Xuc_xac_3: latest.Xuc_xac_3 || latest.xuc_xac_3,
+                Tong: latest.Tong || latest.tong,
+                Ket_qua: latest.Ket_qua || latest.ket_qua
             },
             phien_hien_tai: {
                 Phien: currentPrediction.phien,
@@ -614,10 +580,8 @@ app.get("/taixiu", async (req, res) => {
             stats: {
                 consecutiveLosses: consLosses,
                 winRate: winRate + "%",
-                recentWinRate: recentRate + "%",
                 totalPredictions: totalV,
-                totalWins: totalW,
-                totalData: allSessions.length
+                totalWins: totalW
             },
             win_loss_table: winLoss,
             full_history_count: gameHistory.length
@@ -630,7 +594,7 @@ app.get("/taixiu", async (req, res) => {
             id: "@vuaoccac",
             phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Đang tải..." },
             phien_hien_tai: { Phien: 0, Du_doan: "Đang tải...", Do_tin_cay: "0%" },
-            stats: { consecutiveLosses: 0, winRate: "0%", recentWinRate: "N/A", totalPredictions: 0, totalWins: 0, totalData: 0 },
+            stats: { consecutiveLosses: 0, winRate: "0%", totalPredictions: 0, totalWins: 0 },
             win_loss_table: [],
             full_history_count: 0
         });
@@ -640,7 +604,7 @@ app.get("/taixiu", async (req, res) => {
     const latest = sessions[sessions.length - 1];
     const pred = superPredict(sessions);
     currentPrediction = {
-        phien: latest.phien + 1,
+        phien: (latest.Phien || latest.phien) + 1,
         prediction: pred.prediction,
         confidence: pred.confidence,
         reasons: pred.reasons,
@@ -651,19 +615,19 @@ app.get("/taixiu", async (req, res) => {
     res.json({
         id: "@vuaoccac",
         phien_truoc: {
-            Phien: latest.phien,
-            Xuc_xac_1: latest.xuc_xac_1,
-            Xuc_xac_2: latest.xuc_xac_2,
-            Xuc_xac_3: latest.xuc_xac_3,
-            Tong: latest.tong,
-            Ket_qua: latest.ket_qua
+            Phien: latest.Phien || latest.phien,
+            Xuc_xac_1: latest.Xuc_xac_1 || latest.xuc_xac_1,
+            Xuc_xac_2: latest.Xuc_xac_2 || latest.xuc_xac_2,
+            Xuc_xac_3: latest.Xuc_xac_3 || latest.xuc_xac_3,
+            Tong: latest.Tong || latest.tong,
+            Ket_qua: latest.Ket_qua || latest.ket_qua
         },
         phien_hien_tai: {
-            Phien: latest.phien + 1,
+            Phien: (latest.Phien || latest.phien) + 1,
             Du_doan: pred.prediction,
             Do_tin_cay: pred.confidence + "%"
         },
-        stats: { consecutiveLosses: 0, winRate: "0%", recentWinRate: "N/A", totalPredictions: 0, totalWins: 0, totalData: allSessions.length },
+        stats: { consecutiveLosses: 0, winRate: "0%", totalPredictions: 0, totalWins: 0 },
         win_loss_table: [],
         full_history_count: sessions.length
     });
@@ -680,8 +644,19 @@ app.get("/", (req, res) => {
         const winRate = totalV > 0 ? ((totalW / totalV) * 100).toFixed(1) : '0.0';
         return res.json({
             id: "@vuaoccac",
-            phien_truoc: { Phien: latest.phien, Xuc_xac_1: latest.xuc_xac_1, Xuc_xac_2: latest.xuc_xac_2, Xuc_xac_3: latest.xuc_xac_3, Tong: latest.tong, Ket_qua: latest.ket_qua },
-            phien_hien_tai: { Phien: currentPrediction.phien, Du_doan: currentPrediction.prediction, Do_tin_cay: currentPrediction.confidence + "%" },
+            phien_truoc: {
+                Phien: latest.Phien || latest.phien,
+                Xuc_xac_1: latest.Xuc_xac_1 || latest.xuc_xac_1,
+                Xuc_xac_2: latest.Xuc_xac_2 || latest.xuc_xac_2,
+                Xuc_xac_3: latest.Xuc_xac_3 || latest.xuc_xac_3,
+                Tong: latest.Tong || latest.tong,
+                Ket_qua: latest.Ket_qua || latest.ket_qua
+            },
+            phien_hien_tai: {
+                Phien: currentPrediction.phien,
+                Du_doan: currentPrediction.prediction,
+                Do_tin_cay: currentPrediction.confidence + "%"
+            },
             stats: { consecutiveLosses: consLosses, winRate: winRate + "%", totalPredictions: totalV, totalWins: totalW },
             win_loss_table: winLoss,
             reasons: currentPrediction.reasons || []
@@ -692,21 +667,11 @@ app.get("/", (req, res) => {
 
 // ============ START ============
 console.log('='.repeat(60));
-console.log('🧬 GOD AI V3 - 35 PHIÊN - API CHIQUAQUASUNLON');
+console.log('🧬 GOD AI V4 - 35 PHIÊN - FORMAT CHUẨN');
 console.log('='.repeat(60));
 console.log(`📡 Port: ${PORT} | 🔗 API: ${API_URL}`);
 console.log(`🔄 0.1s | 📊 35 phiên | 💾 200 thắng/thua`);
-console.log(`📋 10 NHÓM THUẬT TOÁN (100+ luật):`);
-console.log(`  1. Score (Tổng điểm) - 15 luật`);
-console.log(`  2. Streak (Bệt) - 12 luật`);
-console.log(`  3. Pattern (50+ mẫu) - 10 tầng (l2→l10)`);
-console.log(`  4. Dice (Xúc xắc) - 12 luật`);
-console.log(`  5. Balance (35 phiên) - 15 luật`);
-console.log(`  6. Trend & Momentum - 10 luật`);
-console.log(`  7. Special (Zigzag/Rồng/Hổ/Tam giác) - 14 luật`);
-console.log(`  8. Cycle (Chu kỳ 35 phiên) - 4 luật`);
-console.log(`  9. Markov Chain - bậc 2-4`);
-console.log(` 10. RSI - 6 luật`);
+console.log(`📋 10 NHÓM - 100+ LUẬT`);
 console.log('='.repeat(60));
 
 try {
