@@ -587,7 +587,7 @@ app.get("/taixiu", async (req, res) => {
         const totalW = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const winRate = totalV > 0 ? ((totalW / totalV) * 100).toFixed(1) : '0.0';
         return res.json({
-            id: "@vuaoccac",
+            id: "AnhKhoizZz cute",
             phien_truoc: { Phien: getPhien(latest), Xuc_xac_1: getX1(latest), Xuc_xac_2: getX2(latest), Xuc_xac_3: getX3(latest), Tong: getTong(latest), Ket_qua: getKetQua(latest) },
             phien_hien_tai: { Phien: currentPrediction.phien, Du_doan: currentPrediction.prediction, Do_tin_cay: currentPrediction.confidence + "%" },
             stats: { consecutiveLosses: consLosses, winRate: winRate + "%", totalPredictions: totalV, totalWins: totalW },
@@ -596,14 +596,14 @@ app.get("/taixiu", async (req, res) => {
     }
     const sessions = await fetchAndNormalize();
     if (!sessions || sessions.length < 5) {
-        return res.json({ id: "@vuaoccac", phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Dang tai..." }, phien_hien_tai: { Phien: 0, Du_doan: "Dang tai...", Do_tin_cay: "0%" }, stats: { consecutiveLosses: 0, winRate: "0%", totalPredictions: 0, totalWins: 0 }, win_loss_table: [] });
+        return res.json({ id: "AnhKhoizZz cute", phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Dang tai..." }, phien_hien_tai: { Phien: 0, Du_doan: "Dang tai...", Do_tin_cay: "0%" }, stats: { consecutiveLosses: 0, winRate: "0%", totalPredictions: 0, totalWins: 0 }, win_loss_table: [] });
     }
     gameHistory = sessions;
     const latest = sessions[sessions.length - 1];
     const pred = superPredict(sessions);
     currentPrediction = { phien: getPhien(latest) + 1, prediction: pred.prediction, confidence: pred.confidence, timestamp: new Date().toISOString() };
     res.json({
-        id: "@vuaoccac",
+        id: "AnhKhoizZz cute",
         phien_truoc: { Phien: getPhien(latest), Xuc_xac_1: getX1(latest), Xuc_xac_2: getX2(latest), Xuc_xac_3: getX3(latest), Tong: getTong(latest), Ket_qua: getKetQua(latest) },
         phien_hien_tai: { Phien: getPhien(latest) + 1, Du_doan: pred.prediction, Do_tin_cay: pred.confidence + "%" },
         stats: { consecutiveLosses: 0, winRate: "0%", totalPredictions: 0, totalWins: 0 },
@@ -618,7 +618,7 @@ app.get("/", (req, res) => {
         const totalW = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const winRate = verifiedResults.length > 0 ? ((totalW / verifiedResults.length) * 100).toFixed(1) : '0.0';
         return res.json({
-            id: "AnhKhoizZz cte",
+            id: "AnhkhoizZz cute",
             phien_truoc: { Phien: getPhien(latest), Xuc_xac_1: getX1(latest), Xuc_xac_2: getX2(latest), Xuc_xac_3: getX3(latest), Tong: getTong(latest), Ket_qua: getKetQua(latest) },
             phien_hien_tai: { Phien: currentPrediction.phien, Du_doan: currentPrediction.prediction, Do_tin_cay: currentPrediction.confidence + "%" },
             stats: { totalPredictions: verifiedResults.length, winRate: winRate + "%", consecutiveCorrect, consecutiveWrong },
