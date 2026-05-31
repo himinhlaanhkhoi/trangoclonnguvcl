@@ -706,33 +706,117 @@ function superPredict(sessions) {
     return predictor.predict();
 }
 
-// ============ FETCH DATA ============
+// ============ FETCH DATA - SỬA LỖI TREO ============
 async function fetchData() {
+    console.log("🔄 Đang fetch data từ API...");
+    
     try {
-        const res = await axios.get(API_URL, { timeout: 10000 });
+        // Thử cách 1: Fetch bình thường
+        const res = await axios.get(API_URL, { 
+            timeout: 15000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0',
+                'Accept': 'application/json'
+            }
+        });
+        
         const rawData = res.data;
-        if (!rawData || !rawData.data || !Array.isArray(rawData.data)) {
-            if (Array.isArray(rawData)) return rawData.map(normalizeData).sort((a, b) => a.phien - b.phien);
-            return null;
+        console.log(`📥 Nhận response, type: ${typeof rawData}, keys: ${rawData ? Object.keys(rawData).join(',') : 'null'}`);
+        
+        // Parse data - thử nhiều format
+        let dataArray = null;
+        
+        if (rawData && rawData.data && Array.isArray(rawData.data)) {
+            // Format: { data: [...] }
+            dataArray = rawData.data;
+            console.log(`✅ Format: rawData.data (${dataArray.length} items)`);
+        } else if (rawData && Array.isArray(rawData)) {
+            // Format: [...]
+            dataArray = rawData;
+            console.log(`✅ Format: array trực tiếp (${dataArray.length} items)`);
+        } else if (rawData && typeof rawData === 'object') {
+            // Tìm array trong object
+            for (const key of Object.keys(rawData)) {
+                if (Array.isArray(rawData[key]) && rawData[key].length > 10) {
+                    dataArray = rawData[key];
+                    console.log(`✅ Format: rawData.${key} (${dataArray.length} items)`);
+                    break;
+                }
+            }
         }
-        return rawData.data.map(normalizeData).sort((a, b) => a.phien - b.phien);
-    } catch (e) { return null; }
+        
+        if (dataArray && dataArray.length >= 15) {
+            const normalized = dataArray.map(normalizeData).sort((a, b) => a.phien - b.phien);
+            console.log(`✅ Đã normalize ${normalized.length} phiên, phiên cuối: ${normalized[normalized.length-1].phien}`);
+            return normalized;
+        }
+        
+        console.log(`❌ Không tìm thấy data array hợp lệ (tối thiểu 15 phiên)`);
+        return null;
+        
+    } catch (error) {
+        console.log(`❌ Lỗi fetch: ${error.message}`);
+        
+        // Thử lại với cách khác
+        try {
+            console.log("🔄 Thử lại lần 2...");
+            const res2 = await axios.get(API_URL, { 
+                timeout: 20000,
+                headers: { 'User-Agent': 'Mozilla/5.0' }
+            });
+            
+            const rawData2 = res2.data;
+            let dataArray2 = null;
+            
+            if (rawData2 && rawData2.data && Array.isArray(rawData2.data)) {
+                dataArray2 = rawData2.data;
+            } else if (Array.isArray(rawData2)) {
+                dataArray2 = rawData2;
+            } else if (typeof rawData2 === 'object') {
+                const values = Object.values(rawData2);
+                for (const v of values) {
+                    if (Array.isArray(v) && v.length > 10) {
+                        dataArray2 = v;
+                        break;
+                    }
+                }
+            }
+            
+            if (dataArray2 && dataArray2.length >= 15) {
+                const normalized = dataArray2.map(normalizeData).sort((a, b) => a.phien - b.phien);
+                console.log(`✅ Lần 2: Đã normalize ${normalized.length} phiên`);
+                return normalized;
+            }
+        } catch (e2) {
+            console.log(`❌ Lần 2 cũng lỗi: ${e2.message}`);
+        }
+        
+        return null;
+    }
 }
 
 // ============ AUTO UPDATE ============
 async function autoUpdate() {
     if (isUpdating) return;
     isUpdating = true;
+    
     try {
         const allData = await fetchData();
-        if (!allData || allData.length < 15) { isUpdating = false; return; }
+        
+        if (!allData || allData.length < 15) {
+            console.log(`⚠️ Không đủ dữ liệu để dự đoán (cần 15+, hiện có: ${allData ? allData.length : 0})`);
+            isUpdating = false;
+            return;
+        }
         
         const latest = allData[allData.length-1];
         const latestPhien = latest.phien;
         const oldLatestPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length-1].phien : 0;
         
         if (latestPhien !== oldLatestPhien || gameHistory.length === 0) {
+            console.log(`📊 Phiên mới: ${latestPhien} (cũ: ${oldLatestPhien})`);
             gameHistory = allData;
+            
             const pred = superPredict(allData.slice(-300));
             
             currentPrediction = {
@@ -750,18 +834,38 @@ async function autoUpdate() {
             };
             
             console.log(`✅ DỰ ĐOÁN: ${pred.prediction} (${pred.confidence}%) | Pattern: ${pred.pattern}`);
+            console.log(`   Phiên ${latest.phien}: ${latest.ket_qua} | Xúc xắc: ${latest.x1}-${latest.x2}-${latest.x3} | Tổng: ${latest.tong}`);
+            console.log(`   Dự đoán phiên ${latest.phien + 1}: ${pred.prediction} (${pred.confidence}%)`);
         }
-    } catch (e) { console.error('Update error:', e.message); }
+    } catch (e) {
+        console.error('❌ Update error:', e.message);
+    }
+    
     isUpdating = false;
 }
 
 // ============ API ROUTES ============
 app.get("/taixiu", async (req, res) => {
-    if (currentPrediction) return res.json(currentPrediction);
+    if (currentPrediction) {
+        return res.json(currentPrediction);
+    }
     
+    // Nếu chưa có dự đoán, fetch ngay
+    console.log("⚠️ Chưa có dự đoán, đang fetch lần đầu...");
     const allData = await fetchData();
+    
     if (!allData || allData.length < 15) {
-        return res.json({ id: "AnhKhoizZz", phien_truoc: 0, xuc_xac1:0,xuc_xac2:0,xuc_xac3:0, tong:0, ket_qua:"dang tai", pattern:"", phien_hien_tai:0, du_doan:"dang tai", do_tin_cay:"0%" });
+        return res.json({
+            id: "AnhKhoizZz",
+            phien_truoc: 0,
+            xuc_xac1: 0, xuc_xac2: 0, xuc_xac3: 0,
+            tong: 0,
+            ket_qua: "dang tai",
+            pattern: "",
+            phien_hien_tai: 0,
+            du_doan: "dang tai",
+            do_tin_cay: "0%"
+        });
     }
     
     gameHistory = allData;
@@ -782,25 +886,40 @@ app.get("/taixiu", async (req, res) => {
         do_tin_cay: pred.confidence + "%"
     };
     
+    console.log(`✅ Dự đoán lần đầu: ${pred.prediction} (${pred.confidence}%)`);
     res.json(currentPrediction);
 });
 
 app.get("/", (req, res) => {
-    res.json({ status: "OK", engine: "Game Breaker - Love Trang", currentPrediction: currentPrediction || "Chưa có" });
+    res.json({ 
+        status: "OK", 
+        engine: "Game Breaker - Love Trang",
+        currentPrediction: currentPrediction || "Chưa có dự đoán",
+        dataCount: gameHistory.length
+    });
 });
 
 // ============ KHỞI ĐỘNG ============
-try { if (fs.existsSync('./verified_results.json')) verifiedResults = JSON.parse(fs.readFileSync('./verified_results.json', 'utf8')); } catch (e) {}
+console.log('='.repeat(60));
+console.log('   🔥 GAME BREAKER - SIÊU DỰ ĐOÁN TÀI XỈU 🔥');
+console.log('   120+ thuật toán | Exploit + Trick + Hidden Rules');
+console.log('   API: lovetrang-xinkgai.onrender.com/data');
+console.log('='.repeat(60));
 
-autoUpdate();
+// Chạy ngay lần đầu
+autoUpdate().then(() => {
+    if (currentPrediction) {
+        console.log(`✅ Sẵn sàng: ${currentPrediction.du_doan} (${currentPrediction.do_tin_cay})`);
+    } else {
+        console.log(`⚠️ Chưa có dự đoán - API có thể đang treo, thử truy cập /taixiu để fetch lại`);
+    }
+});
+
+// Cập nhật mỗi 100ms
 setInterval(autoUpdate, 100);
 
 app.listen(PORT, () => {
-    console.log('='.repeat(60));
-    console.log('   🔥 GAME BREAKER - SIÊU DỰ ĐOÁN TÀI XỈU 🔥');
-    console.log('   120+ thuật toán | Exploit + Trick + Hidden Rules');
-    console.log('   API: lovetrang-xinkgai.onrender.com/data');
-    console.log('='.repeat(60));
-    console.log(`   🚀 Port: ${PORT}`);
+    console.log(`🚀 Server chạy port ${PORT}`);
+    console.log(`🌐 http://localhost:${PORT}/taixiu`);
     console.log('='.repeat(60));
 });
