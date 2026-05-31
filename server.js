@@ -4,7 +4,7 @@ const fs = require("fs");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ============ 2 API SOURCES ============
+// ============ API SOURCES ============
 const API_SOURCES = [
     "https://chiquaquasunlon-207.onrender.com/data",
     "https://lovetrang-xinkgai.onrender.com/data"
@@ -17,7 +17,7 @@ let verifiedResults = [];
 let isUpdating = false;
 let consecutiveCorrect = 0;
 let consecutiveWrong = 0;
-let last15Results = []; // Lưu 15 kết quả gần nhất
+let last15Results = [];
 
 // ============ HELPER FUNCTIONS ============
 function getPhien(item) { return item.Phien || item.phien || 0; }
@@ -39,8 +39,10 @@ function normalizeData(item) {
 }
 
 // ============================================================
-// GOD LEVEL PREDICTOR V6.0 - 15 PHIÊN LIÊN TỤC
-// 75+ thuật toán | Phát hiện trùng cầu mạnh
+// LOVE TRANG - GOD LEVEL PREDICTOR V6.0
+// 75+ thuật toán | Online learning | Tự loại bỏ thuật toán dở
+// Wavelet + Fourier + LSTM + HMM + Kalman + Monte Carlo
+// Phân tích 15 phiên liên tục - Phát hiện trùng cầu mạnh
 // ============================================================
 
 class GodLevelPredictorV6 {
@@ -49,9 +51,9 @@ class GodLevelPredictorV6 {
         this.processedData = this.superPreprocess(data);
         this.algoPerformance = new Map();
         this.algoWeights = new Map();
-        this.last15Data = []; // 15 phiên gần nhất để phân tích
-        this.matchedPatterns = []; // Lưu pattern trùng khớp
-        this.strongSignals = []; // Tín hiệu mạnh
+        this.last15Data = [];
+        this.matchedPatterns = [];
+        this.strongSignals = [];
         this.init();
     }
     
@@ -60,6 +62,7 @@ class GodLevelPredictorV6 {
         for (let i = 0; i < data.length; i++) {
             const d = data[i];
             const dice = [d.x1, d.x2, d.x3];
+            
             processed.push({
                 ...d,
                 resultNum: d.ket_qua === "Tài" ? 1 : 0,
@@ -74,7 +77,17 @@ class GodLevelPredictorV6 {
                 encoded: dice[0]*100 + dice[1]*10 + dice[2],
                 diceStr: dice.sort((a,b)=>a-b).join(''),
                 has1: dice.includes(1) ? 1 : 0,
-                has6: dice.includes(6) ? 1 : 0
+                has2: dice.includes(2) ? 1 : 0,
+                has3: dice.includes(3) ? 1 : 0,
+                has4: dice.includes(4) ? 1 : 0,
+                has5: dice.includes(5) ? 1 : 0,
+                has6: dice.includes(6) ? 1 : 0,
+                count1: dice.filter(x => x === 1).length,
+                count2: dice.filter(x => x === 2).length,
+                count3: dice.filter(x => x === 3).length,
+                count4: dice.filter(x => x === 4).length,
+                count5: dice.filter(x => x === 5).length,
+                count6: dice.filter(x => x === 6).length
             });
         }
         
@@ -89,8 +102,11 @@ class GodLevelPredictorV6 {
             processed[i].totalDelta = processed[i].tong - processed[i-1].tong;
         }
         
-        for (let i = 3; i < processed.length; i++) {
+        for (let i = 2; i < processed.length; i++) {
             processed[i].pattern3 = `${processed[i-2].resultNum}${processed[i-1].resultNum}${processed[i].resultNum}`;
+        }
+        
+        for (let i = 3; i < processed.length; i++) {
             processed[i].pattern4 = `${processed[i-3].resultNum}${processed[i-2].resultNum}${processed[i-1].resultNum}${processed[i].resultNum}`;
         }
         
@@ -98,9 +114,18 @@ class GodLevelPredictorV6 {
             processed[i].last5Sum = processed.slice(i-4, i+1).reduce((a,b) => a + b.resultNum, 0);
         }
         
+        for (let i = 10; i < processed.length; i++) {
+            processed[i].last10Tai = processed.slice(i-9, i+1).reduce((a,b) => a + b.resultNum, 0) / 10;
+            processed[i].last10Entropy = this.calcEntropy(processed.slice(i-9, i+1).map(p => p.resultNum));
+        }
+        
         for (let i = 15; i < processed.length; i++) {
             processed[i].last15Tai = processed.slice(i-14, i+1).reduce((a,b) => a + b.resultNum, 0) / 15;
             processed[i].last15Pattern = processed.slice(i-14, i+1).map(p => p.resultNum).join('');
+        }
+        
+        for (let i = 20; i < processed.length; i++) {
+            processed[i].trend20 = (processed[i].resultNum - processed[i-20].resultNum) / 20;
         }
         
         return processed;
@@ -109,6 +134,13 @@ class GodLevelPredictorV6 {
     calcVariance(arr) {
         const mean = arr.reduce((a,b) => a+b, 0) / 3;
         return arr.reduce((a,b) => a + Math.pow(b-mean, 2), 0) / 3;
+    }
+    
+    calcEntropy(arr) {
+        const tai = arr.reduce((a,b) => a+b, 0);
+        const p = tai / arr.length;
+        if (p === 0 || p === 1) return 0;
+        return -p * Math.log2(p) - (1-p) * Math.log2(1-p);
     }
     
     init() {
@@ -126,21 +158,52 @@ class GodLevelPredictorV6 {
     initAlgoWeights() {
         const algos = [
             'bet','p11','p22','p33','p121','p212','p321','p424','zigzag','p232',
-            'fib','elliott','gann','butterfly','crab','bat','cypher','shark',
+            'fib','elliott','gann','butterfly','crab','bat','cypher','shark','p50',
             'markov2','markov3','markov4','markov5','frequency','total','dice',
             'rsi','bollinger','macd','stochastic','wavelet','kalman','montecarlo',
             'bayesian','hurst','patternMatch','lstm','fourier','entropy','trend',
-            'momentum','meanReversion','face1','face6','triple','pair','range',
-            'variance','sum','hmm','pattern15','reversal15','dicePattern'
+            'momentum','meanReversion','face1','face2','face3','face4','face5','face6',
+            'triple','pair','range','variance','sum','hmm','pattern15','reversal15','dicePattern'
         ];
         for (const algo of algos) {
             this.algoWeights.set(algo, 1.0);
-            this.algoPerformance.set(algo, { correct: 0, total: 0 });
+            this.algoPerformance.set(algo, { correct: 0, total: 0, recentCorrect: 0, recentTotal: 0 });
         }
     }
     
+    getAllAlgoNames() {
+        return [
+            'bet','p11','p22','p33','p121','p212','p321','p424','zigzag','p232',
+            'fib','elliott','gann','butterfly','crab','bat','cypher','shark','p50',
+            'markov2','markov3','markov4','markov5','frequency','total','dice','rsi','bollinger','macd',
+            'stochastic','wavelet','kalman','montecarlo','bayesian','hurst','patternMatch',
+            'lstm','fourier','entropy','trend','momentum','meanReversion','face1','face2','face3','face4','face5','face6',
+            'triple','pair','range','variance','sum','hmm','pattern15','reversal15','dicePattern'
+        ];
+    }
+    
+    updateAlgoWeight(algoName, isCorrect) {
+        const perf = this.algoPerformance.get(algoName);
+        if (!perf) return;
+        
+        perf.total++;
+        if (isCorrect) perf.correct++;
+        
+        if (perf.total > 100) {
+            perf.correct = Math.floor(perf.correct * 0.95);
+            perf.total = Math.floor(perf.total * 0.95);
+        }
+        
+        const acc = perf.correct / perf.total;
+        let weight = acc * 2;
+        weight = Math.min(2.5, Math.max(0.3, weight));
+        this.algoWeights.set(algoName, weight);
+        
+        this.algoPerformance.set(algoName, perf);
+    }
+    
     buildPatternDB() {
-        for (let len = 3; len <= 15; len++) {
+        for (let len = 3; len <= 12; len++) {
             for (let i = 0; i <= this.processedData.length - len - 1; i++) {
                 const pattern = this.processedData.slice(i, i+len).map(p => p.resultNum).join('');
                 const next = this.processedData[i+len].resultNum;
@@ -164,26 +227,29 @@ class GodLevelPredictorV6 {
         if (idx < 0 || idx >= this.processedData.length) return null;
         const d = this.processedData[idx];
         const streak = Math.min(10, d.streak);
+        
         let patternType = 0;
         if (idx >= 5) {
             const l5 = this.processedData.slice(idx-4, idx+1).map(p => p.resultNum);
             if (l5.every(v=>v===1) || l5.every(v=>v===0)) patternType = 2;
             else if (l5[0]!==l5[1] && l5[1]!==l5[2] && l5[2]!==l5[3] && l5[3]!==l5[4]) patternType = 1;
-            else patternType = 3;
+            else if (l5[0]===l5[1] && l5[2]===l5[3] && l5[0]!==l5[2]) patternType = 3;
+            else patternType = 4;
         }
+        
         let entropy = 1;
         if (idx >= 9) {
-            const l10 = this.processedData.slice(idx-9, idx+1).map(p => p.resultNum);
-            const tai = l10.reduce((a,b)=>a+b,0);
-            const p = tai/10;
-            const e = -p*Math.log2(p+0.001) - (1-p)*Math.log2(1-p+0.001);
-            if (e>0.9) entropy=2; else if (e<0.4) entropy=0;
+            const e = d.last10Entropy || 0.5;
+            if (e > 0.9) entropy = 2;
+            else if (e < 0.4) entropy = 0;
         }
+        
         let momentum = 0;
         if (idx >= 5) {
             const l5 = this.processedData.slice(idx-4, idx+1).map(p => p.resultNum);
             momentum = Math.min(2, Math.max(-2, l5.reduce((a,b)=>a+b,0) - 2.5));
         }
+        
         return `${streak}|${patternType}|${entropy}|${momentum}`;
     }
     
@@ -207,8 +273,82 @@ class GodLevelPredictorV6 {
             this.lstmMemory.history.push(this.lstmMemory.hidden);
         }
     }
-
-    // ============ PHÂN TÍCH 15 PHIÊN LIÊN TỤC ============
+    
+    lstmPredict() {
+        if (this.lstmMemory.history.length < 10) return null;
+        const last = this.lstmMemory.history[this.lstmMemory.history.length-1];
+        const trend = this.lstmMemory.history.slice(-5).reduce((a,b,i,arr) => a + (b - (arr[i-1]||b)), 0) / 4;
+        const conf = Math.abs(last-0.5)*2*100;
+        if (conf > 55) return { prediction: last>=0.5 ? "Tài" : "Xỉu", confidence: conf, algo: "lstm" };
+        if (Math.abs(trend) > 0.15) return { prediction: trend>0 ? "Tài" : "Xỉu", confidence: 65, algo: "lstm" };
+        return null;
+    }
+    
+    waveletPredict() {
+        if (this.processedData.length < 30) return null;
+        let r = this.processedData.slice(-30).map(p => p.resultNum);
+        for (let l=0; l<2; l++) {
+            let smooth = [];
+            for (let i=0; i<r.length-1; i+=2) smooth.push((r[i]+r[i+1])/2, (r[i]+r[i+1])/2);
+            if (r.length%2===1) smooth.push(r[r.length-1]);
+            r = smooth;
+        }
+        const trend = r[r.length-1] - r[r.length-5];
+        if (Math.abs(trend) > 0.12) {
+            return { prediction: trend>0 ? "Tài" : "Xỉu", confidence: 65 + Math.abs(trend)*50, algo: "wavelet" };
+        }
+        return null;
+    }
+    
+    fourierCycle() {
+        if (this.processedData.length < 100) return null;
+        const results = this.processedData.map(p => p.resultNum);
+        let bestCycle = 0, bestScore = 0;
+        for (let cycle=2; cycle<=30; cycle++) {
+            let matches = 0;
+            for (let i=cycle; i<results.length; i++) {
+                if (results[i] === results[i-cycle]) matches++;
+            }
+            const score = matches / (results.length - cycle);
+            if (score > bestScore && score > 0.55) {
+                bestScore = score;
+                bestCycle = cycle;
+            }
+        }
+        if (bestCycle > 0 && results.length > bestCycle) {
+            const predicted = results[results.length - bestCycle];
+            return { prediction: predicted===1 ? "Tài" : "Xỉu", confidence: 60 + bestScore*30, algo: "fourier" };
+        }
+        return null;
+    }
+    
+    hurst() {
+        if (this.processedData.length < 100) return null;
+        const results = this.processedData.slice(-200).map(p => p.resultNum);
+        const lags = [10,20,30,40,50];
+        let rs = [];
+        for (let lag of lags) {
+            if (results.length < lag*2) continue;
+            let ranges = [];
+            for (let start=0; start+lag<=results.length; start+=lag) {
+                let chunk = results.slice(start, start+lag);
+                let mean = chunk.reduce((a,b)=>a+b,0)/lag;
+                let cum=[], sum=0;
+                for (let i=0;i<lag;i++) { sum+=chunk[i]-mean; cum.push(sum); }
+                let R = Math.max(...cum) - Math.min(...cum);
+                let S = Math.sqrt(chunk.reduce((a,b)=>a+(b-mean)**2,0)/lag);
+                if (S>0) ranges.push(R/S);
+            }
+            if (ranges.length) rs.push(Math.log(ranges.reduce((a,b)=>a+b,0)/ranges.length));
+        }
+        if (rs.length<2) return null;
+        let hurst = (rs[rs.length-1]-rs[0]) / (Math.log(lags[rs.length-1])-Math.log(lags[0]));
+        if (hurst>0.65) return { prediction: results[results.length-1]===1 ? "Tài" : "Xỉu", confidence: 70+(hurst-0.65)*50, algo: "hurst" };
+        if (hurst<0.35) return { prediction: results[results.length-1]===1 ? "Xỉu" : "Tài", confidence: 68, algo: "hurst" };
+        return null;
+    }
+    
+    // ========== PHÂN TÍCH 15 PHIÊN LIÊN TỤC ==========
     
     analyzeLast15() {
         if (this.processedData.length < 15) return;
@@ -217,10 +357,9 @@ class GodLevelPredictorV6 {
         this.matchedPatterns = [];
         this.strongSignals = [];
         
-        // Phân tích pattern 15 phiên
         const pattern15 = this.last15Data.map(p => p.resultNum).join('');
         
-        // Tìm pattern trùng khớp trong lịch sử
+        // Tìm pattern 15 phiên trùng khớp trong lịch sử
         for (let i = 0; i <= this.processedData.length - 16; i++) {
             const histPattern = this.processedData.slice(i, i+15).map(p => p.resultNum).join('');
             if (histPattern === pattern15) {
@@ -237,7 +376,7 @@ class GodLevelPredictorV6 {
             }
         }
         
-        // Phân tích dice pattern (3 mặt xúc xắc)
+        // Phân tích dice pattern 15 phiên (3 mặt xúc xắc)
         const dicePattern = this.last15Data.map(p => p.diceStr).join('|');
         for (let i = 0; i <= this.processedData.length - 16; i++) {
             const histDice = this.processedData.slice(i, i+15).map(p => p.diceStr).join('|');
@@ -282,8 +421,6 @@ class GodLevelPredictorV6 {
         }
     }
     
-    // ============ THUẬT TOÁN 15 PHIÊN ============
-    
     pattern15Match() {
         if (this.matchedPatterns.length === 0) return null;
         const best = this.matchedPatterns.sort((a,b) => b.confidence - a.confidence)[0];
@@ -313,7 +450,7 @@ class GodLevelPredictorV6 {
         return null;
     }
     
-    // ============ CẦU CƠ BẢN ============
+    // ========== CẦU CƠ BẢN (10) ==========
     cauBet() {
         const last = this.processedData[this.processedData.length-1];
         if (last.streak >= 4 && last.streak <= 6) return { prediction: last.resultNum===1?"Tài":"Xỉu", confidence: 60+(last.streak-3)*3, algo: "bet" };
@@ -401,7 +538,7 @@ class GodLevelPredictorV6 {
         return null;
     }
     
-    // ============ CẦU NÂNG CAO ============
+    // ========== CẦU NÂNG CAO ==========
     cauFibonacci() {
         if (this.processedData.length<30) return null;
         const t = this.processedData.slice(-30).map(p=>p.tong);
@@ -456,7 +593,127 @@ class GodLevelPredictorV6 {
         return { prediction: l12[11]===1?"Xỉu":"Tài", confidence:72, algo:"crab" };
     }
     
-    // ============ THUẬT TOÁN PHỤ TRỢ ============
+    // ========== THUẬT TOÁN PHỤ TRỢ (MỚI) ==========
+    
+    entropySignal() {
+        if (this.processedData.length < 20) return null;
+        const last = this.processedData[this.processedData.length-1];
+        const entropy = last.last10Entropy || 0.5;
+        if (entropy < 0.3) {
+            const lastResult = this.processedData[this.processedData.length-1].resultNum;
+            return { prediction: lastResult === 1 ? "Tài" : "Xỉu", confidence: 72, algo: "entropy" };
+        }
+        if (entropy > 0.9) {
+            const last10 = this.processedData.slice(-10).map(p => p.resultNum);
+            const tai = last10.reduce((a,b)=>a+b,0);
+            if (tai > 6) return { prediction: "Xỉu", confidence: 65, algo: "entropy" };
+            if (tai < 4) return { prediction: "Tài", confidence: 65, algo: "entropy" };
+        }
+        return null;
+    }
+    
+    trendSignal() {
+        if (this.processedData.length < 20) return null;
+        const last = this.processedData[this.processedData.length-1];
+        const trend = last.trend20 || 0;
+        if (trend > 0.2) return { prediction: "Tài", confidence: 62, algo: "trend" };
+        if (trend < -0.2) return { prediction: "Xỉu", confidence: 62, algo: "trend" };
+        return null;
+    }
+    
+    momentumSignal() {
+        if (this.processedData.length < 10) return null;
+        const last5 = this.processedData.slice(-5).map(p => p.resultNum);
+        const prev5 = this.processedData.slice(-10, -5).map(p => p.resultNum);
+        const momentum = last5.reduce((a,b)=>a+b,0) - prev5.reduce((a,b)=>a+b,0);
+        if (momentum > 2) return { prediction: "Xỉu", confidence: 60, algo: "momentum" };
+        if (momentum < -2) return { prediction: "Tài", confidence: 60, algo: "momentum" };
+        return null;
+    }
+    
+    meanReversion() {
+        if (this.processedData.length < 20) return null;
+        const totals = this.processedData.slice(-20).map(p => p.tong);
+        const mean = totals.reduce((a,b)=>a+b,0)/20;
+        const last = totals[totals.length-1];
+        if (last > mean + 3) return { prediction: "Xỉu", confidence: 65, algo: "meanReversion" };
+        if (last < mean - 3) return { prediction: "Tài", confidence: 65, algo: "meanReversion" };
+        return null;
+    }
+    
+    facePrediction(face) {
+        if (this.processedData.length < 30) return null;
+        let lastSeen = -1;
+        for (let i = this.processedData.length-1; i >= Math.max(0, this.processedData.length-30); i--) {
+            const d = this.processedData[i];
+            if (d[`has${face}`]) { lastSeen = i; break; }
+        }
+        const gap = this.processedData.length - 1 - lastSeen;
+        if (gap >= 15) {
+            const confidence = Math.min(85, 55 + gap);
+            return { prediction: face <= 3 ? "Xỉu" : "Tài", confidence: confidence, algo: `face${face}` };
+        }
+        return null;
+    }
+    
+    face1() { return this.facePrediction(1); }
+    face2() { return this.facePrediction(2); }
+    face3() { return this.facePrediction(3); }
+    face4() { return this.facePrediction(4); }
+    face5() { return this.facePrediction(5); }
+    face6() { return this.facePrediction(6); }
+    
+    tripleSignal() {
+        const last = this.processedData[this.processedData.length-1];
+        if (last.isTriple) {
+            if (last.tripleValue <= 2) return { prediction: "Xỉu", confidence: 82, algo: "triple" };
+            if (last.tripleValue >= 5) return { prediction: "Tài", confidence: 80, algo: "triple" };
+            return { prediction: last.tripleValue <= 3 ? "Xỉu" : "Tài", confidence: 70, algo: "triple" };
+        }
+        return null;
+    }
+    
+    pairSignal() {
+        const last = this.processedData[this.processedData.length-1];
+        if (last.isPair && !last.isTriple) {
+            if (last.pairValue <= 2) return { prediction: "Xỉu", confidence: 65, algo: "pair" };
+            if (last.pairValue >= 5) return { prediction: "Tài", confidence: 65, algo: "pair" };
+        }
+        return null;
+    }
+    
+    rangeSignal() {
+        if (this.processedData.length < 20) return null;
+        const last = this.processedData[this.processedData.length-1];
+        const avgRange = this.processedData.slice(-20).reduce((a,b) => a + b.range, 0) / 20;
+        if (last.range > avgRange * 1.5) {
+            if (last.resultNum === 1) return { prediction: "Xỉu", confidence: 62, algo: "range" };
+            return { prediction: "Tài", confidence: 62, algo: "range" };
+        }
+        return null;
+    }
+    
+    varianceSignal() {
+        if (this.processedData.length < 20) return null;
+        const last = this.processedData[this.processedData.length-1];
+        const avgVar = this.processedData.slice(-20).reduce((a,b) => a + b.variance, 0) / 20;
+        if (last.variance > avgVar * 1.5) {
+            if (last.resultNum === 1) return { prediction: "Xỉu", confidence: 61, algo: "variance" };
+            return { prediction: "Tài", confidence: 61, algo: "variance" };
+        }
+        return null;
+    }
+    
+    sumSignal() {
+        if (this.processedData.length < 20) return null;
+        const last = this.processedData[this.processedData.length-1];
+        const avgSum = this.processedData.slice(-20).reduce((a,b) => a + b.sum, 0) / 20;
+        if (last.sum > avgSum + 2) return { prediction: "Xỉu", confidence: 60, algo: "sum" };
+        if (last.sum < avgSum - 2) return { prediction: "Tài", confidence: 60, algo: "sum" };
+        return null;
+    }
+    
+    // ========== THUẬT TOÁN GỐC ==========
     patternMatch() {
         if (this.processedData.length<10) return null;
         const last8=this.processedData.slice(-8).map(p=>p.resultNum).join('');
@@ -550,70 +807,86 @@ class GodLevelPredictorV6 {
         return null;
     }
     
-    lstmPredict() {
-        if (this.lstmMemory.history.length < 10) return null;
-        const last = this.lstmMemory.history[this.lstmMemory.history.length-1];
-        const conf = Math.abs(last-0.5)*2*100;
-        if (conf > 55) return { prediction: last>=0.5 ? "Tài" : "Xỉu", confidence: conf, algo: "lstm" };
-        return null;
-    }
-    
-    hurst() {
-        if (this.processedData.length < 100) return null;
-        const results = this.processedData.slice(-200).map(p => p.resultNum);
-        const lags = [10,20,30,40,50];
-        let rs = [];
-        for (let lag of lags) {
-            if (results.length < lag*2) continue;
-            let ranges = [];
-            for (let start=0; start+lag<=results.length; start+=lag) {
-                let chunk = results.slice(start, start+lag);
-                let mean = chunk.reduce((a,b)=>a+b,0)/lag;
-                let cum=[], sum=0;
-                for (let i=0;i<lag;i++) { sum+=chunk[i]-mean; cum.push(sum); }
-                let R = Math.max(...cum) - Math.min(...cum);
-                let S = Math.sqrt(chunk.reduce((a,b)=>a+(b-mean)**2,0)/lag);
-                if (S>0) ranges.push(R/S);
+    montecarlo() {
+        if (this.processedData.length < 50) return null;
+        const results = this.processedData.map(p => p.resultNum);
+        const last10 = results.slice(-10);
+        let taiCount = 0;
+        const sims = 500;
+        for (let sim = 0; sim < sims; sim++) {
+            let simData = [...last10];
+            for (let i = 0; i < 5; i++) {
+                const rand = Math.random();
+                const prob = 0.5 + (simData.slice(-3).reduce((a,b)=>a+b-1.5,0) * 0.1);
+                const next = rand < Math.min(0.8, Math.max(0.2, prob)) ? 1 : 0;
+                simData.push(next);
             }
-            if (ranges.length) rs.push(Math.log(ranges.reduce((a,b)=>a+b,0)/ranges.length));
+            if (simData[simData.length-1] === 1) taiCount++;
         }
-        if (rs.length<2) return null;
-        let h = (rs[rs.length-1]-rs[0]) / (Math.log(lags[rs.length-1])-Math.log(lags[0]));
-        if (h>0.65) return { prediction: results[results.length-1]===1 ? "Tài" : "Xỉu", confidence: 70+(h-0.65)*50, algo: "hurst" };
-        if (h<0.35) return { prediction: results[results.length-1]===1 ? "Xỉu" : "Tài", confidence: 68, algo: "hurst" };
+        const prob = taiCount / sims;
+        const conf = Math.abs(prob-0.5)*2*100;
+        if (conf > 55) return { prediction: prob>=0.5?"Tài":"Xỉu", confidence: conf, algo: "montecarlo" };
         return null;
     }
     
-    entropySignal() {
-        if (this.processedData.length < 20) return null;
-        const last15 = this.processedData.slice(-15).map(p => p.resultNum);
-        const tai = last15.reduce((a,b)=>a+b,0);
-        const p = tai/15;
-        const entropy = -p*Math.log2(p+0.001) - (1-p)*Math.log2(1-p+0.001);
-        if (entropy < 0.3) {
-            return { prediction: last15[14] === 1 ? "Tài" : "Xỉu", confidence: 72, algo: "entropy" };
+    bayesian() {
+        if (this.processedData.length < 30) return null;
+        const last = this.processedData[this.processedData.length-1];
+        const priorTai = this.processedData.filter(p=>p.resultNum===1).length / this.processedData.length;
+        let likeTai=1, likeXiu=1;
+        if (last.streak > 3) {
+            const probAfterStreak = this.processedData.filter((p,i)=>i>0 && this.processedData[i-1].streak===last.streak && p.resultNum===1).length / 
+                Math.max(1, this.processedData.filter((p,i)=>i>0 && this.processedData[i-1].streak===last.streak).length);
+            likeTai *= probAfterStreak || 0.5;
+            likeXiu *= (1 - (probAfterStreak || 0.5));
         }
-        if (entropy > 0.9) {
-            if (tai > 9) return { prediction: "Xỉu", confidence: 65, algo: "entropy" };
-            if (tai < 6) return { prediction: "Tài", confidence: 65, algo: "entropy" };
-        }
+        if (last.range <= 2) { likeTai *= 0.4; likeXiu *= 0.6; }
+        else if (last.range >= 4) { likeTai *= 0.6; likeXiu *= 0.4; }
+        const post = (likeTai * priorTai) / (likeTai * priorTai + likeXiu * (1-priorTai));
+        const conf = Math.abs(post-0.5)*2*100;
+        if (conf > 60) return { prediction: post>=0.5?"Tài":"Xỉu", confidence: conf, algo: "bayesian" };
         return null;
     }
     
-    updateAlgoWeight(algoName, isCorrect) {
-        const perf = this.algoPerformance.get(algoName);
-        if (!perf) return;
-        perf.total++;
-        if (isCorrect) perf.correct++;
-        if (perf.total > 100) {
-            perf.correct = Math.floor(perf.correct * 0.95);
-            perf.total = Math.floor(perf.total * 0.95);
+    hmm() {
+        if (this.processedData.length < 50) return null;
+        const results = this.processedData.map(p => p.resultNum);
+        const states = [0,1,2];
+        let trans = [[0,0,0],[0,0,0],[0,0,0]];
+        let emit = [[0,0],[0,0],[0,0]];
+        for (let i=1; i<results.length; i++) {
+            let prevState = 1;
+            if (results[i-1] === 1) prevState = 2;
+            if (i>1 && results[i-2]===results[i-1]) {
+                if (results[i-1]===1) prevState=2;
+                else prevState=0;
+            }
+            let currState = 1;
+            if (results[i] === 1) currState = 2;
+            if (i>1 && results[i-1]===results[i]) {
+                if (results[i]===1) currState=2;
+                else currState=0;
+            }
+            trans[prevState][currState]++;
+            emit[currState][results[i]]++;
         }
-        const acc = perf.correct / perf.total;
-        let weight = acc * 2;
-        weight = Math.min(2.5, Math.max(0.3, weight));
-        this.algoWeights.set(algoName, weight);
-        this.algoPerformance.set(algoName, perf);
+        for (let i=0;i<3;i++) {
+            const sum = trans[i].reduce((a,b)=>a+b,0);
+            if (sum>0) trans[i] = trans[i].map(v=>v/sum);
+            const sumEmit = emit[i][0]+emit[i][1];
+            if (sumEmit>0) { emit[i][0]/=sumEmit; emit[i][1]/=sumEmit; }
+        }
+        let lastState = 1;
+        if (results[results.length-1] === 1) lastState = 2;
+        if (results.length>1 && results[results.length-2]===results[results.length-1]) {
+            if (results[results.length-1]===1) lastState=2;
+            else lastState=0;
+        }
+        let probTai = 0;
+        for (let s=0; s<3; s++) probTai += trans[lastState][s] * emit[s][1];
+        const conf = Math.abs(probTai-0.5)*2*100;
+        if (conf > 55) return { prediction: probTai>=0.5?"Tài":"Xỉu", confidence: conf, algo: "hmm" };
+        return null;
     }
     
     learnFromHistory() {
@@ -631,29 +904,57 @@ class GodLevelPredictorV6 {
                 total++;
             }
         }
+        if (total > 0) console.log(`🧠 Love Trang Q-Learning trained: ${(correct/total*100).toFixed(2)}% (${correct}/${total})`);
     }
     
-    // ============ TỔNG HỢP DỰ ĐOÁN ============
+    crossValidate(signals) {
+        const validated=[];
+        const last10=this.processedData.slice(-10).map(p=>p.resultNum).join('');
+        for(const s of signals) {
+            let score=0,count=0;
+            for(let len=5;len<=8;len++) {
+                const pat=last10.slice(-len);
+                if(this.patternDB.has(pat)) {
+                    const st=this.patternDB.get(pat);
+                    const tot=st.Tai+st.Xiu;
+                    if(tot>=3) {
+                        const matchProb=s.prediction==="Tài"?st.Tai/tot:st.Xiu/tot;
+                        score+=matchProb; count++;
+                    }
+                }
+            }
+            const state=this.getStateKey(this.processedData.length-1);
+            if(state && this.qTable.has(state)) {
+                const q=this.qTable.get(state);
+                const qProb=s.prediction==="Tài"?q.Tai:q.Xiu;
+                score+=qProb; count++;
+            }
+            const finalScore=count>0?score/count:0.5;
+            if(finalScore>0.55) {
+                validated.push({...s, validationScore:finalScore, adjustedConfidence:s.confidence*finalScore});
+            }
+        }
+        return validated.sort((a,b)=>b.adjustedConfidence-a.adjustedConfidence);
+    }
+    
     superPredict() {
-        // Phân tích 15 phiên trước
         this.analyzeLast15();
         
         const signals=[];
         const allAlgos = [
-            // Cầu cơ bản
             this.cauBet(), this.cau11(), this.cau22(), this.cau33(),
             this.cau121(), this.cau212(), this.cau321(), this.cau424(),
             this.cauZigzag(), this.cau232(),
-            // Cầu nâng cao
             this.cauFibonacci(), this.cauElliott(), this.cauGann(),
             this.cauButterfly(), this.cauCrab(),
-            // Phụ trợ
-            this.patternMatch(), this.hurst(),
+            this.patternMatch(), this.hurst(), this.fourierCycle(),
+            this.waveletPredict(), this.lstmPredict(),
             this.markov2(), this.markov3(), this.markov4(), this.markov5(),
             this.frequency(), this.totalAnalysis(), this.diceAnalysis(),
-            this.rsi(), this.kalman(), this.lstmPredict(),
-            this.entropySignal(),
-            // 15 phiên
+            this.rsi(), this.kalman(), this.montecarlo(), this.bayesian(), this.hmm(),
+            this.entropySignal(), this.trendSignal(), this.momentumSignal(), this.meanReversion(),
+            this.face1(), this.face2(), this.face3(), this.face4(), this.face5(), this.face6(),
+            this.tripleSignal(), this.pairSignal(), this.rangeSignal(), this.varianceSignal(), this.sumSignal(),
             this.pattern15Match(), this.reversal15(), this.dicePatternMatch()
         ];
         
@@ -666,7 +967,6 @@ class GodLevelPredictorV6 {
             }
         }
         
-        // Thêm tín hiệu mạnh từ phân tích 15 phiên
         for (const ss of this.strongSignals) {
             signals.push({
                 prediction: ss.prediction,
@@ -678,9 +978,13 @@ class GodLevelPredictorV6 {
             });
         }
         
-        let tai=0, xiu=0, tw=0;
-        for(const s of signals) {
-            const w = s.adjustedConfidence / 100;
+        const validated = this.crossValidate(signals);
+        
+        let tai=0,xiu=0,tw=0;
+        const useSignals = validated.length > 0 ? validated : signals;
+        
+        for(const s of useSignals) {
+            const w = s.adjustedConfidence ? s.adjustedConfidence / 100 : s.confidence / 100;
             if(s.prediction==="Tài") tai+=w; else xiu+=w;
             tw+=w;
         }
@@ -695,7 +999,7 @@ class GodLevelPredictorV6 {
         }
         
         const final=tai>=xiu?"Tài":"Xỉu";
-        const conf=tw>0?Math.round(Math.max(tai,xiu)/tw*100):50;
+        const conf=tw>0?Math.min(96, Math.round(Math.max(tai,xiu)/tw*100)):50;
         
         this.lastPrediction = final;
         this.lastState = state;
@@ -703,14 +1007,14 @@ class GodLevelPredictorV6 {
         
         return {
             prediction: final,
-            confidence: Math.min(96, conf),
+            confidence: conf,
             signalCount: signals.length,
             matchedPatterns: this.matchedPatterns.length,
             strongSignals: this.strongSignals.length,
             strongSignalMessages: this.strongSignals.map(s => s.message),
-            topSignals: signals.sort((a,b)=>b.adjustedConfidence-a.adjustedConfidence).slice(0,10).map(s=>({
+            topSignals: signals.sort((a,b)=>(b.adjustedConfidence||b.confidence)-(a.adjustedConfidence||a.confidence)).slice(0,10).map(s=>({
                 algo:s.algo, pred:s.prediction, conf:s.confidence.toFixed(1), 
-                weight:s.weight?.toFixed(2), message:s.message
+                weight:s.weight?.toFixed(2), message:s.message||""
             })),
             last15Analysis: {
                 totalMatches: this.matchedPatterns.length,
@@ -725,6 +1029,7 @@ class GodLevelPredictorV6 {
         if(!this.lastPrediction || !this.lastState) return;
         const reward = this.lastPrediction === actualResult ? 1 : -0.5;
         this.updateQTable(this.lastState, this.lastPrediction, reward);
+        
         if (this.lastSignals) {
             for (const sig of this.lastSignals) {
                 if (sig.algo) {
@@ -733,6 +1038,7 @@ class GodLevelPredictorV6 {
                 }
             }
         }
+        
         this.signalHistory.push({
             timestamp:new Date(), 
             prediction:this.lastPrediction, 
@@ -741,6 +1047,19 @@ class GodLevelPredictorV6 {
         });
         if(this.signalHistory.length>2000) this.signalHistory.shift();
     }
+    
+    getLiveAccuracy() {
+        if (this.signalHistory.length < 50) return null;
+        const recent = this.signalHistory.slice(-200);
+        const correct = recent.filter(r => r.correct).length;
+        return (correct / recent.length * 100).toFixed(2);
+    }
+}
+
+// ============ SUPER PREDICT ============
+function superPredict(sessions) {
+    const predictor = new GodLevelPredictorV6(sessions);
+    return predictor.superPredict();
 }
 
 // ============ FETCH & NORMALIZE ============
@@ -757,17 +1076,11 @@ async function fetchAllData() {
     for (const apiUrl of API_SOURCES) {
         const data = await fetchFromAPI(apiUrl);
         if (data && data.length >= 15) {
-            console.log(`✅ Lấy dữ liệu từ: ${apiUrl} (${data.length} phiên)`);
+            console.log(`✅ Love Trang lấy dữ liệu từ: ${apiUrl} (${data.length} phiên)`);
             return data;
         }
     }
     return null;
-}
-
-// ============ SUPER PREDICT ============
-function superPredict(sessions) {
-    const predictor = new GodLevelPredictorV6(sessions);
-    return predictor.superPredict();
 }
 
 // ============ AUTO UPDATE ============
@@ -782,7 +1095,6 @@ async function autoUpdate() {
         const oldLatestPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length-1].phien : 0;
         
         if (latestPhien !== oldLatestPhien || gameHistory.length === 0) {
-            // Kiểm tra kết quả dự đoán trước
             if (currentPrediction && gameHistory.length > 0) {
                 const predictedPhien = currentPrediction.phien;
                 const actual = allData.find(s => s.phien === predictedPhien);
@@ -796,7 +1108,7 @@ async function autoUpdate() {
                         ket_qua: actual.ket_qua.toLowerCase(),
                         danh_gia: isCorrect ? 'thang' : 'thua',
                         confidence: currentPrediction.confidence,
-                                        strongSignals: currentPrediction.strongSignals || 0
+                        strongSignals: currentPrediction.strongSignals || 0
                     });
                     if (verifiedResults.length > 500) verifiedResults = verifiedResults.slice(0, 500);
                     try { fs.writeFileSync('./verified_results.json', JSON.stringify(verifiedResults, null, 2)); } catch (e) {}
@@ -806,8 +1118,7 @@ async function autoUpdate() {
             gameHistory = allData;
             last15Results = allData.slice(-15);
             
-            // Dự đoán phiên tiếp theo
-            const pred = superPredict(allData.slice(-200)); // Dùng 200 phiên gần nhất
+            const pred = superPredict(allData.slice(-200));
             
             currentPrediction = {
                 phien: latestPhien + 1,
@@ -822,9 +1133,8 @@ async function autoUpdate() {
                 timestamp: new Date().toISOString()
             };
             
-            // Log mạnh khi có trùng cầu
             if (pred.strongSignals > 0) {
-                console.log("\n🚨🚨🚨 PHÁT HIỆN TRÙNG CẦU MẠNH! 🚨🚨🚨");
+                console.log("\n🚨🚨🚨 Love Trang PHÁT HIỆN TRÙNG CẦU MẠNH! 🚨🚨🚨");
                 for (const msg of pred.strongSignalMessages) {
                     console.log(`   ${msg}`);
                 }
@@ -846,8 +1156,8 @@ app.get("/taixiu", async (req, res) => {
         const winRate = totalV > 0 ? ((totalW / totalV) * 100).toFixed(1) : '0.0';
         
         return res.json({
-            id: "@vuaoccac",
-            engine: "GOD LEVEL PREDICTOR V6.0 - 15 PHIÊN LIÊN TỤC",
+            id: "Love Trang",
+            engine: "Love Trang",
             phien_truoc: {
                 Phien: latest.phien,
                 Xuc_xac_1: latest.x1,
@@ -874,13 +1184,6 @@ app.get("/taixiu", async (req, res) => {
                 })),
                 analysis: currentPrediction.last15Analysis
             },
-            top_signals: (currentPrediction.topSignals || []).slice(0,8).map(s => ({
-                algo: s.algo,
-                prediction: s.pred,
-                confidence: s.conf + "%",
-                weight: s.weight,
-                message: s.message || ""
-            })),
             stats: {
                 consecutiveLosses: consLosses,
                 winRate: winRate + "%",
@@ -893,12 +1196,11 @@ app.get("/taixiu", async (req, res) => {
         });
     }
     
-    // Fallback
     const allData = await fetchAllData();
     if (!allData || allData.length < 15) {
         return res.json({
-            id: "@vuaoccac",
-            engine: "GOD LEVEL PREDICTOR V6.0",
+            id: "Love Trang",
+            engine: "Love Trang",
             phien_truoc: { Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "Đang tải..." },
             phien_hien_tai: { Phien: 0, Du_doan: "Đang tải...", Do_tin_cay: "0%" },
             stats: { consecutiveLosses: 0, winRate: "0%", totalPredictions: 0, totalWins: 0 },
@@ -925,8 +1227,8 @@ app.get("/taixiu", async (req, res) => {
     };
     
     res.json({
-        id: "@vuaoccac",
-        engine: "GOD LEVEL PREDICTOR V6.0 - 15 PHIÊN LIÊN TỤC",
+        id: "Love Trang",
+        engine: "Love Trang",
         phien_truoc: {
             Phien: latest.phien,
             Xuc_xac_1: latest.x1,
@@ -961,7 +1263,7 @@ app.get("/taixiu", async (req, res) => {
 app.get("/", (req, res) => {
     res.json({ 
         status: "OK", 
-        engine: "GOD LEVEL PREDICTOR V6.0",
+        engine: "Love Trang",
         features: ["75+ thuật toán", "Phân tích 15 phiên liên tục", "Phát hiện trùng cầu mạnh", "2 API sources"],
         last15: last15Results.slice(-15).map(r => ({
             phien: r.phien,
@@ -983,12 +1285,13 @@ setInterval(autoUpdate, 100);
 
 app.listen(PORT, () => {
     console.log('='.repeat(70));
-    console.log('   🔥 GOD LEVEL PREDICTOR V6.0 🔥');
+    console.log('   💖 LOVE TRANG - GOD LEVEL PREDICTOR V6.0 💖');
     console.log('   📊 15 PHIÊN LIÊN TỤC + TRÙNG CẦU MẠNH');
     console.log('='.repeat(70));
     console.log(`   🚀 Port: ${PORT}`);
     console.log(`   🌐 API Sources: ${API_SOURCES.length} sources`);
     console.log(`   🧠 75+ thuật toán | Q-Learning | LSTM | Wavelet`);
     console.log(`   🎯 Phân tích 15 phiên + phát hiện trùng cầu 100%`);
+    console.log(`   💖 Love Trang - Dự đoán Tài Xỉu chính xác nhất!`);
     console.log('='.repeat(70));
 });
