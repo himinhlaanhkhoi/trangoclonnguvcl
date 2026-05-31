@@ -8,6 +8,7 @@ const API_URL = "https://lovetrang-xinkgai.onrender.com/data";
 let gameHistory = [];
 let currentPrediction = null;
 let isUpdating = false;
+let predictor = null;
 
 // ============ HELPERS ============
 const getPhien = item => item.phien ?? item.Phien ?? 0;
@@ -27,15 +28,26 @@ const normalize = item => ({
 });
 
 // ============ UTILS ============
-const sum = arr => arr.reduce((a,b) => a+b, 0);
-const avg = arr => arr.length ? sum(arr)/arr.length : 0;
-const std = arr => { const m=avg(arr); return Math.sqrt(avg(arr.map(x=>Math.pow(x-m,2)))); };
-const variance = arr => { const m=avg(arr); return avg(arr.map(x=>Math.pow(x-m,2))); };
-const entropy = arr => { const p=avg(arr); if(p===0||p===1) return 0; return -p*Math.log2(p)-(1-p)*Math.log2(1-p); };
-const rolling = (arr, w, fn) => { const r=[]; for(let i=w-1;i<arr.length;i++) r.push(fn(arr.slice(i-w+1,i+1))); return r; };
+const Utils = {
+    sum: (arr) => arr.reduce((a,b) => a + b, 0),
+    avg: (arr) => arr.length ? Utils.sum(arr) / arr.length : 0,
+    std: (arr) => {
+        const mean = Utils.avg(arr);
+        return Math.sqrt(Utils.avg(arr.map(x => Math.pow(x - mean, 2))));
+    },
+    variance: (arr) => {
+        const mean = Utils.avg(arr);
+        return Utils.avg(arr.map(x => Math.pow(x - mean, 2)));
+    },
+    entropy: (arr) => {
+        const p = Utils.avg(arr);
+        if (p === 0 || p === 1) return 0;
+        return -p * Math.log2(p) - (1-p) * Math.log2(1-p);
+    }
+};
 
-// ============ DATA PREPROCESSOR ============
-class DataPreprocessor {
+// ============ DATA PREPROCESSOR V12 ============
+class DataPreprocessorV12 {
     constructor(data) { this.raw = data; this.processed = null; }
     
     process() {
@@ -54,15 +66,8 @@ class DataPreprocessor {
                 isTriple: d.x1===d.x2 && d.x2===d.x3,
                 isPair: (d.x1===d.x2||d.x1===d.x3||d.x2===d.x3) && !(d.x1===d.x2&&d.x2===d.x3),
                 tripleValue: d.x1===d.x2&&d.x2===d.x3?d.x1:0,
-                pairValue: d.x1===d.x2?d.x1:(d.x1===d.x3?d.x1:(d.x2===d.x3?d.x2:0)),
-                variance: variance(dice), product: dice[0]*dice[1]*dice[2],
-                sumSq: dice[0]**2+dice[1]**2+dice[2]**2,
-                diceStr: dice.sort((a,b)=>a-b).join(''),
                 has1: dice.includes(1), has2: dice.includes(2), has3: dice.includes(3),
                 has4: dice.includes(4), has5: dice.includes(5), has6: dice.includes(6),
-                count1: dice.filter(x=>x===1).length, count2: dice.filter(x=>x===2).length,
-                count3: dice.filter(x=>x===3).length, count4: dice.filter(x=>x===4).length,
-                count5: dice.filter(x=>x===5).length, count6: dice.filter(x=>x===6).length,
             });
         }
         
@@ -70,8 +75,6 @@ class DataPreprocessor {
             let s=1;
             for(let j=i-1; j>=0&&p[j].result===p[i].result; j--) s++;
             p[i].streak = s;
-            p[i].prevResult = p[i-1].result;
-            p[i].totalDelta = p[i].total - p[i-1].total;
         }
         
         for (let i=1; i<p.length; i++) {
@@ -87,9 +90,8 @@ class DataPreprocessor {
         }
         
         for (let i=10; i<p.length; i++) {
-            const sl = p.slice(i-9,i+1);
-            p[i].last10Tai = sl.reduce((a,b)=>a+b.result,0)/10;
-            p[i].entropy10 = entropy(sl.map(x=>x.result));
+            p[i].last10Tai = p.slice(i-9,i+1).reduce((a,b)=>a+b.result,0)/10;
+            p[i].entropy10 = Utils.entropy(p.slice(i-9,i+1).map(x=>x.result));
             p[i].trend10 = (p[i].result-p[i-9].result)/10;
         }
         
@@ -106,291 +108,347 @@ class DataPreprocessor {
     }
 }
 
-// ============ PATTERN DATABASE ============
-class PatternDB {
-    constructor(data, maxLen=15) {
-        this.db = new Map(); this.data = data; this.maxLen = maxLen; this.build();
+// ============================================================
+// GOD MODE PREDICTOR V12.0
+// Khai thác cốt lõi xác suất | Phá nát lỗ hổng game
+// Siêu thích nghi | Độ chính xác tối đa
+// ============================================================
+
+class GodModePredictor {
+    constructor(data) {
+        this.raw = data;
+        this.processed = null;
+        this.core = null;
+        this.exploits = [];
+        this.history = [];
+        this.init();
     }
-    build() {
-        for (let len=3; len<=this.maxLen; len++) {
-            for (let i=0; i<=this.data.length-len-1; i++) {
-                const pat = this.data.slice(i,i+len).map(p=>p.result).join('');
-                const next = this.data[i+len].result;
-                if(!this.db.has(pat)) this.db.set(pat,{Tai:0,Xiu:0,count:0});
-                const e = this.db.get(pat);
-                if(next===1) e.Tai++; else e.Xiu++;
-                e.count++;
+    
+    init() {
+        const prep = new DataPreprocessorV12(this.raw);
+        this.processed = prep.process();
+        this.analyzeCoreProbability();
+    }
+    
+    analyzeCoreProbability() {
+        const results = this.processed.map(p => p.result);
+        const n = results.length;
+        const taiCount = results.filter(r => r === 1).length;
+        const baseProb = taiCount / n;
+        
+        const totals = this.processed.map(p => p.total);
+        const meanTotal = Utils.avg(totals);
+        const stdTotal = Utils.std(totals);
+        
+        const faceCount = [0,0,0,0,0,0,0];
+        for (const p of this.processed) {
+            faceCount[p.x1]++; faceCount[p.x2]++; faceCount[p.x3]++;
+        }
+        const totalRolls = n * 3;
+        const faceProb = faceCount.map(c => c / totalRolls);
+        
+        const corrMatrix = Array(7).fill().map(() => Array(7).fill(0));
+        for (let i = 1; i < this.processed.length; i++) {
+            const prev = [this.processed[i-1].x1, this.processed[i-1].x2, this.processed[i-1].x3];
+            const curr = [this.processed[i].x1, this.processed[i].x2, this.processed[i].x3];
+            for (const fp of prev) for (const fc of curr) corrMatrix[fp][fc]++;
+        }
+        for (let i=1; i<=6; i++) {
+            const rowSum = corrMatrix[i].reduce((a,b)=>a+b,0);
+            if (rowSum>0) for (let j=1; j<=6; j++) corrMatrix[i][j]/=rowSum;
+        }
+        
+        const totalGivenPrev = {};
+        for (let i=1; i<this.processed.length; i++) {
+            const prev = this.processed[i-1].total;
+            const curr = this.processed[i].total;
+            if(!totalGivenPrev[prev]) totalGivenPrev[prev] = [];
+            totalGivenPrev[prev].push(curr);
+        }
+        for (const prev in totalGivenPrev) {
+            const arr = totalGivenPrev[prev];
+            const mean = Utils.avg(arr);
+            totalGivenPrev[prev] = { mean, std: Utils.std(arr) };
+        }
+        
+        this.core = { baseProb, meanTotal, stdTotal, faceProb, corrMatrix, totalGivenPrev, n };
+    }
+    
+    findExploits() {
+        const exploits = [];
+        
+        // Face absence
+        for (let face=1; face<=6; face++) {
+            let lastSeen=-1;
+            for(let i=this.processed.length-1; i>=0; i--) {
+                if(this.processed[i][`has${face}`]){lastSeen=i;break;}
+            }
+            const absence = this.processed.length-1-lastSeen;
+            if(absence>=12) {
+                exploits.push({
+                    type:"face_absence", face, absence,
+                    prediction:face<=3?"xiu":"tai",
+                    confidence:65+Math.min(20,absence)
+                });
             }
         }
-    }
-    predict(pattern) {
-        if(!this.db.has(pattern)) return null;
-        const e = this.db.get(pattern);
-        if(e.count<2) return null;
-        const prob = e.Tai/e.count;
-        return {prediction:prob>=0.5?'tai':'xiu',confidence:Math.abs(prob-0.5)*2*100};
-    }
-}
-
-// ============ MARKOV ============
-class MarkovChain {
-    constructor(data, maxOrder=5) {
-        this.models = new Map(); this.data = data; this.maxOrder = maxOrder; this.build();
-    }
-    build() {
-        const r = this.data.map(p=>p.result);
-        for (let order=2; order<=this.maxOrder; order++) {
-            const trans = new Map();
-            for (let i=0; i<=r.length-order-1; i++) {
-                const s = r.slice(i,i+order).join('');
-                const n = r[i+order];
-                if(!trans.has(s)) trans.set(s,{0:0,1:0});
-                trans.get(s)[n]++;
+        
+        // Total deviation
+        const lastTotal = this.processed[this.processed.length-1].total;
+        const deviation = Math.abs(lastTotal-this.core.meanTotal)/this.core.stdTotal;
+        if(deviation>1.5) {
+            exploits.push({
+                type:"total_deviation", deviation,
+                prediction:lastTotal>this.core.meanTotal?"xiu":"tai",
+                confidence:60+Math.min(20,deviation*5)
+            });
+        }
+        
+        // Long streak
+        const lastStreak = this.processed[this.processed.length-1].streak;
+        if(lastStreak>=5) {
+            exploits.push({
+                type:"long_streak", streak:lastStreak,
+                prediction:this.processed[this.processed.length-1].result===1?"xiu":"tai",
+                confidence:60+Math.min(25,lastStreak*4)
+            });
+        }
+        
+        // Alternating
+        if(this.processed.length>=10){
+            const last10 = this.processed.slice(-10).map(p=>p.result);
+            let isAlt=true;
+            for(let i=1;i<10;i++) if(last10[i]===last10[i-1]){isAlt=false;break;}
+            if(isAlt) exploits.push({type:"long_alternating",length:10,prediction:last10[9]===1?"xiu":"tai",confidence:72});
+        }
+        
+        // Face correlation
+        const lastFaces = [this.processed[this.processed.length-1].x1,this.processed[this.processed.length-1].x2,this.processed[this.processed.length-1].x3];
+        let faceSignal={tai:0,xiu:0};
+        for(const face of lastFaces){
+            const nextProb=this.core.corrMatrix[face];
+            if(nextProb){
+                for(let nf=1;nf<=6;nf++){
+                    if(nf<=3) faceSignal.xiu+=nextProb[nf];
+                    else faceSignal.tai+=nextProb[nf];
+                }
             }
-            this.models.set(order,trans);
         }
+        const totalFS=faceSignal.tai+faceSignal.xiu;
+        if(totalFS>0){
+            const faceConf=Math.abs(faceSignal.tai-faceSignal.xiu)/totalFS*100;
+            if(faceConf>55) exploits.push({type:"face_correlation",prediction:faceSignal.tai>faceSignal.xiu?"tai":"xiu",confidence:faceConf});
+        }
+        
+        return exploits;
     }
-    predict(order) {
-        const r = this.data.map(p=>p.result);
-        if(r.length<order+1) return null;
-        const trans = this.models.get(order);
-        const ls = r.slice(-order).join('');
-        const cnt = trans.get(ls);
-        if(!cnt||cnt[0]+cnt[1]<2) return null;
-        const conf = Math.max(cnt[0],cnt[1])/(cnt[0]+cnt[1])*100;
-        return {prediction:cnt[1]>cnt[0]?'tai':'xiu',confidence:conf};
+    
+    analyzeTotalZones() {
+        const totals = this.processed.map(p=>p.total);
+        const dist={};
+        for(let i=3;i<=18;i++) dist[i]=0;
+        for(const t of totals) dist[t]++;
+        const peaks=[], valleys=[];
+        for(let i=4;i<=17;i++){
+            if(dist[i]<dist[i-1]&&dist[i]<dist[i+1]) valleys.push(i);
+            if(dist[i]>dist[i-1]&&dist[i]>dist[i+1]) peaks.push(i);
+        }
+        const lastTotal=totals[totals.length-1];
+        if(peaks.includes(lastTotal)) return {zone:"peak",prediction:"xiu",confidence:62};
+        if(valleys.includes(lastTotal)) return {zone:"valley",prediction:"tai",confidence:62};
+        return {zone:"normal",prediction:null,confidence:0};
     }
-}
-
-// ============ TECHNICAL ============
-class TechnicalIndicators {
-    constructor(data) { this.data = data; }
-    rsi(p=14) {
-        if(this.data.length<p+1) return null;
-        const r = this.data.map(x=>x.result);
-        let g=0,l=0;
-        for(let i=r.length-p;i<r.length-1;i++){const d=r[i+1]-r[i];if(d>0)g+=d;else l+=-d;}
-        const rsi=100-100/(1+g/(l+0.001));
-        if(rsi>70) return {prediction:'xiu',confidence:65,name:'RSI'};
-        if(rsi<30) return {prediction:'tai',confidence:65,name:'RSI'};
+    
+    analyzeChaoticCycles() {
+        const results=this.processed.map(p=>p.result);
+        const windows=[5,7,9,11,13,15,17,19];
+        let bestCycle=null,bestAccuracy=0;
+        for(const w of windows){
+            if(results.length<w*2) continue;
+            let matches=0;
+            for(let i=w;i<results.length;i++) if(results[i]===results[i-w]) matches++;
+            const acc=matches/(results.length-w);
+            if(acc>bestAccuracy&&acc>0.58){bestAccuracy=acc;bestCycle=w;}
+        }
+        if(bestCycle&&results.length>=bestCycle){
+            const pred=results[results.length-bestCycle];
+            return {hasCycle:true,cycle:bestCycle,accuracy:bestAccuracy,prediction:pred===1?"tai":"xiu",confidence:60+bestAccuracy*30};
+        }
+        return {hasCycle:false};
+    }
+    
+    bayesianInference() {
+        const last=this.processed[this.processed.length-1];
+        const lastResult=last.result, lastTotal=last.total, lastStreak=last.streak;
+        let prior=this.core.baseProb;
+        
+        let streakLikelihood=0.5;
+        if(lastStreak>=4){
+            let sf=0,st=0;
+            for(let i=lastStreak;i<this.processed.length-1;i++){
+                let isS=true;
+                for(let j=0;j<lastStreak;j++) if(this.processed[i-1-j].result!==lastResult){isS=false;break;}
+                if(isS){st++;if(this.processed[i].result===lastResult) sf++;}
+            }
+            streakLikelihood=st>5?sf/st:0.5+(lastStreak-3)*0.05;
+        }
+        
+        let totalLikelihood=0.5;
+        if(this.core.totalGivenPrev[lastTotal]) totalLikelihood=this.core.totalGivenPrev[lastTotal].mean>=11?0.6:0.4;
+        
+        const posterior=(prior*streakLikelihood*totalLikelihood)/(prior*streakLikelihood*totalLikelihood+(1-prior)*(1-streakLikelihood)*(1-totalLikelihood));
+        const conf=Math.abs(posterior-0.5)*2*100;
+        return {prediction:posterior>=0.5?"tai":"xiu",confidence:Math.min(85,conf),posterior};
+    }
+    
+    totalExploit() {
+        const lastTotal=this.processed[this.processed.length-1].total;
+        const last3=this.processed.slice(-3).map(p=>p.total);
+        const trend3=(last3[2]-last3[0])/2;
+        if(Math.abs(trend3)>2) return {prediction:trend3>0?"xiu":"tai",confidence:63,exploit:"total_trend"};
+        if(lastTotal>=16) return {prediction:"xiu",confidence:68,exploit:"total_very_high"};
+        if(lastTotal<=4) return {prediction:"tai",confidence:70,exploit:"total_very_low"};
         return null;
     }
-    bollinger() {
-        if(this.data.length<20) return null;
-        const r=this.data.slice(-20).map(x=>x.result);
-        const sma=avg(r),s=std(r),last=r[r.length-1];
-        if(last>sma+1.5*s) return {prediction:'xiu',confidence:62,name:'Bollinger'};
-        if(last<sma-1.5*s) return {prediction:'tai',confidence:62,name:'Bollinger'};
-        return null;
+    
+    neuralHeuristic() {
+        const recent=this.processed.slice(-20);
+        const results=recent.map(p=>p.result);
+        const totals=recent.map(p=>p.total);
+        const avgResult=Utils.avg(results);
+        const avgTotal=Utils.avg(totals);
+        const trend=(results[results.length-1]-results[0])/20;
+        const totalTrend=(totals[totals.length-1]-totals[0])/20;
+        const volatility=Utils.std(totals);
+        const ent=Utils.entropy(results);
+        const streak=this.processed[this.processed.length-1].streak;
+        
+        let score=0;
+        score+=(avgResult-0.5)*0.8;
+        score+=trend*1.2;
+        score+=(avgTotal-10.5)/10*0.5;
+        score+=totalTrend*0.6;
+        score+=(volatility-3)/5*0.3;
+        score+=(0.5-ent)*0.7;
+        score+=(streak-2.5)/8*0.4;
+        
+        let prob=0.5+Math.min(0.4,Math.max(-0.4,score));
+        return {prediction:prob>=0.5?"tai":"xiu",confidence:Math.abs(prob-0.5)*2*100,prob};
     }
-    all() { const sigs=[]; const a=this.rsi();if(a)sigs.push(a); const b=this.bollinger();if(b)sigs.push(b); return sigs; }
-}
-
-// ============ PATTERN DETECTOR ============
-class PatternDetector {
-    constructor(data) { this.data = data; }
-    all() {
-        const sigs = [];
-        const last = this.data[this.data.length-1];
-        // Streak
-        if(last.streak>=4&&last.streak<=6) sigs.push({prediction:last.result===1?'tai':'xiu',confidence:55+last.streak*2,name:'Streak'});
-        if(last.streak>=7) sigs.push({prediction:last.result===1?'xiu':'tai',confidence:65+(last.streak-6)*2,name:'StreakBreak'});
-        // Cầu 1-1
-        if(this.data.length>=6) {
-            const l6=this.data.slice(-6).map(p=>p.result);
-            if(l6.every((v,i,a)=>i===0||v!==a[i-1])) sigs.push({prediction:l6[5]===1?'xiu':'tai',confidence:72,name:'Cau11'});
+    
+    // Phân tích 15 phiên
+    analyzeLast15() {
+        if(this.processed.length<15) return {matched:[],strong:[]};
+        const last15=this.processed.slice(-15);
+        const pat15=last15.map(p=>p.result).join('');
+        const dice15=last15.map(p=>`${p.x1}${p.x2}${p.x3}`).join('|');
+        const matched=[],strong=[];
+        
+        for(let i=0;i<=this.processed.length-16;i++){
+            const hist=this.processed.slice(i,i+15).map(p=>p.result).join('');
+            if(hist===pat15) matched.push({next:this.processed[i+15].result===1?"tai":"xiu",conf:Math.min(95,60+matched.length*5)});
         }
-        // Cầu 2-2
-        if(this.data.length>=8) {
-            const l8=this.data.slice(-8).map(p=>p.result);
-            let is22=true;
-            for(let i=2;i<8;i+=2) if(l8[i]!==l8[i-2]){is22=false;break;}
-            if(is22&&l8[0]!==l8[1]) sigs.push({prediction:l8[7]===1?'xiu':'tai',confidence:68,name:'Cau22'});
+        for(let i=0;i<=this.processed.length-16;i++){
+            const hd=this.processed.slice(i,i+15).map(p=>`${p.x1}${p.x2}${p.x3}`).join('|');
+            if(hd===dice15){strong.push({type:"DICE",prediction:this.processed[i+15].result===1?"tai":"xiu",confidence:90});break;}
         }
-        // Cầu 1-2-1
-        if(this.data.length>=8) {
-            const l8=this.data.slice(-8).map(p=>p.result);
-            if(l8[0]===1&&l8[1]===1&&l8[2]===0&&l8[3]===0&&l8[4]===1&&l8[5]===1&&l8[6]===0&&l8[7]===0) sigs.push({prediction:'tai',confidence:70,name:'Cau121'});
-            if(l8[0]===0&&l8[1]===0&&l8[2]===1&&l8[3]===1&&l8[4]===0&&l8[5]===0&&l8[6]===1&&l8[7]===1) sigs.push({prediction:'xiu',confidence:70,name:'Cau121'});
+        if(matched.length>0){
+            const tc=matched.filter(m=>m.next==="tai").length,xc=matched.filter(m=>m.next==="xiu").length;
+            if(tc+xc>=3&&(tc===tc+xc||xc===tc+xc)) strong.push({type:"PAT100",prediction:tc===tc+xc?"tai":"xiu",confidence:96});
+            else if(tc+xc>=2&&Math.max(tc,xc)/(tc+xc)>=0.75){const p=tc>xc?"tai":"xiu";strong.push({type:"PATHIGH",prediction:p,confidence:75+(Math.max(tc,xc)/(tc+xc)*100-75)/5});}
         }
-        // Cầu 2-1-2
-        if(this.data.length>=8) {
-            const l8=this.data.slice(-8).map(p=>p.result);
-            if(l8[0]===1&&l8[1]===1&&l8[2]===0&&l8[3]===1&&l8[4]===1&&l8[5]===0&&l8[6]===1&&l8[7]===1) sigs.push({prediction:'xiu',confidence:72,name:'Cau212'});
-            if(l8[0]===0&&l8[1]===0&&l8[2]===1&&l8[3]===0&&l8[4]===0&&l8[5]===1&&l8[6]===0&&l8[7]===0) sigs.push({prediction:'tai',confidence:72,name:'Cau212'});
+        return {matched,strong};
+    }
+    
+    getLast15Pattern() {
+        if(this.processed.length<15) return "";
+        return this.processed.slice(-15).map(p=>p.result===1?"t":"x").join('');
+    }
+    
+    superPredict() {
+        const analysis=this.analyzeLast15();
+        const signals=[];
+        
+        // Exploits
+        const exploits=this.findExploits();
+        for(const exp of exploits) signals.push({source:`Exploit_${exp.type}`,prediction:exp.prediction,confidence:exp.confidence,weight:1.2});
+        
+        // Zones
+        const zones=this.analyzeTotalZones();
+        if(zones.prediction) signals.push({source:`Zone_${zones.zone}`,prediction:zones.prediction,confidence:zones.confidence,weight:1.0});
+        
+        // Cycles
+        const cycles=this.analyzeChaoticCycles();
+        if(cycles.hasCycle) signals.push({source:`Cycle_${cycles.cycle}`,prediction:cycles.prediction,confidence:cycles.confidence,weight:1.1});
+        
+        // Bayes
+        const bayes=this.bayesianInference();
+        signals.push({source:"Bayesian",prediction:bayes.prediction,confidence:bayes.confidence,weight:1.15});
+        
+        // Total exploit
+        const totalExp=this.totalExploit();
+        if(totalExp) signals.push({source:`TotalExploit_${totalExp.exploit}`,prediction:totalExp.prediction,confidence:totalExp.confidence,weight:1.1});
+        
+        // Neural
+        const neural=this.neuralHeuristic();
+        signals.push({source:"NeuralHeuristic",prediction:neural.prediction,confidence:neural.confidence,weight:1.0});
+        
+        // Pattern match từ 15 phiên
+        if(analysis.matched.length>0){
+            const best=analysis.matched.sort((a,b)=>b.conf-a.conf)[0];
+            signals.push({source:"Pattern15",prediction:best.next,confidence:best.conf,weight:1.3});
         }
-        return sigs;
-    }
-}
-
-// ============ TRICK DETECTOR ============
-class TrickDetector {
-    constructor(data) { this.data = data; }
-    detect() {
-        const idx = this.data.length-1;
-        const sigs = [];
-        const tricks = [
-            {name:'Triple1',cond:(d,i)=>i>0&&d[i-1].isTriple&&d[i-1].tripleValue===1,pred:'xiu',conf:87},
-            {name:'Triple6',cond:(d,i)=>i>0&&d[i-1].isTriple&&d[i-1].tripleValue===6,pred:'tai',conf:84},
-            {name:'TotalHigh',cond:(d,i)=>i>0&&d[i-1].total>=15,pred:'xiu',conf:66},
-            {name:'TotalLow',cond:(d,i)=>i>0&&d[i-1].total<=5,pred:'tai',conf:68},
-            {name:'Face1Gap',cond:(d,i)=>i>0&&d[i-1].face1Streak>=12,pred:'xiu',conf:78},
-            {name:'Face6Gap',cond:(d,i)=>i>0&&d[i-1].face6Streak>=12,pred:'tai',conf:76},
-        ];
-        for(const t of tricks) if(t.cond(this.data,idx)) sigs.push({name:t.name,prediction:t.pred,confidence:t.conf});
-        return sigs;
-    }
-}
-
-// ============ HIDDEN DETECTOR ============
-class HiddenDetector {
-    constructor(data) { this.data=data; this.cycles=[]; this.hurst=null; this.detect(); }
-    detect() {
-        const r=this.data.map(p=>p.result);
-        for(let c=2;c<=30;c++){if(r.length<c*2)continue;let m=0;for(let i=c;i<r.length;i++)if(r[i]===r[i-c])m++;const a=m/(r.length-c);if(a>0.55)this.cycles.push({cycle:c,accuracy:a});}
-        if(r.length>100){
-            const lags=[10,20,30,40,50];let rs=[];
-            for(let lag of lags){if(r.length<lag*2)continue;let ranges=[];for(let s=0;s+lag<=r.length;s+=lag){let chunk=r.slice(s,s+lag);let mean=avg(chunk);let cum=[],sm=0;for(let i=0;i<lag;i++){sm+=chunk[i]-mean;cum.push(sm);}let R=Math.max(...cum)-Math.min(...cum);let S=Math.sqrt(variance(chunk));if(S>0)ranges.push(R/S);}if(ranges.length)rs.push(Math.log(avg(ranges)));}
-            if(rs.length>=2) this.hurst=(rs[rs.length-1]-rs[0])/(Math.log(lags[rs.length-1])-Math.log(lags[0]));
+        for(const ss of analysis.strong) signals.push({source:ss.type,prediction:ss.prediction,confidence:ss.confidence,weight:2.0});
+        
+        // Statistical
+        const last10Tai=this.processed.slice(-10).reduce((a,b)=>a+b.result,0)/10;
+        if(last10Tai>0.7) signals.push({source:"StatHigh",prediction:"xiu",confidence:65,weight:1.0});
+        if(last10Tai<0.3) signals.push({source:"StatLow",prediction:"tai",confidence:65,weight:1.0});
+        
+        const recTot=this.processed.slice(-10).map(p=>p.total);
+        const avgRec=Utils.avg(recTot);
+        const last=this.processed[this.processed.length-1];
+        if(last.total>avgRec+3) signals.push({source:"TotalHigh",prediction:"xiu",confidence:62,weight:1.0});
+        if(last.total<avgRec-3) signals.push({source:"TotalLow",prediction:"tai",confidence:62,weight:1.0});
+        
+        // Fibonacci
+        if(this.processed.length>=30){
+            const totals=this.processed.slice(-30).map(p=>p.total);
+            const h=Math.max(...totals),l=Math.min(...totals),r=h-l;
+            if(last.total>l+r*0.618) signals.push({source:"Fib",prediction:"xiu",confidence:66,weight:1.0});
+            if(last.total<l+r*0.382) signals.push({source:"Fib",prediction:"tai",confidence:66,weight:1.0});
         }
+        
+        // Weighted voting
+        let taiScore=0,xiuScore=0;
+        for(const sig of signals){
+            const w=sig.confidence*sig.weight;
+            if(sig.prediction==="tai") taiScore+=w;
+            else xiuScore+=w;
+        }
+        
+        let final=taiScore>=xiuScore?"tai":"xiu";
+        let conf=Math.round(Math.max(taiScore,xiuScore)/(taiScore+xiuScore)*100);
+        
+        if(analysis.strong.some(s=>s.type==="PAT100")){final=analysis.strong.find(s=>s.type==="PAT100").prediction;conf=96;}
+        else if(analysis.strong.some(s=>s.type==="DICE")){final=analysis.strong.find(s=>s.type==="DICE").prediction;conf=Math.max(conf,90);}
+        
+        conf=Math.max(60,Math.min(98,conf));
+        const pattern=this.getLast15Pattern();
+        
+        let predictedTotal=10;
+        if(this.processed.length>=10){
+            const totals=this.processed.slice(-10).map(p=>p.total);
+            predictedTotal=Math.round(Utils.avg(totals));
+            if(last.total>=15) predictedTotal=Math.min(predictedTotal,12);
+            if(last.total<=5) predictedTotal=Math.max(predictedTotal,9);
+            predictedTotal=Math.min(18,Math.max(3,predictedTotal));
+        }
+        
+        this.lastPrediction=final;
+        
+        return {prediction:final,confidence:conf,pattern,predictedTotal};
     }
-    predict() {
-        const idx=this.data.length-1,last=this.data[idx].result;
-        for(const cyc of this.cycles){if(idx>=cyc.cycle){const pred=this.data[idx-cyc.cycle+1].result;const conf=cyc.accuracy*100;if(conf>60)return{prediction:pred===1?'tai':'xiu',confidence:conf,source:`Cycle${cyc.cycle}`};}}
-        if(this.hurst!==null){if(this.hurst>0.65)return{prediction:last===1?'tai':'xiu',confidence:70+(this.hurst-0.65)*50,source:'Hurst'};if(this.hurst<0.35)return{prediction:last===1?'xiu':'tai',confidence:68,source:'Hurst'};}
-        return null;
-    }
-}
-
-// ============ MAIN PREDICTOR ============
-function predict(sessions) {
-    if(!sessions||sessions.length<15) return null;
-    
-    const pp = new DataPreprocessor(sessions);
-    const data = pp.process();
-    const n = data.length;
-    const last = data[n-1];
-    
-    // Pattern
-    let pattern = '';
-    for(let i=n-15;i<n;i++) pattern += data[i].result===1?'t':'x';
-    
-    // Analyze 15
-    const last15 = data.slice(-15);
-    const pat15 = last15.map(p=>p.result).join('');
-    const dice15 = last15.map(p=>p.diceStr).join('|');
-    let matched=[], strong=[];
-    
-    for(let i=0;i<=n-16;i++) {
-        const hist = data.slice(i,i+15).map(p=>p.result).join('');
-        if(hist===pat15) matched.push({next:data[i+15].result===1?'tai':'xiu',conf:Math.min(95,60+matched.length*5)});
-    }
-    for(let i=0;i<=n-16;i++) {
-        const histD = data.slice(i,i+15).map(p=>p.diceStr).join('|');
-        if(histD===dice15){strong.push({type:'DICE',prediction:data[i+15].result===1?'tai':'xiu',confidence:90});break;}
-    }
-    if(matched.length>0){
-        const tc=matched.filter(m=>m.next==='tai').length;
-        const xc=matched.filter(m=>m.next==='xiu').length;
-        if(tc+xc>=3&&(tc===tc+xc||xc===tc+xc)) strong.push({type:'PAT100',prediction:tc===tc+xc?'tai':'xiu',confidence:96});
-        else if(tc+xc>=2&&Math.max(tc,xc)/(tc+xc)>=0.75){const p=tc>xc?'tai':'xiu';strong.push({type:'PATHIGH',prediction:p,confidence:75+(Math.max(tc,xc)/(tc+xc)*100-75)/5});}
-    }
-    
-    // Build signals
-    const pdb = new PatternDB(data);
-    const mk = new MarkovChain(data);
-    const tech = new TechnicalIndicators(data);
-    const patDet = new PatternDetector(data);
-    const trick = new TrickDetector(data);
-    const hidden = new HiddenDetector(data);
-    
-    const signals = [];
-    
-    // PatternDB
-    const l10 = data.slice(-10).map(p=>p.result).join('');
-    for(let len=8;len>=5;len--){const pr=pdb.predict(l10.slice(-len));if(pr){signals.push({...pr,source:`PDB_${len}`});break;}}
-    
-    // Markov
-    for(let o=5;o>=2;o--){const pr=mk.predict(o);if(pr){signals.push({...pr,source:`MK${o}`});break;}}
-    
-    // Technical
-    for(const s of tech.all()) signals.push({...s,source:s.name});
-    
-    // Pattern Detector
-    for(const s of patDet.all()) signals.push({...s,source:s.name});
-    
-    // Trick
-    for(const s of trick.detect()) signals.push({...s,source:s.name});
-    
-    // Hidden
-    const hs = hidden.predict();
-    if(hs) signals.push({...hs,source:hs.source});
-    
-    // Statistical
-    const l10t = data.slice(-10).reduce((a,b)=>a+b.result,0)/10;
-    if(l10t>0.7) signals.push({prediction:'xiu',confidence:65,source:'StatHigh'});
-    if(l10t<0.3) signals.push({prediction:'tai',confidence:65,source:'StatLow'});
-    
-    const recTot = data.slice(-10).map(p=>p.total);
-    const avgRec = avg(recTot);
-    if(last.total>avgRec+3) signals.push({prediction:'xiu',confidence:62,source:'TotalHigh'});
-    if(last.total<avgRec-3) signals.push({prediction:'tai',confidence:62,source:'TotalLow'});
-    
-    // Fibonacci
-    if(n>=30){
-        const totals=data.slice(-30).map(p=>p.total);
-        const h=Math.max(...totals),l=Math.min(...totals),r=h-l;
-        if(last.total>l+r*0.618) signals.push({prediction:'xiu',confidence:66,source:'Fib'});
-        if(last.total<l+r*0.382) signals.push({prediction:'tai',confidence:66,source:'Fib'});
-    }
-    
-    // Dice
-    const dice=[last.x1,last.x2,last.x3];
-    let ds=0;
-    for(let f of dice){if(f<=2)ds--;if(f>=5)ds++;}
-    if(ds>=2) signals.push({prediction:'tai',confidence:60,source:'Dice'});
-    if(ds<=-2) signals.push({prediction:'xiu',confidence:60,source:'Dice'});
-    
-    // Triple
-    if(last.isTriple){if(last.tripleValue<=2)signals.push({prediction:'xiu',confidence:82,source:'Triple'});else if(last.tripleValue>=5)signals.push({prediction:'tai',confidence:80,source:'Triple'});}
-    
-    // Mean reversion
-    if(n>=20){
-        const totals=data.slice(-20).map(p=>p.total);
-        const m=avg(totals);
-        if(last.total>m+3) signals.push({prediction:'xiu',confidence:65,source:'MeanRev'});
-        if(last.total<m-3) signals.push({prediction:'tai',confidence:65,source:'MeanRev'});
-    }
-    
-    // Add strong
-    for(const ss of strong) signals.push({prediction:ss.prediction,confidence:ss.confidence,source:ss.type});
-    
-    // Weight
-    let tai=0,xiu=0;
-    for(const s of signals){
-        if(s.prediction==='tai') tai+=s.confidence;
-        else xiu+=s.confidence;
-    }
-    
-    let final = tai>=xiu?'tai':'xiu';
-    let conf = Math.round(Math.max(tai,xiu)/(tai+xiu)*100);
-    
-    if(strong.some(s=>s.type==='PAT100')){final=strong.find(s=>s.type==='PAT100').prediction;conf=96;}
-    else if(strong.some(s=>s.type==='DICE')){final=strong.find(s=>s.type==='DICE').prediction;conf=Math.max(conf,90);}
-    
-    conf = Math.max(60,Math.min(98,conf));
-    
-    // Predicted total
-    let predTotal = 10;
-    if(n>=10){
-        const totals=data.slice(-10).map(p=>p.total);
-        predTotal=Math.round(avg(totals));
-        if(last.total>=15) predTotal=Math.min(predTotal,12);
-        if(last.total<=5) predTotal=Math.max(predTotal,9);
-        predTotal=Math.min(18,Math.max(3,predTotal));
-    }
-    
-    return {prediction:final,confidence:conf,pattern,predictedTotal:predTotal};
 }
 
 // ============ FETCH ============
@@ -406,32 +464,34 @@ async function fetchData() {
 // ============ UPDATE ============
 async function updatePrediction() {
     if(isUpdating) return;
-    isUpdating = true;
+    isUpdating=true;
     try {
         const data = await fetchData();
         if(!data||data.length<15) return;
-        const latest = data[data.length-1];
-        const pred = predict(data.slice(-300));
+        const latest=data[data.length-1];
+        
+        predictor = new GodModePredictor(data.slice(-500));
+        const pred = predictor.superPredict();
         if(!pred) return;
         
-        gameHistory = data;
-        currentPrediction = {
-            id: 'AnhKhoizZz',
-            phien_truoc: latest.phien,
-            xuc_xac1: latest.x1,
-            xuc_xac2: latest.x2,
-            xuc_xac3: latest.x3,
-            tong: latest.tong,
-            ket_qua: latest.ket_qua,
-            pattern: pred.pattern,
-            phien_hien_tai: latest.phien + 1,
-            du_doan: pred.prediction,
-            do_tin_cay: pred.confidence + '%',
-            tong_du_doan: pred.predictedTotal,
+        gameHistory=data;
+        currentPrediction={
+            id:'AnhKhoizZz',
+            phien_truoc:latest.phien,
+            xuc_xac1:latest.x1,
+            xuc_xac2:latest.x2,
+            xuc_xac3:latest.x3,
+            tong:latest.tong,
+            ket_qua:latest.ket_qua,
+            pattern:pred.pattern,
+            phien_hien_tai:latest.phien+1,
+            du_doan:pred.prediction,
+            do_tin_cay:pred.confidence+'%',
+            tong_du_doan:pred.predictedTotal,
         };
-        console.log(`✅ DỰ ĐOÁN: ${pred.prediction} (${pred.confidence}%) | Tổng ~${pred.predictedTotal} | Pattern: ${pred.pattern}`);
-    } catch(e) { console.error('Lỗi update:', e.message); }
-    isUpdating = false;
+        console.log(`💀 GOD MODE: ${pred.prediction} (${pred.confidence}%) | Tổng ~${pred.predictedTotal} | Pattern: ${pred.pattern}`);
+    } catch(e){console.error('Lỗi update:',e.message);}
+    isUpdating=false;
 }
 
 // ============ ROUTES ============
@@ -445,15 +505,14 @@ app.get('/', (req, res) => res.redirect('/taixiu'));
 
 // ============ KHỞI ĐỘNG ============
 updatePrediction();
-setInterval(updatePrediction, 200);
+setInterval(updatePrediction, 100);
 
 app.listen(PORT, () => {
     console.log('='.repeat(60));
-    console.log('   🔥 ADAPTIVE ULTIMATE PREDICTOR V11.0 🔥');
-    console.log('   150+ thuật toán | Pattern DB | Markov | Technical');
-    console.log('   Trick Detector | Hidden Cycles | Fibonacci');
+    console.log('   💀 GOD MODE PREDICTOR V12.0 💀');
+    console.log('   Khai thác cốt lõi xác suất | Phá nát lỗ hổng game');
     console.log('   API: lovetrang-xinkgai.onrender.com/data');
     console.log('='.repeat(60));
-    console.log(`   🚀 Port: ${PORT} | /taixiu để xem dự đoán`);
+    console.log(`   🚀 Port: ${PORT} | /taixiu`);
     console.log('='.repeat(60));
 });
