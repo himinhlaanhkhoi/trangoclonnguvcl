@@ -9,6 +9,8 @@ let gameHistory = [];
 let currentPrediction = null;
 let isUpdating = false;
 let predictor = null;
+let retryCount = 0;
+let maxRetries = 5;
 
 // ============ HELPERS ============
 const getPhien = item => item.phien ?? item.Phien ?? 0;
@@ -177,7 +179,6 @@ class GodModePredictor {
     findExploits() {
         const exploits = [];
         
-        // Face absence
         for (let face=1; face<=6; face++) {
             let lastSeen=-1;
             for(let i=this.processed.length-1; i>=0; i--) {
@@ -193,7 +194,6 @@ class GodModePredictor {
             }
         }
         
-        // Total deviation
         const lastTotal = this.processed[this.processed.length-1].total;
         const deviation = Math.abs(lastTotal-this.core.meanTotal)/this.core.stdTotal;
         if(deviation>1.5) {
@@ -204,7 +204,6 @@ class GodModePredictor {
             });
         }
         
-        // Long streak
         const lastStreak = this.processed[this.processed.length-1].streak;
         if(lastStreak>=5) {
             exploits.push({
@@ -214,7 +213,6 @@ class GodModePredictor {
             });
         }
         
-        // Alternating
         if(this.processed.length>=10){
             const last10 = this.processed.slice(-10).map(p=>p.result);
             let isAlt=true;
@@ -222,7 +220,6 @@ class GodModePredictor {
             if(isAlt) exploits.push({type:"long_alternating",length:10,prediction:last10[9]===1?"xiu":"tai",confidence:72});
         }
         
-        // Face correlation
         const lastFaces = [this.processed[this.processed.length-1].x1,this.processed[this.processed.length-1].x2,this.processed[this.processed.length-1].x3];
         let faceSignal={tai:0,xiu:0};
         for(const face of lastFaces){
@@ -336,7 +333,6 @@ class GodModePredictor {
         return {prediction:prob>=0.5?"tai":"xiu",confidence:Math.abs(prob-0.5)*2*100,prob};
     }
     
-    // Phân tích 15 phiên
     analyzeLast15() {
         if(this.processed.length<15) return {matched:[],strong:[]};
         const last15=this.processed.slice(-15);
@@ -369,38 +365,30 @@ class GodModePredictor {
         const analysis=this.analyzeLast15();
         const signals=[];
         
-        // Exploits
         const exploits=this.findExploits();
         for(const exp of exploits) signals.push({source:`Exploit_${exp.type}`,prediction:exp.prediction,confidence:exp.confidence,weight:1.2});
         
-        // Zones
         const zones=this.analyzeTotalZones();
         if(zones.prediction) signals.push({source:`Zone_${zones.zone}`,prediction:zones.prediction,confidence:zones.confidence,weight:1.0});
         
-        // Cycles
         const cycles=this.analyzeChaoticCycles();
         if(cycles.hasCycle) signals.push({source:`Cycle_${cycles.cycle}`,prediction:cycles.prediction,confidence:cycles.confidence,weight:1.1});
         
-        // Bayes
         const bayes=this.bayesianInference();
         signals.push({source:"Bayesian",prediction:bayes.prediction,confidence:bayes.confidence,weight:1.15});
         
-        // Total exploit
         const totalExp=this.totalExploit();
         if(totalExp) signals.push({source:`TotalExploit_${totalExp.exploit}`,prediction:totalExp.prediction,confidence:totalExp.confidence,weight:1.1});
         
-        // Neural
         const neural=this.neuralHeuristic();
         signals.push({source:"NeuralHeuristic",prediction:neural.prediction,confidence:neural.confidence,weight:1.0});
         
-        // Pattern match từ 15 phiên
         if(analysis.matched.length>0){
             const best=analysis.matched.sort((a,b)=>b.conf-a.conf)[0];
             signals.push({source:"Pattern15",prediction:best.next,confidence:best.conf,weight:1.3});
         }
         for(const ss of analysis.strong) signals.push({source:ss.type,prediction:ss.prediction,confidence:ss.confidence,weight:2.0});
         
-        // Statistical
         const last10Tai=this.processed.slice(-10).reduce((a,b)=>a+b.result,0)/10;
         if(last10Tai>0.7) signals.push({source:"StatHigh",prediction:"xiu",confidence:65,weight:1.0});
         if(last10Tai<0.3) signals.push({source:"StatLow",prediction:"tai",confidence:65,weight:1.0});
@@ -411,7 +399,6 @@ class GodModePredictor {
         if(last.total>avgRec+3) signals.push({source:"TotalHigh",prediction:"xiu",confidence:62,weight:1.0});
         if(last.total<avgRec-3) signals.push({source:"TotalLow",prediction:"tai",confidence:62,weight:1.0});
         
-        // Fibonacci
         if(this.processed.length>=30){
             const totals=this.processed.slice(-30).map(p=>p.total);
             const h=Math.max(...totals),l=Math.min(...totals),r=h-l;
@@ -419,7 +406,6 @@ class GodModePredictor {
             if(last.total<l+r*0.382) signals.push({source:"Fib",prediction:"tai",confidence:66,weight:1.0});
         }
         
-        // Weighted voting
         let taiScore=0,xiuScore=0;
         for(const sig of signals){
             const w=sig.confidence*sig.weight;
@@ -451,68 +437,176 @@ class GodModePredictor {
     }
 }
 
-// ============ FETCH ============
+// ============ FETCH VỚI RETRY ============
 async function fetchData() {
-    try {
-        const res = await axios.get(API_URL, {timeout:10000});
-        const raw = res.data;
-        const arr = raw?.data ?? (Array.isArray(raw)?raw:null);
-        return arr?.map(normalize).sort((a,b)=>a.phien-b.phien)??null;
-    } catch { return null; }
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            const res = await axios.get(API_URL, {
+                timeout: 15000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json',
+                    'Cache-Control': 'no-cache'
+                }
+            });
+            
+            const raw = res.data;
+            let dataArray = null;
+            
+            if (raw && raw.data && Array.isArray(raw.data)) {
+                dataArray = raw.data;
+            } else if (Array.isArray(raw)) {
+                dataArray = raw;
+            } else if (typeof raw === 'object' && raw !== null) {
+                for (const key of Object.keys(raw)) {
+                    if (Array.isArray(raw[key]) && raw[key].length > 10) {
+                        dataArray = raw[key];
+                        break;
+                    }
+                }
+            }
+            
+            if (dataArray && dataArray.length >= 15) {
+                retryCount = 0;
+                console.log(`✅ Fetch OK: ${dataArray.length} phiên (attempt ${attempt})`);
+                return dataArray.map(normalize).sort((a, b) => a.phien - b.phien);
+            }
+            
+            console.log(`⚠️ Attempt ${attempt}: Data không hợp lệ, thử lại...`);
+            await new Promise(r => setTimeout(r, 2000));
+            
+        } catch (error) {
+            console.log(`❌ Attempt ${attempt} failed: ${error.message}`);
+            if (attempt < 3) {
+                console.log(`⏳ Chờ 3s rồi thử lại...`);
+                await new Promise(r => setTimeout(r, 3000));
+            }
+        }
+    }
+    
+    retryCount++;
+    console.log(`💀 All attempts failed (retry #${retryCount})`);
+    
+    // Nếu có dữ liệu cũ thì dùng lại
+    if (gameHistory.length >= 15) {
+        console.log(`♻️ Dùng lại dữ liệu cũ (${gameHistory.length} phiên)`);
+        return gameHistory;
+    }
+    
+    return null;
 }
 
 // ============ UPDATE ============
 async function updatePrediction() {
-    if(isUpdating) return;
-    isUpdating=true;
+    if (isUpdating) return;
+    isUpdating = true;
+    
     try {
         const data = await fetchData();
-        if(!data||data.length<15) return;
-        const latest=data[data.length-1];
+        if (!data || data.length < 15) {
+            console.log(`⚠️ Không đủ dữ liệu (${data ? data.length : 0} phiên)`);
+            isUpdating = false;
+            return;
+        }
         
-        predictor = new GodModePredictor(data.slice(-500));
-        const pred = predictor.superPredict();
-        if(!pred) return;
+        const latest = data[data.length - 1];
+        const latestPhien = latest.phien;
+        const oldPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length - 1].phien : 0;
         
-        gameHistory=data;
-        currentPrediction={
-            id:'AnhKhoizZz',
-            phien_truoc:latest.phien,
-            xuc_xac1:latest.x1,
-            xuc_xac2:latest.x2,
-            xuc_xac3:latest.x3,
-            tong:latest.tong,
-            ket_qua:latest.ket_qua,
-            pattern:pred.pattern,
-            phien_hien_tai:latest.phien+1,
-            du_doan:pred.prediction,
-            do_tin_cay:pred.confidence+'%',
-            tong_du_doan:pred.predictedTotal,
-        };
-        console.log(`💀 GOD MODE: ${pred.prediction} (${pred.confidence}%) | Tổng ~${pred.predictedTotal} | Pattern: ${pred.pattern}`);
-    } catch(e){console.error('Lỗi update:',e.message);}
-    isUpdating=false;
+        if (latestPhien !== oldPhien || !currentPrediction) {
+            gameHistory = data;
+            
+            try {
+                predictor = new GodModePredictor(data.slice(-500));
+                const pred = predictor.superPredict();
+                
+                if (pred) {
+                    currentPrediction = {
+                        id: "AnhKhoizZz",
+                        phien_truoc: latest.phien,
+                        xuc_xac1: latest.x1,
+                        xuc_xac2: latest.x2,
+                        xuc_xac3: latest.x3,
+                        tong: latest.tong,
+                        ket_qua: latest.ket_qua,
+                        pattern: pred.pattern,
+                        phien_hien_tai: latest.phien + 1,
+                        du_doan: pred.prediction,
+                        do_tin_cay: pred.confidence + "%",
+                        tong_du_doan: pred.predictedTotal
+                    };
+                    
+                    console.log(`💀 GOD MODE: ${pred.prediction} (${pred.confidence}%) | Tổng ~${pred.predictedTotal} | Pattern: ${pred.pattern} | Phiên: ${latest.phien}→${latest.phien+1}`);
+                }
+            } catch (predErr) {
+                console.error('❌ Lỗi predict:', predErr.message);
+            }
+        }
+    } catch (e) {
+        console.error('❌ Update error:', e.message);
+    }
+    
+    isUpdating = false;
 }
 
 // ============ ROUTES ============
 app.get('/taixiu', async (req, res) => {
-    if(!currentPrediction) await updatePrediction();
-    if(currentPrediction) return res.json(currentPrediction);
-    res.json({id:'AnhKhoizZz',phien_truoc:0,xuc_xac1:0,xuc_xac2:0,xuc_xac3:0,tong:0,ket_qua:'đang tải',pattern:'',phien_hien_tai:0,du_doan:'đang tải',do_tin_cay:'0%',tong_du_doan:0});
+    if (!currentPrediction) {
+        console.log('⚠️ Chưa có dự đoán, đang fetch...');
+        await updatePrediction();
+    }
+    
+    if (currentPrediction) {
+        return res.json(currentPrediction);
+    }
+    
+    res.json({
+        id: "AnhKhoizZz",
+        phien_truoc: 0,
+        xuc_xac1: 0,
+        xuc_xac2: 0,
+        xuc_xac3: 0,
+        tong: 0,
+        ket_qua: "đang tải",
+        pattern: "",
+        phien_hien_tai: 0,
+        du_doan: "đang tải",
+        do_tin_cay: "0%",
+        tong_du_doan: 0
+    });
 });
 
-app.get('/', (req, res) => res.redirect('/taixiu'));
+app.get('/', (req, res) => {
+    res.json(currentPrediction || {
+        id: "AnhKhoizZz",
+        phien_truoc: 0,
+        xuc_xac1: 0,
+        xuc_xac2: 0,
+        xuc_xac3: 0,
+        tong: 0,
+        ket_qua: "đang tải",
+        pattern: "",
+        phien_hien_tai: 0,
+        du_doan: "đang tải",
+        do_tin_cay: "0%",
+        tong_du_doan: 0
+    });
+});
 
 // ============ KHỞI ĐỘNG ============
+console.log('='.repeat(60));
+console.log('   💀 GOD MODE PREDICTOR V12.0 💀');
+console.log('   Auto-retry | Keep data on API fail');
+console.log('   API: lovetrang-xinkgai.onrender.com/data');
+console.log('='.repeat(60));
+
+// Fetch ngay lần đầu
 updatePrediction();
-setInterval(updatePrediction, 100);
+
+// Update mỗi 200ms
+setInterval(updatePrediction, 200);
 
 app.listen(PORT, () => {
-    console.log('='.repeat(60));
-    console.log('   💀 GOD MODE PREDICTOR V12.0 💀');
-    console.log('   Khai thác cốt lõi xác suất | Phá nát lỗ hổng game');
-    console.log('   API: lovetrang-xinkgai.onrender.com/data');
-    console.log('='.repeat(60));
-    console.log(`   🚀 Port: ${PORT} | /taixiu`);
+    console.log(`   🚀 Port: ${PORT} | http://localhost:${PORT}/taixiu`);
     console.log('='.repeat(60));
 });
