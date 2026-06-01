@@ -9,12 +9,10 @@ const API_URL_HU = 'https://wtx.tele68.com/v1/tx/sessions';
 const API_URL_MD5 = 'https://wtxmd52.tele68.com/v1/txmd5/sessions';
 const HISTORY_FILE = 'lichsu_du_doan.json';
 const SESSIONS_FILE = 'sessions_data.json';
-const MEMORY_FILE_HU = 'ai_memory_hu.json';
-const MEMORY_FILE_MD5 = 'ai_memory_md5.json';
 const KETQUA_FILE = 'ketqua_thang_thua.json';
 
 // ===== CẤU HÌNH =====
-const MAX_HISTORY = 500; // Lưu tối đa 500 phiên
+const MAX_HISTORY = 500;
 const FETCH_PER_REQUEST = 30;
 const FETCH_INTERVAL = 3000;
 const AUTO_SAVE_INTERVAL = 10000;
@@ -24,662 +22,535 @@ let predictionHistory = { hu: [], md5: [] };
 let lastProcessedPhien = { hu: null, md5: null };
 let sessionsStore = { hu: [], md5: [] };
 let isReady = { hu: false, md5: false };
+let predictors = { hu: null, md5: null };
 
-// ==================== SIÊU AI PREDICTOR V11.0 ====================
+// ==================== COMPOSITE PREDICTOR ====================
 
-class SieuAIPredictorV11 {
-    constructor(data, type, memoryFile) {
-        this.type = type;
+class CompositePredictor {
+    constructor(data) {
         this.raw = data;
-        this.memoryFile = memoryFile;
-        this.processed = this.sieuPreprocess(data);
-        this.memory = this.loadMemory();
-        this.patternLibrary = this.buildPatternLibrary();
-        this.weights = this.initWeights();
-        this.train();
+        this.processed = this.preprocess(data);
+        this.results = this.processed.map(p => p.result);
+        this.totals = this.processed.map(p => p.total);
+        this.init();
+        if (data.length >= 50) this.train();
     }
 
-    loadMemory() {
-        try {
-            if (fs.existsSync(this.memoryFile)) {
-                const mem = JSON.parse(fs.readFileSync(this.memoryFile, 'utf8'));
-                console.log(`📀 [${this.type.toUpperCase()}] Đã tải bộ nhớ (${mem.totalSessions || 0} phiên)`);
-                return mem;
-            }
-        } catch(e) {}
-        return { patterns: {}, sessions: [], weights: {}, totalSessions: 0 };
-    }
-
-    saveMemory() {
-        try {
-            const toSave = {
-                patterns: this.memory.patterns,
-                sessions: (this.memory.sessions || []).slice(-1000),
-                weights: this.weights,
-                totalSessions: (this.memory.sessions || []).length,
-                lastUpdate: new Date().toISOString()
-            };
-            fs.writeFileSync(this.memoryFile, JSON.stringify(toSave, null, 2));
-        } catch(e) {}
-    }
-
-    sieuPreprocess(data) {
+    preprocess(data) {
         return data.map((item, idx, arr) => {
             const dice = [item.Xuc_xac_1, item.Xuc_xac_2, item.Xuc_xac_3];
             const result = item.Ket_qua === "Tài" ? 1 : 0;
-            const sum = dice[0] + dice[1] + dice[2];
-            
             let streak = 1;
             if (idx > 0 && arr[idx-1].Ket_qua === item.Ket_qua) streak = arr[idx-1].streak + 1;
-            
-            const faceStreaks = {}, faceGaps = {};
-            for (let f = 1; f <= 6; f++) {
-                let s = 0, lastIdx = -1;
-                for (let j = idx; j >= 0; j--) {
-                    if (arr[j].Xuc_xac_1 === f || arr[j].Xuc_xac_2 === f || arr[j].Xuc_xac_3 === f) {
-                        s++;
-                        if (lastIdx === -1) lastIdx = j;
-                    } else break;
-                }
-                faceStreaks[f] = s;
-                faceGaps[f] = lastIdx === -1 ? idx + 1 : idx - lastIdx;
-            }
-            
-            const windows = [5, 10, 20, 30, 50];
-            const stats = {};
-            for (const w of windows) {
-                const start = Math.max(0, idx - w + 1);
-                const slice = arr.slice(start, idx + 1);
-                const tCount = slice.filter(p => p.Ket_qua === "Tài").length;
-                const totals = slice.map(p => p.Tong);
-                const avgTotal = totals.reduce((a,b) => a+b, 0) / totals.length;
-                stats[`taiRate_${w}`] = tCount / w;
-                stats[`avgTotal_${w}`] = avgTotal;
-                stats[`entropy_${w}`] = this.calcEntropy(slice.map(p => p.Ket_qua === "Tài" ? 1 : 0));
-            }
-            
-            const isTriple = dice[0] === dice[1] && dice[1] === dice[2];
-            const tripleVal = isTriple ? dice[0] : 0;
-            const isPair = (dice[0] === dice[1] || dice[0] === dice[2] || dice[1] === dice[2]) && !isTriple;
-            const pairVal = isPair ? (dice[0] === dice[1] ? dice[0] : (dice[0] === dice[2] ? dice[0] : dice[1])) : 0;
-            const range = Math.max(...dice) - Math.min(...dice);
-            
-            let momentum = 0, zigzag = 0, cluster3 = 0;
-            if (idx >= 5) {
-                const recent = arr.slice(idx-4, idx+1);
-                const recentTai = recent.filter(p => p.Ket_qua === "Tài").length;
-                momentum = recentTai - 2.5;
-                let changes = 0;
-                for (let j = idx-4; j <= idx; j++) {
-                    if (j > idx-4 && arr[j].Ket_qua !== arr[j-1].Ket_qua) changes++;
-                }
-                zigzag = changes / 5;
-            }
-            if (idx >= 2 && arr[idx-2].Tong === arr[idx-1].Tong && arr[idx-1].Tong === sum) cluster3 = 1;
-            
             return {
                 Phien: item.Phien, result, resultStr: item.Ket_qua,
-                total: sum, dice, streak, faceStreaks, faceGaps,
-                isTriple, tripleVal, isPair, pairVal, range,
-                momentum, zigzag, cluster3, ...stats
+                total: item.Tong, dice, streak,
+                isTriple: dice[0] === dice[1] && dice[1] === dice[2],
+                tripleVal: dice[0],
+                isPair: (dice[0] === dice[1] || dice[0] === dice[2] || dice[1] === dice[2]) && !(dice[0] === dice[1] && dice[1] === dice[2]),
+                pairVal: dice[0] === dice[1] ? dice[0] : (dice[0] === dice[2] ? dice[0] : dice[1]),
+                range: Math.max(...dice) - Math.min(...dice),
+                avg: (dice[0] + dice[1] + dice[2]) / 3
             };
         });
     }
 
-    calcEntropy(arr) {
-        if (!arr.length) return 0;
-        const freq = {};
-        for (const v of arr) freq[v] = (freq[v] || 0) + 1;
-        let e = 0;
-        const n = arr.length;
-        for (const k in freq) {
-            const p = freq[k] / n;
-            e -= p * Math.log2(p);
-        }
-        return e;
-    }
-
-    buildPatternLibrary() {
-        const lib = {};
-        const patterns = [
-            ['TT', 'T', 0.58], ['XX', 'X', 0.58],
-            ['TXT', 'T', 0.62], ['XTX', 'X', 0.62],
-            ['TTXX', 'X', 0.61], ['XXTT', 'T', 0.61],
-            ['TTTXXX', 'X', 0.60], ['XXXTTT', 'T', 0.60],
-            ['TXTX', 'X', 0.64], ['XTXT', 'T', 0.64],
-            ['TXTXT', 'X', 0.66], ['XTXTX', 'T', 0.66],
-            ['TTXXTT', 'X', 0.63], ['XXTTXX', 'T', 0.63],
-            ['TTTXXXTTT', 'X', 0.62], ['XXXTTTXXX', 'T', 0.62],
-            ['TXXT', 'X', 0.65], ['XTTX', 'T', 0.65],
-            ['TXXTX', 'T', 0.67], ['XTTXT', 'X', 0.67],
-            ['TTXTT', 'X', 0.64], ['XXTXX', 'T', 0.64],
-            ['TXXXT', 'X', 0.66], ['XTTTX', 'T', 0.66],
-            ['TTTXTTT', 'X', 0.65], ['XXXTXXX', 'T', 0.65],
-            ['TXXTTXXT', 'X', 0.69], ['XTTXXTTX', 'T', 0.69],
-            ['TX|XT', 'T', 0.68], ['XT|TX', 'X', 0.68],
-            ['TXTXTXT', 'X', 0.70], ['XTXTXTX', 'T', 0.70],
-            ['UP_5', 'X', 0.67], ['DOWN_5', 'T', 0.66],
-            ['BET2_T', 'T', 0.59], ['BET2_X', 'X', 0.59],
-            ['BET3_T', 'T', 0.62], ['BET3_X', 'X', 0.62],
-            ['BET4_T', 'X', 0.68], ['BET4_X', 'T', 0.68],
-            ['BET5_T', 'X', 0.72], ['BET5_X', 'T', 0.72],
-            ['FIB_3', 'X', 0.64], ['FIB_5', 'T', 0.65],
-            ['FIB_8', 'X', 0.66], ['FIB_13', 'T', 0.67]
-        ];
-        for (const [pattern, pred, conf] of patterns) {
-            lib[pattern] = { pred, conf };
-        }
-        return lib;
-    }
-
-    initWeights() {
-        if (this.memory.weights && Object.keys(this.memory.weights).length > 0) {
-            return this.memory.weights;
-        }
-        return {
-            patternMatch: 1.0, markov: 0.95, frequency: 0.85,
-            momentum: 0.80, entropy: 0.75, streak: 0.90,
-            total: 0.70, triple: 0.85, pair: 0.70,
-            faceVacant: 0.88, zigzag: 0.75, cluster: 0.80,
-            bet: 0.92, beBet: 0.94, ensemble: 1.0,
-            cau11: 0.86, cau22: 0.85, cau121: 0.87,
-            cau212: 0.86, doiXung: 0.88, tamGiac: 0.89,
-            fibo: 0.82, poisson: 0.84
-        };
+    init() {
+        this.markov = {};
+        for (let order = 1; order <= 8; order++) this.markov[order] = {};
+        this.freq = {};
+        this.cycle = { length: 0, confidence: 0 };
+        this.trend = { direction: 0, strength: 0 };
+        this.streakStats = { Tai: {}, Xiu: {} };
+        this.bayes = { Tai: 0.5386, Xiu: 0.4614 };
+        this.fib = [2, 3, 5, 8, 13, 21];
+        this.pairStats = {};
+        this.rsi = { value: 50, signal: null };
+        this.bollinger = { upper: 0, lower: 0, middle: 0 };
+        this.macd = { macd: 0, signal: 0, histogram: 0 };
+        this.stochastic = { k: 50, d: 50 };
+        this.williams = { r: -50 };
+        this.cci = { value: 0 };
+        this.entropy = 0;
+        this.linearReg = { slope: 0, intercept: 0 };
+        this.knn = { k: 5, features: [], labels: [] };
+        this.decisionTree = {};
+        this.ensemble = { weights: {
+            markov: 0.9, freq: 0.7, cycle: 0.65, trend: 0.7, streak: 0.85, bayes: 0.6,
+            fibo: 0.7, pair: 0.7, rsi: 0.55, bollinger: 0.55, macd: 0.55, stochastic: 0.55,
+            williams: 0.55, cci: 0.55, entropy: 0.65, linearReg: 0.6, knn: 0.75,
+            decisionTree: 0.8, meanReversion: 0.65, patternMatching: 0.85
+        } };
+        this.meanReversion = { threshold: 0.6 };
+        this.patternMatcher = { patterns: {} };
     }
 
     train() {
-        const trainSize = Math.min(300, Math.floor(this.processed.length * 0.3));
-        const performance = {};
+        if (this.processed.length < 50) return;
         
-        for (let i = trainSize; i < this.processed.length - 1 && i < 800; i++) {
-            const hist = this.processed.slice(0, i + 1);
-            const actual = this.processed[i + 1].resultStr;
-            const predictions = this.getAllPredictions(hist);
-            
-            for (const [method, pred] of Object.entries(predictions)) {
-                if (!pred) continue;
-                const key = `${method}_${pred}`;
-                if (!performance[key]) performance[key] = { correct: 0, total: 0 };
-                performance[key].total++;
-                if (pred === actual) performance[key].correct++;
+        for (let order = 1; order <= 8; order++) {
+            const trans = {};
+            for (let i = order; i < this.results.length - 1; i++) {
+                const key = this.results.slice(i - order, i).join('');
+                const next = this.results[i + 1];
+                if (!trans[key]) trans[key] = { 0: 0, 1: 0 };
+                trans[key][next]++;
+            }
+            this.markov[order] = trans;
+        }
+
+        for (let window of [10, 20, 50]) {
+            let lastWin = this.results.slice(-Math.min(window, this.results.length));
+            let tai = lastWin.filter(r => r === 1).length;
+            this.freq[window] = tai / lastWin.length;
+        }
+
+        this.detectCycle();
+        this.detectTrend();
+
+        for (let s = 2; s <= 7; s++) {
+            let tai = 0, xiu = 0;
+            for (let i = s; i < this.results.length; i++) {
+                let ok = true;
+                for (let j = 1; j <= s; j++) {
+                    if (this.results[i - j] !== this.results[i - 1]) { ok = false; break; }
+                }
+                if (ok) {
+                    if (this.results[i] === 1) tai++;
+                    else xiu++;
+                }
+            }
+            if (tai + xiu > 15) {
+                this.streakStats.Tai[s] = tai / (tai + xiu);
+                this.streakStats.Xiu[s] = xiu / (tai + xiu);
             }
         }
-        
-        for (const method in this.weights) {
-            const keyT = `${method}_Tài`;
-            const keyX = `${method}_Xỉu`;
-            const perfT = performance[keyT];
-            const perfX = performance[keyX];
-            let accuracy = 0.5;
-            if (perfT && perfT.total > 10) accuracy = Math.max(accuracy, perfT.correct / perfT.total);
-            if (perfX && perfX.total > 10) accuracy = Math.max(accuracy, perfX.correct / perfX.total);
-            this.weights[method] = Math.min(1.2, Math.max(0.3, accuracy * 1.2));
+
+        for (let p = 1; p <= 6; p++) {
+            let tai = 0, xiu = 0;
+            for (let i = 1; i < this.processed.length; i++) {
+                if (this.processed[i-1].pairVal === p && !this.processed[i-1].isTriple) {
+                    if (this.processed[i].result === 1) tai++;
+                    else xiu++;
+                }
+            }
+            if (tai + xiu > 8) this.pairStats[p] = tai / (tai + xiu);
         }
+
+        this.trainKNN();
+        this.trainDecisionTree();
     }
 
-    getAllPredictions(history) {
-        return {
-            patternMatch: this.predictPattern(history)?.pred,
-            markov: this.predictMarkov(history)?.pred,
-            frequency: this.predictFrequency(history)?.pred,
-            momentum: this.predictMomentum(history)?.pred,
-            entropy: this.predictEntropy(history)?.pred,
-            total: this.predictTotal(history)?.pred,
-            triple: this.predictTriple(history)?.pred,
-            pair: this.predictPair(history)?.pred,
-            faceVacant: this.predictFaceVacant(history)?.pred,
-            zigzag: this.predictZigzag(history)?.pred,
-            cluster: this.predictCluster(history)?.pred,
-            bet: this.predictBet(history)?.pred,
-            cau11: this.predictCau11(history)?.pred,
-            cau22: this.predictCau22(history)?.pred,
-            cau121: this.predictCau121(history)?.pred,
-            cau212: this.predictCau212(history)?.pred,
-            doiXung: this.predictDoiXung(history)?.pred,
-            tamGiac: this.predictTamGiac(history)?.pred,
-            fibo: this.predictFibonacci(history)?.pred,
-            poisson: this.predictPoisson(history)?.pred
-        };
-    }
-
-    predictBet(history) {
-        const last = history[history.length - 1];
-        if (last.streak < 2) return null;
-        
-        let avgBetLength = 2.5;
-        const streaks = [];
-        let cur = history[0].result;
-        let len = 1;
-        for (let i = 1; i < history.length; i++) {
-            if (history[i].result === cur) len++;
-            else {
-                streaks.push(len);
-                cur = history[i].result;
-                len = 1;
+    detectCycle() {
+        let bestCycle = 0, bestScore = 0;
+        for (let cycle = 3; cycle <= 15; cycle++) {
+            if (this.results.length <= cycle) continue;
+            let matches = 0;
+            for (let i = cycle; i < this.results.length; i++) {
+                if (this.results[i] === this.results[i - cycle]) matches++;
+            }
+            let score = matches / (this.results.length - cycle);
+            if (score > bestScore && score > 0.55) {
+                bestScore = score;
+                bestCycle = cycle;
             }
         }
-        streaks.push(len);
-        if (streaks.length > 10) avgBetLength = streaks.reduce((a,b)=>a+b,0)/streaks.length;
-        
-        const currentBetLen = last.streak;
-        const isTai = last.result === 1;
-        
-        if (currentBetLen === 2) {
-            const pred = isTai ? "Tài" : "Xỉu";
-            let conf = 0.59;
-            return { pred, conf, method: "bet" };
+        this.cycle = { length: bestCycle, confidence: bestScore };
+    }
+
+    detectTrend() {
+        let n = Math.min(50, this.totals.length);
+        if (n < 3) return;
+        let x = Array.from({ length: n }, (_, i) => i);
+        let y = this.totals.slice(-n);
+        let xMean = x.reduce((a,b)=>a+b,0)/n;
+        let yMean = y.reduce((a,b)=>a+b,0)/n;
+        let num = 0, den = 0;
+        for (let i = 0; i < n; i++) {
+            num += (x[i] - xMean) * (y[i] - yMean);
+            den += (x[i] - xMean) ** 2;
         }
-        if (currentBetLen === 3) {
-            const pred = isTai ? "Tài" : "Xỉu";
-            let conf = 0.62;
-            return { pred, conf, method: "bet" };
+        let slope = den ? num / den : 0;
+        this.trend = { direction: slope > 0 ? 1 : -1, strength: Math.min(1, Math.abs(slope) / 5) };
+        this.linearReg = { slope, intercept: yMean - slope * xMean };
+    }
+
+    trainKNN() {
+        let features = [], labels = [];
+        for (let i = 10; i < this.results.length - 1; i++) {
+            let feat = [
+                this.results.slice(i-5, i).reduce((a,b)=>a+b,0),
+                this.totals.slice(i-5, i).reduce((a,b)=>a+b,0)/5,
+                this.results[i-1]
+            ];
+            features.push(feat);
+            labels.push(this.results[i+1]);
         }
-        if (currentBetLen === 4) {
-            const pred = isTai ? "Xỉu" : "Tài";
-            let conf = 0.68;
-            return { pred, conf, method: "beBet" };
+        this.knn = { k: 5, features, labels };
+    }
+
+    trainDecisionTree() {
+        let rules = {};
+        for (let i = 5; i < this.results.length - 1; i++) {
+            let key = this.results.slice(i-5, i).join('');
+            let next = this.results[i+1];
+            if (!rules[key]) rules[key] = { 0: 0, 1: 0 };
+            rules[key][next]++;
         }
-        if (currentBetLen >= 5) {
-            const pred = isTai ? "Xỉu" : "Tài";
-            let conf = 0.72 + Math.min(0.10, (currentBetLen - 5) * 0.02);
-            if (currentBetLen >= 8) conf = 0.82;
-            return { pred, conf, method: "beBet" };
+        this.decisionTree = rules;
+    }
+
+    // ========== CÁC PHƯƠNG PHÁP DỰ ĐOÁN ==========
+
+    predictMarkov(order) {
+        if (this.results.length < order + 2) return null;
+        let key = this.results.slice(-order).join('');
+        let trans = this.markov[order][key];
+        if (trans && trans[0] + trans[1] >= 3) {
+            let probTai = trans[1] / (trans[0] + trans[1]);
+            if (probTai > 0.65) return { pred: "Tài", conf: probTai * 100, type: `Markov${order}` };
+            if (probTai < 0.35) return { pred: "Xỉu", conf: (1 - probTai) * 100, type: `Markov${order}` };
         }
         return null;
     }
 
-    predictCau11(history) {
-        if (history.length < 4) return null;
-        const last4 = history.slice(-4).map(h => h.resultStr === "Tài" ? 'T' : 'X');
-        if (last4[0] !== last4[1] && last4[1] !== last4[2] && last4[2] !== last4[3]) {
-            const pred = last4[3] === 'T' ? 'Xỉu' : 'Tài';
-            return { pred, conf: 0.66, method: "cau11" };
+    predictAllMarkov() {
+        for (let order = 8; order >= 3; order--) {
+            let p = this.predictMarkov(order);
+            if (p) return p;
         }
         return null;
     }
 
-    predictCau22(history) {
-        if (history.length < 6) return null;
-        const last6 = history.slice(-6).map(h => h.resultStr === "Tài" ? 'T' : 'X');
-        if (last6[0] === last6[1] && last6[2] === last6[3] && last6[4] === last6[5] && 
-            last6[0] !== last6[2] && last6[2] !== last6[4]) {
-            const pred = last6[4] === 'T' ? 'Xỉu' : 'Tài';
-            return { pred, conf: 0.65, method: "cau22" };
+    predictFrequency(window) {
+        if (!this.freq[window]) return null;
+        let probTai = this.freq[window];
+        if (probTai > 0.6) return { pred: "Tài", conf: probTai * 100, type: `Freq${window}` };
+        if (probTai < 0.4) return { pred: "Xỉu", conf: (1 - probTai) * 100, type: `Freq${window}` };
+        return null;
+    }
+
+    predictCycle() {
+        if (this.cycle.length > 0 && this.cycle.confidence > 0.6 && this.results.length > this.cycle.length) {
+            let expected = this.results[this.results.length - this.cycle.length];
+            let pred = expected === 1 ? "Tài" : "Xỉu";
+            return { pred, conf: this.cycle.confidence * 100, type: "Cycle" };
         }
         return null;
     }
 
-    predictCau121(history) {
-        if (history.length < 7) return null;
-        const last7 = history.slice(-7).map(h => h.resultStr === "Tài" ? 'T' : 'X');
-        if (last7[0] !== last7[1] && last7[1] === last7[2] && last7[2] !== last7[3] &&
-            last7[3] !== last7[4] && last7[4] === last7[5] && last7[5] !== last7[6]) {
-            const pred = last7[0] === 'T' ? 'Tài' : 'Xỉu';
-            return { pred, conf: 0.69, method: "cau121" };
+    predictTrend() {
+        if (Math.abs(this.trend.strength) > 0.3) {
+            let pred = this.trend.direction === 1 ? "Tài" : "Xỉu";
+            return { pred, conf: 60 + this.trend.strength * 20, type: "Trend" };
         }
         return null;
     }
 
-    predictCau212(history) {
-        if (history.length < 7) return null;
-        const last7 = history.slice(-7).map(h => h.resultStr === "Tài" ? 'T' : 'X');
-        if (last7[0] === last7[1] && last7[1] !== last7[2] && last7[2] !== last7[3] &&
-            last7[3] === last7[4] && last7[4] !== last7[5] && last7[5] !== last7[6]) {
-            const pred = last7[0] === 'T' ? 'Xỉu' : 'Tài';
-            return { pred, conf: 0.68, method: "cau212" };
+    predictStreak() {
+        let last = this.processed[this.processed.length - 1];
+        if (last.streak >= 3) {
+            let prob = last.result === 1 ? this.streakStats.Xiu[last.streak] : this.streakStats.Tai[last.streak];
+            if (prob && prob > 0.55) {
+                let pred = last.result === 1 ? "Xỉu" : "Tài";
+                return { pred, conf: prob * 100, type: "Streak" };
+            }
         }
         return null;
     }
 
-    predictDoiXung(history) {
-        if (history.length < 10) return null;
-        const last10 = history.slice(-10).map(h => h.resultStr === "Tài" ? 'T' : 'X');
-        let symmetric = true;
-        for (let i = 0; i < 5; i++) {
-            if (last10[i] !== last10[9-i]) { symmetric = false; break; }
-        }
-        if (symmetric) {
-            const pred = last10[4] === 'T' ? 'Xỉu' : 'Tài';
-            return { pred, conf: 0.70, method: "doiXung" };
-        }
+    predictBayes() {
+        let last = this.processed[this.processed.length - 1];
+        let likelihood = last.result === 1 ? 0.55 : 0.45;
+        let posteriorTai = (this.bayes.Tai * likelihood) / (this.bayes.Tai * likelihood + this.bayes.Xiu * (1 - likelihood));
+        if (posteriorTai > 0.65) return { pred: "Tài", conf: posteriorTai * 100, type: "Bayes" };
+        if (posteriorTai < 0.35) return { pred: "Xỉu", conf: (1 - posteriorTai) * 100, type: "Bayes" };
         return null;
     }
 
-    predictTamGiac(history) {
-        if (history.length < 8) return null;
-        const last8 = history.slice(-8).map(h => h.resultStr === "Tài" ? 'T' : 'X');
-        let isTriangle = true;
-        for (let i = 1; i < 8; i++) {
-            if (last8[i] === last8[i-1]) { isTriangle = false; break; }
-        }
-        if (isTriangle) {
-            const pred = last8[7] === 'T' ? 'Xỉu' : 'Tài';
-            return { pred, conf: 0.72, method: "tamGiac" };
-        }
-        return null;
-    }
-
-    predictFibonacci(history) {
-        const fibs = [3, 5, 8, 13, 21];
-        const last = history[history.length - 1];
-        for (const fib of fibs) {
-            if (history.length >= fib + 1) {
-                const prevAtFib = history[history.length - fib].result;
-                if (prevAtFib === last.result) {
-                    const pred = last.result === 1 ? "Xỉu" : "Tài";
-                    let conf = 0.64 + (fib > 10 ? 0.03 : 0);
-                    return { pred, conf, method: "fibo" };
+    predictFibonacci() {
+        let last = this.processed[this.processed.length - 1];
+        for (let fib of this.fib) {
+            if (this.results.length > fib) {
+                let prev = this.results[this.results.length - fib];
+                if (prev === last.result) {
+                    let pred = last.result === 1 ? "Xỉu" : "Tài";
+                    return { pred, conf: 64, type: "Fibonacci" };
                 }
             }
         }
         return null;
     }
 
-    predictPoisson(history) {
-        const last = history[history.length - 1];
-        for (let f = 1; f <= 6; f++) {
-            if (last.faceGaps[f] >= 8) {
-                const pred = f <= 3 ? "Tài" : "Xỉu";
-                let conf = 0.72 + Math.min(0.08, (last.faceGaps[f] - 8) * 0.01);
-                return { pred, conf, method: "poisson" };
+    predictPair() {
+        let last = this.processed[this.processed.length - 1];
+        let prob = this.pairStats[last.pairVal];
+        if (prob && prob > 0.6 && !last.isTriple) return { pred: "Tài", conf: prob * 100, type: "Pair" };
+        if (prob && prob < 0.4 && !last.isTriple) return { pred: "Xỉu", conf: (1 - prob) * 100, type: "Pair" };
+        return null;
+    }
+
+    predictRSI() {
+        if (this.totals.length < 15) return null;
+        let gains = [], losses = [];
+        let period = 14;
+        for (let i = this.totals.length - period; i < this.totals.length; i++) {
+            if (i > 0) {
+                let change = this.totals[i] - this.totals[i-1];
+                if (change > 0) gains.push(change);
+                else losses.push(-change);
             }
+        }
+        let avgGain = gains.reduce((a,b)=>a+b,0) / period;
+        let avgLoss = losses.reduce((a,b)=>a+b,0) / period;
+        let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+        let rsi = 100 - (100 / (1 + rs));
+        if (rsi > 70) return { pred: "Xỉu", conf: 62, type: "RSI" };
+        if (rsi < 30) return { pred: "Tài", conf: 62, type: "RSI" };
+        return null;
+    }
+
+    predictBollinger() {
+        if (this.totals.length < 21) return null;
+        let period = 20;
+        let slice = this.totals.slice(-period);
+        let mean = slice.reduce((a,b)=>a+b,0)/period;
+        let variance = slice.map(v => (v - mean)**2).reduce((a,b)=>a+b,0)/period;
+        let std = Math.sqrt(variance);
+        let upper = mean + 2 * std;
+        let lower = mean - 2 * std;
+        let last = this.totals[this.totals.length - 1];
+        if (last > upper) return { pred: "Xỉu", conf: 63, type: "Bollinger" };
+        if (last < lower) return { pred: "Tài", conf: 63, type: "Bollinger" };
+        return null;
+    }
+
+    predictMACD() {
+        if (this.totals.length < 27) return null;
+        let fast = 12, slow = 26, signal = 9;
+        let emaFast = this.ema(this.totals, fast);
+        let emaSlow = this.ema(this.totals, slow);
+        let macdLine = emaFast - emaSlow;
+        let signalLine = this.ema([macdLine], signal);
+        let histogram = macdLine - signalLine;
+        if (histogram > 0 && this.macd.histogram <= 0) return { pred: "Tài", conf: 60, type: "MACD" };
+        if (histogram < 0 && this.macd.histogram >= 0) return { pred: "Xỉu", conf: 60, type: "MACD" };
+        this.macd = { macd: macdLine, signal: signalLine, histogram };
+        return null;
+    }
+
+    ema(data, period) {
+        let k = 2 / (period + 1);
+        let emaVal = data[0];
+        for (let i = 1; i < data.length; i++) emaVal = data[i] * k + emaVal * (1 - k);
+        return emaVal;
+    }
+
+    predictStochastic() {
+        if (this.totals.length < 15) return null;
+        let period = 14;
+        let highs = [], lows = [];
+        for (let i = this.totals.length - period; i < this.totals.length; i++) {
+            highs.push(this.totals[i]);
+            lows.push(this.totals[i]);
+        }
+        let highest = Math.max(...highs);
+        let lowest = Math.min(...lows);
+        let k = (this.totals[this.totals.length - 1] - lowest) / (highest - lowest) * 100;
+        if (k > 80) return { pred: "Xỉu", conf: 61, type: "Stochastic" };
+        if (k < 20) return { pred: "Tài", conf: 61, type: "Stochastic" };
+        return null;
+    }
+
+    predictWilliams() {
+        if (this.totals.length < 15) return null;
+        let period = 14;
+        let highs = [], lows = [];
+        for (let i = this.totals.length - period; i < this.totals.length; i++) {
+            highs.push(this.totals[i]);
+            lows.push(this.totals[i]);
+        }
+        let highest = Math.max(...highs);
+        let lowest = Math.min(...lows);
+        let r = (highest - this.totals[this.totals.length - 1]) / (highest - lowest) * -100;
+        if (r < -80) return { pred: "Tài", conf: 62, type: "Williams" };
+        if (r > -20) return { pred: "Xỉu", conf: 62, type: "Williams" };
+        return null;
+    }
+
+    predictCCI() {
+        if (this.totals.length < 21) return null;
+        let period = 20;
+        let slice = this.totals.slice(-period);
+        let mean = slice.reduce((a,b)=>a+b,0)/period;
+        let mad = slice.map(v => Math.abs(v - mean)).reduce((a,b)=>a+b,0)/period;
+        let cci = (this.totals[this.totals.length - 1] - mean) / (0.015 * mad);
+        if (cci > 100) return { pred: "Xỉu", conf: 60, type: "CCI" };
+        if (cci < -100) return { pred: "Tài", conf: 60, type: "CCI" };
+        return null;
+    }
+
+    predictEntropy() {
+        let last20 = this.results.slice(-20);
+        let tai = last20.filter(r => r === 1).length;
+        let p = tai / 20;
+        let entropy = -(p * Math.log2(p + 0.001) + (1-p) * Math.log2(1-p + 0.001));
+        if (entropy < 0.7) {
+            let pred = tai >= 11 ? "Tài" : "Xỉu";
+            return { pred, conf: 65, type: "Entropy" };
         }
         return null;
     }
 
-    predictPattern(history) {
-        if (history.length < 20) return null;
-        const recent = history.slice(-15).map(h => h.resultStr === "Tài" ? 'T' : 'X').join('');
-        for (const [pattern, data] of Object.entries(this.patternLibrary)) {
-            if (recent.includes(pattern)) {
-                return { pred: data.pred === 'T' ? "Tài" : "Xỉu", conf: data.conf, method: "patternMatch" };
-            }
-        }
-        const last5Totals = history.slice(-5).map(h => h.total);
-        let isUp = true, isDown = true;
-        for (let i = 1; i < 5; i++) {
-            if (last5Totals[i] <= last5Totals[i-1]) isUp = false;
-            if (last5Totals[i] >= last5Totals[i-1]) isDown = false;
-        }
-        if (isUp) return { pred: "Xỉu", conf: 0.67, method: "patternMatch" };
-        if (isDown) return { pred: "Tài", conf: 0.66, method: "patternMatch" };
+    predictLinearReg() {
+        if (this.totals.length < 50) return null;
+        let last = this.totals[this.totals.length - 1];
+        let predicted = this.linearReg.intercept + this.linearReg.slope * (this.totals.length);
+        let diff = predicted - last;
+        if (diff > 2) return { pred: "Tài", conf: 60, type: "LinearReg" };
+        if (diff < -2) return { pred: "Xỉu", conf: 60, type: "LinearReg" };
         return null;
     }
 
-    predictMarkov(history) {
-        const tx = history.map(h => h.result);
-        const orders = [3, 4, 5];
+    predictKNN() {
+        if (!this.knn.features || this.knn.features.length === 0) return null;
+        let lastFeat = [
+            this.results.slice(-5).reduce((a,b)=>a+b,0),
+            this.totals.slice(-5).reduce((a,b)=>a+b,0)/5,
+            this.results[this.results.length - 1]
+        ];
+        let distances = [];
+        for (let i = 0; i < this.knn.features.length; i++) {
+            let dist = Math.hypot(
+                lastFeat[0] - this.knn.features[i][0],
+                lastFeat[1] - this.knn.features[i][1],
+                lastFeat[2] - this.knn.features[i][2]
+            );
+            distances.push({ dist, label: this.knn.labels[i] });
+        }
+        distances.sort((a,b) => a.dist - b.dist);
+        let kNearest = distances.slice(0, this.knn.k);
+        let taiCount = kNearest.filter(d => d.label === 1).length;
+        let prob = taiCount / this.knn.k;
+        if (prob > 0.7) return { pred: "Tài", conf: prob * 100, type: "KNN" };
+        if (prob < 0.3) return { pred: "Xỉu", conf: (1 - prob) * 100, type: "KNN" };
+        return null;
+    }
+
+    predictDecisionTree() {
+        if (this.results.length < 6) return null;
+        let last5 = this.results.slice(-5).join('');
+        let rule = this.decisionTree[last5];
+        if (rule && rule[0] + rule[1] >= 3) {
+            let prob = rule[1] / (rule[0] + rule[1]);
+            if (prob > 0.7) return { pred: "Tài", conf: prob * 100, type: "DecisionTree" };
+            if (prob < 0.3) return { pred: "Xỉu", conf: (1 - prob) * 100, type: "DecisionTree" };
+        }
+        return null;
+    }
+
+    predictMeanReversion() {
+        if (this.totals.length < 21) return null;
+        let last20 = this.totals.slice(-20);
+        let mean = last20.reduce((a,b)=>a+b,0)/20;
+        let last = this.totals[this.totals.length - 1];
+        let diff = Math.abs(last - mean);
+        if (diff > 4) {
+            let pred = last > mean ? "Xỉu" : "Tài";
+            return { pred, conf: 62, type: "MeanReversion" };
+        }
+        return null;
+    }
+
+    predictPatternMatching() {
+        if (this.results.length < 12) return null;
+        let last10 = this.results.slice(-10).join('');
         let best = { pred: null, conf: 0 };
-        for (const order of orders) {
-            if (tx.length < order + 3) continue;
-            const transitions = {};
-            for (let i = 0; i <= tx.length - order - 1; i++) {
-                const key = tx.slice(i, i + order).join('');
-                const next = tx[i + order];
-                if (!transitions[key]) transitions[key] = { 0: 0, 1: 0 };
-                transitions[key][next]++;
+        for (let i = 0; i < this.results.length - 12; i++) {
+            let pattern = this.results.slice(i, i+10).join('');
+            let match = 0;
+            for (let j = 0; j < 10; j++) {
+                if (pattern[j] == last10[j]) match++;
             }
-            const lastKey = tx.slice(-order).join('');
-            const counts = transitions[lastKey];
-            if (counts && counts[0] + counts[1] >= 3) {
-                const total = counts[0] + counts[1];
-                const conf = Math.max(counts[0], counts[1]) / total;
-                const pred = counts[1] > counts[0] ? "Tài" : "Xỉu";
-                if (conf > best.conf) best = { pred, conf, method: "markov" };
+            if (match >= 7) {
+                let next = this.results[i+10];
+                let pred = next === 1 ? "Tài" : "Xỉu";
+                let conf = 55 + match * 3;
+                if (conf > best.conf) best = { pred, conf, type: "PatternMatching" };
             }
         }
         return best.pred ? best : null;
     }
 
-    predictFrequency(history) {
-        if (history.length < 20) return null;
-        const last30 = history.slice(-30);
-        const tCount = last30.filter(h => h.result === 1).length;
-        const xCount = 30 - tCount;
-        const diff = Math.abs(tCount - xCount);
-        if (diff >= 8) {
-            const pred = tCount > xCount ? "Xỉu" : "Tài";
-            const conf = 0.55 + Math.min(0.2, diff / 100);
-            return { pred, conf, method: "frequency" };
-        }
-        return null;
-    }
-
-    predictMomentum(history) {
-        const last = history[history.length - 1];
-        if (Math.abs(last.momentum) > 1.5) {
-            const pred = last.momentum > 0 ? "Tài" : "Xỉu";
-            return { pred, conf: 0.60 + Math.min(0.15, Math.abs(last.momentum) / 20), method: "momentum" };
-        }
-        return null;
-    }
-
-    predictEntropy(history) {
-        const last = history[history.length - 1];
-        const entropy = last.entropy_30 || 1;
-        if (entropy < 0.65) {
-            const recent = history.slice(-10);
-            const tCount = recent.filter(h => h.result === 1).length;
-            const pred = tCount >= 6 ? "Tài" : "Xỉu";
-            return { pred, conf: 0.68, method: "entropy" };
-        }
-        if (entropy > 0.92) {
-            const last20 = history.slice(-20);
-            const tCount = last20.filter(h => h.result === 1).length;
-            const pred = tCount > 10 ? "Xỉu" : "Tài";
-            return { pred, conf: 0.62, method: "entropy" };
-        }
-        return null;
-    }
-
-    predictTotal(history) {
-        const last = history[history.length - 1];
-        if (last.total <= 6) return { pred: "Tài", conf: 0.66, method: "total" };
-        if (last.total >= 15) return { pred: "Xỉu", conf: 0.65, method: "total" };
-        if (last.total >= 7 && last.total <= 9) return { pred: "Tài", conf: 0.58, method: "total" };
-        if (last.total >= 12 && last.total <= 14) return { pred: "Xỉu", conf: 0.57, method: "total" };
-        return null;
-    }
-
-    predictTriple(history) {
-        const last = history[history.length - 1];
-        if (last.isTriple) {
-            const pred = last.tripleVal <= 3 ? "Tài" : "Xỉu";
-            return { pred, conf: 0.72, method: "triple" };
-        }
-        return null;
-    }
-
-    predictPair(history) {
-        const last = history[history.length - 1];
-        if (last.isPair && !last.isTriple) {
-            if (last.pairVal <= 2) return { pred: "Xỉu", conf: 0.60, method: "pair" };
-            if (last.pairVal >= 5) return { pred: "Tài", conf: 0.61, method: "pair" };
-        }
-        return null;
-    }
-
-    predictFaceVacant(history) {
-        const last = history[history.length - 1];
-        for (let f = 1; f <= 6; f++) {
-            if (last.faceGaps[f] >= 8) {
-                const pred = f <= 3 ? "Tài" : "Xỉu";
-                let conf = 0.72 + Math.min(0.12, (last.faceGaps[f] - 8) * 0.02);
-                return { pred, conf, method: "faceVacant" };
-            }
-        }
-        return null;
-    }
-
-    predictZigzag(history) {
-        const last = history[history.length - 1];
-        if (last.zigzag > 0.75) {
-            const pred = last.result === 1 ? "Xỉu" : "Tài";
-            return { pred, conf: 0.64, method: "zigzag" };
-        }
-        return null;
-    }
-
-    predictCluster(history) {
-        const last = history[history.length - 1];
-        if (last.cluster3) {
-            const pred = last.result === 1 ? "Xỉu" : "Tài";
-            return { pred, conf: 0.66, method: "cluster" };
-        }
-        return null;
-    }
-
     predict() {
-        const history = this.processed;
-        if (history.length < 30) {
-            return { prediction: "Tài", confidence: 50, details: [] };
+        let allSignals = [
+            this.predictAllMarkov(),
+            this.predictFrequency(10), this.predictFrequency(20), this.predictFrequency(50),
+            this.predictCycle(), this.predictTrend(), this.predictStreak(), this.predictBayes(),
+            this.predictFibonacci(), this.predictPair(), this.predictRSI(), this.predictBollinger(),
+            this.predictMACD(), this.predictStochastic(), this.predictWilliams(), this.predictCCI(),
+            this.predictEntropy(), this.predictLinearReg(), this.predictKNN(),
+            this.predictDecisionTree(), this.predictMeanReversion(), this.predictPatternMatching()
+        ].filter(p => p !== null);
+
+        if (allSignals.length === 0) {
+            let last10 = this.results.slice(-10);
+            let taiCount = last10.filter(r => r === 1).length;
+            let fallback = taiCount >= 6 ? "Xỉu" : "Tài";
+            return { prediction: fallback, confidence: 52, signals: [] };
         }
-        
-        const predictions = [];
-        const methods = [
-            this.predictPattern(history), this.predictMarkov(history),
-            this.predictFrequency(history), this.predictMomentum(history),
-            this.predictEntropy(history), this.predictTotal(history),
-            this.predictTriple(history), this.predictPair(history),
-            this.predictFaceVacant(history), this.predictZigzag(history),
-            this.predictCluster(history), this.predictBet(history),
-            this.predictCau11(history), this.predictCau22(history),
-            this.predictCau121(history), this.predictCau212(history),
-            this.predictDoiXung(history), this.predictTamGiac(history),
-            this.predictFibonacci(history), this.predictPoisson(history)
-        ];
-        
-        for (const p of methods) {
-            if (p && p.pred) predictions.push(p);
-        }
-        
-        if (predictions.length === 0) {
-            const last10 = history.slice(-10);
-            const taiCount = last10.filter(h => h.result === 1).length;
-            const fallback = taiCount >= 6 ? "Xỉu" : "Tài";
-            return { prediction: fallback, confidence: 52, details: [] };
-        }
-        
+
         let taiScore = 0, xiuScore = 0;
-        const details = [];
-        for (const p of predictions) {
-            const weight = this.weights[p.method] || 0.7;
-            const score = p.conf * weight;
+        for (let p of allSignals) {
+            let typeKey = p.type.replace(/[0-9]/g, '');
+            let weight = this.ensemble.weights[typeKey] || 0.6;
+            let score = (p.conf / 100) * weight;
             if (p.pred === "Tài") taiScore += score;
             else xiuScore += score;
-            details.push({ method: p.method, pred: p.pred, conf: p.conf.toFixed(3), weight: weight.toFixed(3) });
         }
         
-        const total = taiScore + xiuScore;
-        let confidence = total > 0 ? Math.max(taiScore, xiuScore) / total : 0.5;
-        confidence = Math.min(0.96, Math.max(0.55, confidence));
-        const finalPred = taiScore > xiuScore ? "Tài" : "Xỉu";
+        let finalPred = taiScore > xiuScore ? "Tài" : "Xỉu";
+        let total = taiScore + xiuScore;
+        let confidence = total > 0 ? Math.max(taiScore, xiuScore) / total * 100 : 50;
+        confidence = Math.min(94, Math.max(60, confidence));
         
         return {
             prediction: finalPred,
-            confidence: Math.round(confidence * 100),
-            details: details.sort((a, b) => parseFloat(b.conf) - parseFloat(a.conf)),
-            raw: { taiScore: taiScore.toFixed(3), xiuScore: xiuScore.toFixed(3) }
+            confidence: Math.round(confidence),
+            signals: allSignals.sort((a, b) => b.conf - a.conf)
         };
-    }
-
-    updateWithNewSession(newSession) {
-        const newProcessed = this.sieuPreprocess([newSession]);
-        this.processed.push(newProcessed[0]);
-        if (!this.memory.sessions) this.memory.sessions = [];
-        this.memory.sessions.push(newSession);
-        
-        const recentTx = this.processed.slice(-15).map(h => h.resultStr === "Tài" ? 'T' : 'X').join('');
-        const actualResult = newSession.Ket_qua;
-        
-        for (const [pattern, data] of Object.entries(this.patternLibrary)) {
-            if (recentTx.includes(pattern)) {
-                const key = `${pattern}_${actualResult}`;
-                this.memory.patterns[key] = (this.memory.patterns[key] || 0) + 1;
-            }
-        }
-        
-        const lastPred = this.predict();
-        if (lastPred.prediction === actualResult) {
-            for (const detail of lastPred.details) {
-                if (this.weights[detail.method]) {
-                    this.weights[detail.method] = Math.min(1.2, this.weights[detail.method] * 1.01);
-                }
-            }
-        } else {
-            for (const detail of lastPred.details) {
-                if (this.weights[detail.method]) {
-                    this.weights[detail.method] = Math.max(0.3, this.weights[detail.method] * 0.98);
-                }
-            }
-        }
-        
-        this.saveMemory();
     }
 }
 
-// ==================== PREDICTOR INSTANCES ====================
-
-let predictors = { hu: null, md5: null };
-
 // ==================== LOAD/SAVE FUNCTIONS ====================
 
-function loadWinLossHistory() {
+function loadAllData() {
     try {
         if (fs.existsSync(KETQUA_FILE)) {
             const data = fs.readFileSync(KETQUA_FILE, 'utf8');
             const parsed = JSON.parse(data);
             winLossHistory = parsed.winLossHistory || { hu: [], md5: [] };
-            console.log(`✅ Đã tải lịch sử thắng thua: HU=${winLossHistory.hu.length}, MD5=${winLossHistory.md5.length} phiên`);
+            console.log(`✅ Đã tải lịch sử thắng thua: HU=${winLossHistory.hu.length}, MD5=${winLossHistory.md5.length}`);
         }
-    } catch (error) {
-        console.error('❌ Error loading win/loss history:', error.message);
-    }
-}
-
-function saveWinLossHistory() {
-    try {
-        const toSave = {
-            winLossHistory,
-            lastUpdated: new Date().toISOString()
-        };
-        fs.writeFileSync(KETQUA_FILE, JSON.stringify(toSave, null, 2));
-    } catch (error) {
-        console.error('❌ Error saving win/loss history:', error.message);
-    }
-}
-
-function loadSessionsStore() {
+    } catch (error) { console.error('❌ Lỗi load thắng thua:', error.message); }
+    
     try {
         if (fs.existsSync(SESSIONS_FILE)) {
             const data = fs.readFileSync(SESSIONS_FILE, 'utf8');
             sessionsStore = JSON.parse(data);
             console.log(`✅ Đã tải sessions: HU=${sessionsStore.hu.length}, MD5=${sessionsStore.md5.length}`);
             
-            if (sessionsStore.hu.length >= 20) {
+            if (sessionsStore.hu.length >= 30) {
                 isReady.hu = true;
-                predictors.hu = new SieuAIPredictorV11(sessionsStore.hu.slice(0, 200), 'hu', MEMORY_FILE_HU);
+                predictors.hu = new CompositePredictor(sessionsStore.hu);
             }
-            if (sessionsStore.md5.length >= 20) {
+            if (sessionsStore.md5.length >= 30) {
                 isReady.md5 = true;
-                predictors.md5 = new SieuAIPredictorV11(sessionsStore.md5.slice(0, 200), 'md5', MEMORY_FILE_MD5);
+                predictors.md5 = new CompositePredictor(sessionsStore.md5);
             }
         }
-    } catch (error) {
-        console.error('❌ Error loading sessions:', error.message);
-    }
-}
-
-function saveSessionsStore() {
-    try {
-        fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessionsStore, null, 2));
-    } catch (error) {
-        console.error('❌ Error saving sessions:', error.message);
-    }
-}
-
-function loadPredictionHistory() {
+    } catch (error) { console.error('❌ Lỗi load sessions:', error.message); }
+    
     try {
         if (fs.existsSync(HISTORY_FILE)) {
             const data = fs.readFileSync(HISTORY_FILE, 'utf8');
@@ -688,22 +559,21 @@ function loadPredictionHistory() {
             lastProcessedPhien = parsed.lastProcessedPhien || { hu: null, md5: null };
             console.log(`✅ Đã tải lịch sử dự đoán: HU=${predictionHistory.hu.length}, MD5=${predictionHistory.md5.length}`);
         }
-    } catch (error) {
-        console.error('❌ Error loading prediction history:', error.message);
-    }
+    } catch (error) { console.error('❌ Lỗi load dự đoán:', error.message); }
 }
 
-function savePredictionHistory() {
+function saveAllData() {
     try {
-        const toSave = {
-            predictionHistory,
-            lastProcessedPhien,
-            lastSaved: new Date().toISOString()
-        };
-        fs.writeFileSync(HISTORY_FILE, JSON.stringify(toSave, null, 2));
-    } catch (error) {
-        console.error('❌ Error saving prediction history:', error.message);
-    }
+        fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessionsStore, null, 2));
+    } catch (error) { console.error('❌ Lỗi save sessions:', error.message); }
+    
+    try {
+        fs.writeFileSync(KETQUA_FILE, JSON.stringify({ winLossHistory, lastUpdated: new Date().toISOString() }, null, 2));
+    } catch (error) { console.error('❌ Lỗi save thắng thua:', error.message); }
+    
+    try {
+        fs.writeFileSync(HISTORY_FILE, JSON.stringify({ predictionHistory, lastProcessedPhien, lastSaved: new Date().toISOString() }, null, 2));
+    } catch (error) { console.error('❌ Lỗi save dự đoán:', error.message); }
 }
 
 // ==================== API DATA FETCHING ====================
@@ -740,7 +610,7 @@ async function fetchDataMd5() {
     }
 }
 
-// ==================== TÍCH LŨY PHIÊN ====================
+// ==================== UPDATE SESSIONS ====================
 
 function updateSessions(type, newData) {
     if (!newData || newData.length === 0) return 0;
@@ -749,12 +619,12 @@ function updateSessions(type, newData) {
     sessionsStore[type].forEach(s => existingMap.set(s.Phien, s));
     
     let addedCount = 0;
-    newData.forEach(s => {
+    for (const s of newData) {
         if (!existingMap.has(s.Phien)) {
             sessionsStore[type].push(s);
             addedCount++;
         }
-    });
+    }
     
     sessionsStore[type].sort((a, b) => b.Phien - a.Phien);
     if (sessionsStore[type].length > 1000) {
@@ -764,58 +634,64 @@ function updateSessions(type, newData) {
 }
 
 async function fetchAndUpdate(type) {
-    let fetchFn = type === 'hu' ? fetchDataHu : fetchDataMd5;
-    let data = await fetchFn();
-    if (!data || data.length === 0) return false;
+    const fetchFn = type === 'hu' ? fetchDataHu : fetchDataMd5;
+    const data = await fetchFn();
+    if (!data) return false;
     
     const addedCount = updateSessions(type, data);
-    if (addedCount > 0) saveSessionsStore();
+    if (addedCount > 0) saveAllData();
     
-    if (!isReady[type] && sessionsStore[type].length >= 20) {
+    if (!isReady[type] && sessionsStore[type].length >= 30) {
         isReady[type] = true;
-        predictors[type] = new SieuAIPredictorV11(sessionsStore[type].slice(0, 200), type, type === 'hu' ? MEMORY_FILE_HU : MEMORY_FILE_MD5);
+        predictors[type] = new CompositePredictor(sessionsStore[type]);
         console.log(`🎉 [${type.toUpperCase()}] ĐÃ SẴN SÀNG!`);
     } else if (isReady[type] && predictors[type] && addedCount > 0) {
-        for (const newSession of data) {
-            predictors[type].updateWithNewSession(newSession);
-        }
+        predictors[type] = new CompositePredictor(sessionsStore[type]);
     }
     return true;
 }
 
-// ==================== VERIFY PREDICTIONS & GHI THẮNG THUA ====================
+// ==================== VERIFY & RECORD (1 PHIÊN 1 DỮ LIỆU) ====================
 
-async function verifyAndRecordResults(type) {
+function verifyAndRecord(type) {
     if (!predictors[type]) return;
     
     const data = sessionsStore[type];
     let updated = false;
     
-    for (const record of predictionHistory[type]) {
-        if (record.ket_qua_du_doan && record.ket_qua_du_doan !== '') continue;
+    for (let i = 0; i < predictionHistory[type].length; i++) {
+        const record = predictionHistory[type][i];
+        if (record.da_kiem_tra) continue;
         
         const actualResult = data.find(d => d.Phien.toString() === record.phien_du_doan);
         if (actualResult) {
             const isCorrect = record.du_doan === actualResult.Ket_qua;
             record.ket_qua_du_doan = isCorrect ? 'Đúng ✅' : 'Sai ❌';
             record.ket_qua_thuc_te = actualResult.Ket_qua;
+            record.da_kiem_tra = true;
             
-            // Ghi vào lịch sử thắng thua
-            winLossHistory[type].push({
-                phien: record.phien_du_doan,
+            // Thêm vào lịch sử thắng thua - CHỈ 1 BẢN GHI DUY NHẤT
+            const existingIndex = winLossHistory[type].findIndex(w => w.phien_du_doan === record.phien_du_doan);
+            const winLossRecord = {
                 phien_hien_tai: record.phien_hien_tai,
+                phien_du_doan: record.phien_du_doan,
                 du_doan: record.du_doan,
                 ket_qua_thuc_te: actualResult.Ket_qua,
                 ket_qua: isCorrect ? 'Đúng' : 'Sai',
                 do_tin_cay: record.do_tin_cay,
                 thoi_gian: new Date().toISOString()
-            });
+            };
             
+            if (existingIndex !== -1) {
+                winLossHistory[type][existingIndex] = winLossRecord;
+            } else {
+                winLossHistory[type].push(winLossRecord);
+            }
             updated = true;
         }
     }
     
-    // Giữ tối đa MAX_HISTORY phiên
+    // Giới hạn 500 phiên
     if (winLossHistory[type].length > MAX_HISTORY) {
         winLossHistory[type] = winLossHistory[type].slice(-MAX_HISTORY);
     }
@@ -824,11 +700,9 @@ async function verifyAndRecordResults(type) {
     }
     
     if (updated) {
-        savePredictionHistory();
-        saveWinLossHistory();
-        
+        saveAllData();
         const stats = calculateStats(type);
-        console.log(`📊 [${type.toUpperCase()}] Thống kê: Đúng=${stats.dung}, Sai=${stats.sai}, Tỉ lệ=${stats.tiLe}%`);
+        console.log(`📊 [${type.toUpperCase()}] Đúng=${stats.dung}, Sai=${stats.sai}, Tỉ lệ=${stats.tiLe}%`);
     }
 }
 
@@ -851,10 +725,11 @@ function savePredictionToHistory(type, phienDuDoan, phienHienTai, prediction, co
         do_tin_cay: `${confidence}%`,
         ket_qua_du_doan: '',
         ket_qua_thuc_te: '',
+        da_kiem_tra: false,
         xuc_xac: [latestData.Xuc_xac_1, latestData.Xuc_xac_2, latestData.Xuc_xac_3],
         tong: latestData.Tong,
         ket_qua_hien_tai: latestData.Ket_qua,
-        signals: signals.slice(0, 5).map(s => s.method),
+        signals: signals.slice(0, 5).map(s => s.type),
         id: 'love trang',
         timestamp: new Date().toISOString()
     };
@@ -866,7 +741,7 @@ function savePredictionToHistory(type, phienDuDoan, phienHienTai, prediction, co
     return record;
 }
 
-// ==================== AUTO FETCH LOOP ====================
+// ==================== AUTO PROCESS ====================
 
 async function fetchLoop() {
     console.log('═══════════════════════════════════════════════════');
@@ -879,46 +754,46 @@ async function fetchLoop() {
     }
 }
 
-async function autoProcessPredictions() {
+async function autoProcess() {
     if (!isReady.hu && !isReady.md5) return;
     
     try {
         if (isReady.hu && predictors.hu) {
             await fetchAndUpdate('hu');
-            await verifyAndRecordResults('hu');
+            verifyAndRecord('hu');
             
-            const latestSessions = sessionsStore.hu.slice(0, 200);
+            const latestSessions = sessionsStore.hu;
             if (latestSessions.length > 0 && predictors.hu) {
                 const latestPhien = latestSessions[0].Phien;
                 const nextPhien = latestPhien + 1;
                 
                 if (lastProcessedPhien.hu !== nextPhien) {
                     const result = predictors.hu.predict();
-                    const record = savePredictionToHistory('hu', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.details);
+                    savePredictionToHistory('hu', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.signals);
                     lastProcessedPhien.hu = nextPhien;
                     const stats = calculateStats('hu');
-                    console.log(`[DỰ ĐOÁN] 🧠 HU Phien ${nextPhien}: ${result.prediction} (${result.confidence}%) - Tín hiệu: ${result.details.length} - 📊 TL: ${stats.tiLe}% (${stats.dung}/${stats.total})`);
-                    savePredictionHistory();
+                    console.log(`[DỰ ĐOÁN] 🧠 HU Phien ${nextPhien}: ${result.prediction} (${result.confidence}%) - 📊 TL: ${stats.tiLe}% (${stats.dung}/${stats.total})`);
+                    saveAllData();
                 }
             }
         }
         
         if (isReady.md5 && predictors.md5) {
             await fetchAndUpdate('md5');
-            await verifyAndRecordResults('md5');
+            verifyAndRecord('md5');
             
-            const latestSessions = sessionsStore.md5.slice(0, 200);
+            const latestSessions = sessionsStore.md5;
             if (latestSessions.length > 0 && predictors.md5) {
                 const latestPhien = latestSessions[0].Phien;
                 const nextPhien = latestPhien + 1;
                 
                 if (lastProcessedPhien.md5 !== nextPhien) {
                     const result = predictors.md5.predict();
-                    const record = savePredictionToHistory('md5', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.details);
+                    savePredictionToHistory('md5', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.signals);
                     lastProcessedPhien.md5 = nextPhien;
                     const stats = calculateStats('md5');
-                    console.log(`[DỰ ĐOÁN] 🧠 MD5 Phien ${nextPhien}: ${result.prediction} (${result.confidence}%) - Tín hiệu: ${result.details.length} - 📊 TL: ${stats.tiLe}% (${stats.dung}/${stats.total})`);
-                    savePredictionHistory();
+                    console.log(`[DỰ ĐOÁN] 🧠 MD5 Phien ${nextPhien}: ${result.prediction} (${result.confidence}%) - 📊 TL: ${stats.tiLe}% (${stats.dung}/${stats.total})`);
+                    saveAllData();
                 }
             }
         }
@@ -930,19 +805,17 @@ async function autoProcessPredictions() {
 // ==================== STARTUP ====================
 
 async function startup() {
-    loadWinLossHistory();
-    loadSessionsStore();
-    loadPredictionHistory();
+    loadAllData();
     
     console.log('');
     console.log('═══════════════════════════════════════════════════');
-    console.log('🚀 SIÊU AI PREDICTOR V11.0 - TỰ HỌC & GHI NHỚ THẮNG THUA');
-    console.log(`📋 Lưu tối đa ${MAX_HISTORY} phiên`);
+    console.log('🚀 COMPOSITE PREDICTOR - 22+ PHƯƠNG PHÁP DỰ ĐOÁN');
+    console.log(`📋 Lưu tối đa ${MAX_HISTORY} phiên - 1 phiên 1 dữ liệu`);
     console.log('═══════════════════════════════════════════════════');
     
     fetchLoop();
     setTimeout(() => {
-        setInterval(autoProcessPredictions, AUTO_SAVE_INTERVAL);
+        setInterval(autoProcess, AUTO_SAVE_INTERVAL);
     }, 5000);
 }
 
@@ -965,13 +838,13 @@ app.get('/status', (req, res) => {
 app.get('/lc79-hu', async (req, res) => {
     try {
         if (!isReady.hu || !predictors.hu) {
-            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.hu.length}/20` });
+            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.hu.length}/30` });
         }
         
         await fetchAndUpdate('hu');
-        await verifyAndRecordResults('hu');
+        verifyAndRecord('hu');
         
-        const latestSessions = sessionsStore.hu.slice(0, 200);
+        const latestSessions = sessionsStore.hu;
         if (latestSessions.length === 0) return res.json({ error: 'No data' });
         
         const latestPhien = latestSessions[0].Phien;
@@ -979,7 +852,7 @@ app.get('/lc79-hu', async (req, res) => {
         const result = predictors.hu.predict();
         const stats = calculateStats('hu');
         
-        const record = savePredictionToHistory('hu', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.details);
+        const record = savePredictionToHistory('hu', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.signals);
         
         res.json({
             phien_hien_tai: record.phien_hien_tai,
@@ -989,7 +862,7 @@ app.get('/lc79-hu', async (req, res) => {
             ket_qua_hien_tai: record.ket_qua_hien_tai,
             xuc_xac: record.xuc_xac,
             tong: record.tong,
-            signals: result.details.slice(0, 8),
+            signals: result.signals.slice(0, 8).map(s => ({ type: s.type, pred: s.pred, conf: s.conf.toFixed(1) })),
             thong_ke: { tong_du_doan: stats.total, so_dung: stats.dung, so_sai: stats.sai, ti_le_thang: `${stats.tiLe}%` },
             id: 'love trang'
         });
@@ -1001,13 +874,13 @@ app.get('/lc79-hu', async (req, res) => {
 app.get('/lc79-md5', async (req, res) => {
     try {
         if (!isReady.md5 || !predictors.md5) {
-            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.md5.length}/20` });
+            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.md5.length}/30` });
         }
         
         await fetchAndUpdate('md5');
-        await verifyAndRecordResults('md5');
+        verifyAndRecord('md5');
         
-        const latestSessions = sessionsStore.md5.slice(0, 200);
+        const latestSessions = sessionsStore.md5;
         if (latestSessions.length === 0) return res.json({ error: 'No data' });
         
         const latestPhien = latestSessions[0].Phien;
@@ -1015,7 +888,7 @@ app.get('/lc79-md5', async (req, res) => {
         const result = predictors.md5.predict();
         const stats = calculateStats('md5');
         
-        const record = savePredictionToHistory('md5', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.details);
+        const record = savePredictionToHistory('md5', nextPhien, latestPhien, result.prediction, result.confidence, latestSessions[0], result.signals);
         
         res.json({
             phien_hien_tai: record.phien_hien_tai,
@@ -1025,7 +898,7 @@ app.get('/lc79-md5', async (req, res) => {
             ket_qua_hien_tai: record.ket_qua_hien_tai,
             xuc_xac: record.xuc_xac,
             tong: record.tong,
-            signals: result.details.slice(0, 8),
+            signals: result.signals.slice(0, 8).map(s => ({ type: s.type, pred: s.pred, conf: s.conf.toFixed(1) })),
             thong_ke: { tong_du_doan: stats.total, so_dung: stats.dung, so_sai: stats.sai, ti_le_thang: `${stats.tiLe}%` },
             id: 'love trang'
         });
@@ -1068,8 +941,7 @@ app.get('/lc79-hu/analysis', (req, res) => {
     res.json({
         prediction: result.prediction,
         confidence: result.confidence,
-        signals: result.details.slice(0, 10),
-        raw_scores: result.raw
+        signals: result.signals.slice(0, 15).map(s => ({ type: s.type, pred: s.pred, conf: s.conf.toFixed(1) }))
     });
 });
 
@@ -1079,8 +951,7 @@ app.get('/lc79-md5/analysis', (req, res) => {
     res.json({
         prediction: result.prediction,
         confidence: result.confidence,
-        signals: result.details.slice(0, 10),
-        raw_scores: result.raw
+        signals: result.signals.slice(0, 15).map(s => ({ type: s.type, pred: s.pred, conf: s.conf.toFixed(1) }))
     });
 });
 
@@ -1089,30 +960,25 @@ app.get('/lc79-md5/analysis', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log('═══════════════════════════════════════════════════');
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-    console.log('🚀 SIÊU AI PREDICTOR V11.0 - TỰ HỌC & GHI NHỚ');
+    console.log('🚀 COMPOSITE PREDICTOR - 22+ PHƯƠNG PHÁP DỰ ĐOÁN');
     console.log('═══════════════════════════════════════════════════');
     console.log('');
-    console.log('📊 CÁC DẠNG CẦU ĐƯỢC HỖ TRỢ:');
-    console.log('   • Bệt & bẻ bệt (độ chính xác cao)');
-    console.log('   • Cầu 1-1, 2-2, 3-3');
-    console.log('   • Cầu 1-2-1, 2-1-2, 1-2-3-2-1');
-    console.log('   • Cầu đối xứng, tam giác, kim tự tháp');
-    console.log('   • Markov bậc 3-5');
-    console.log('   • Poisson (mặt vắng)');
-    console.log('   • Fibonacci');
-    console.log('   • Tổng điểm, entropy, momentum, zigzag');
+    console.log('📊 CÁC PHƯƠNG PHÁP DỰ ĐOÁN:');
+    console.log('   • Markov chains (bậc 3-8)');
+    console.log('   • Tần suất (10, 20, 50 phiên)');
+    console.log('   • Chu kỳ & Xu hướng');
+    console.log('   • Streak & Bẻ cầu');
+    console.log('   • Bayes & Fibonacci');
+    console.log('   • RSI, Bollinger, MACD, Stochastic, Williams, CCI');
+    console.log('   • Entropy & Linear Regression');
+    console.log('   • KNN, Decision Tree, Pattern Matching');
     console.log('');
-    console.log('📊 TÍNH NĂNG MỚI:');
-    console.log(`   • Ghi nhớ thắng/thua tối đa ${MAX_HISTORY} phiên`);
-    console.log('   • Tự động đối chiếu kết quả thực tế');
-    console.log('   • Lưu chi tiết từng phiên dự đoán');
-    console.log('   • Thống kê tỉ lệ thắng tự động');
+    console.log('📊 TÍNH NĂNG:');
+    console.log(`   • 1 phiên 1 dữ liệu - không bị nhảy`);
+    console.log(`   • Lưu tối đa ${MAX_HISTORY} phiên`);
+    console.log('   • Tự động đối chiếu kết quả');
+    console.log('   • Thống kê tỉ lệ thắng');
     console.log('');
-    console.log('📁 Files:');
-    console.log('   - sessions_data.json: Lưu phiên đã fetch');
-    console.log('   - lichsu_du_doan.json: Lịch sử dự đoán');
-    console.log('   - ketqua_thang_thua.json: Kết quả thắng/thua');
-    console.log('   - ai_memory_hu.json / ai_memory_md5.json: Bộ nhớ AI');
     console.log('👤 ID: love trang');
     console.log('═══════════════════════════════════════════════════');
     
