@@ -11,7 +11,6 @@ let currentPrediction = null;
 let isUpdating = false;
 let predictor = null;
 let verifiedResults = [];
-let lastPredictedPhien = 0;
 const HISTORY_FILE = './verified_results.json';
 const MAX_HISTORY = 500;
 
@@ -26,9 +25,9 @@ const getX3 = item => item.xuc_xac_3 ?? item.Xuc_xac_3 ?? 0;
 const normalize = item => ({
     ket_qua: getKetQua(item),
     tong: getTong(item),
-    x1: getX1(item),
-    x2: getX2(item),
-    x3: getX3(item),
+    xuc_xac_1: getX1(item),
+    xuc_xac_2: getX2(item),
+    xuc_xac_3: getX3(item),
     phien: getPhien(item),
 });
 
@@ -36,244 +35,468 @@ const normalize = item => ({
 function loadHistory() {
     try {
         if (fs.existsSync(HISTORY_FILE)) {
-            const data = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-            verifiedResults = Array.isArray(data) ? data.slice(0, MAX_HISTORY) : [];
+            verifiedResults = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8')).slice(0, MAX_HISTORY);
             console.log(`📂 Đã tải ${verifiedResults.length} phiên lịch sử thắng/thua`);
         }
-    } catch (e) {
-        console.log('⚠️ Không thể tải lịch sử, bắt đầu mới');
-        verifiedResults = [];
-    }
+    } catch (e) { verifiedResults = []; }
 }
 
 function saveHistory() {
     try {
         verifiedResults = verifiedResults.slice(0, MAX_HISTORY);
         fs.writeFileSync(HISTORY_FILE, JSON.stringify(verifiedResults, null, 2));
-    } catch (e) {
-        console.log('⚠️ Không thể lưu lịch sử');
-    }
+    } catch (e) {}
 }
 
 function addToHistory(phien, duDoan, ketQua, doTinCay) {
-    // Kiểm tra không trùng phiên
-    const exists = verifiedResults.find(v => v.phien === phien);
-    if (exists) return;
-    
-    const isCorrect = duDoan.toLowerCase() === ketQua.toLowerCase();
+    if (verifiedResults.find(v => v.phien === phien)) return null;
+    const isCorrect = duDoan === ketQua;
     verifiedResults.unshift({
-        phien: phien,
-        du_doan: duDoan,
-        ket_qua: ketQua,
+        phien, du_doan: duDoan, ket_qua: ketQua,
         danh_gia: isCorrect ? 'thang' : 'thua',
         do_tin_cay: doTinCay,
         timestamp: new Date().toISOString()
     });
-    
-    // Giới hạn 500 phiên
-    if (verifiedResults.length > MAX_HISTORY) {
-        verifiedResults = verifiedResults.slice(0, MAX_HISTORY);
-    }
-    
+    if (verifiedResults.length > MAX_HISTORY) verifiedResults = verifiedResults.slice(0, MAX_HISTORY);
     saveHistory();
     return isCorrect;
 }
 
-// ============ UTILS ============
-const Utils = {
-    sum: arr => arr.reduce((a, b) => a + b, 0),
-    avg: arr => arr.length ? Utils.sum(arr) / arr.length : 0,
-    std: arr => { const m = Utils.avg(arr); return Math.sqrt(Utils.avg(arr.map(x => Math.pow(x - m, 2)))); },
-    variance: arr => { const m = Utils.avg(arr); return Utils.avg(arr.map(x => Math.pow(x - m, 2))); },
-    entropy: arr => { const p = Utils.avg(arr); if (p <= 0 || p >= 1) return 1; return -p * Math.log2(p) - (1 - p) * Math.log2(1 - p); },
-    clamp: (v, min, max) => Math.min(max, Math.max(min, v)),
-    round: v => Math.round(v * 100) / 100,
-};
+// ============================================================
+// ADAPTIVE PREDICTOR V3.0 - SIÊU THUẬT TOÁN THÍCH NGHI
+// 20+ thuật toán bắt cầu | Trọng số động | Học liên tục
+// ============================================================
 
-// ============ DATA PREPROCESSOR ============
-class DataPreprocessor {
-    constructor(raw) { this.raw = raw; this.processed = null; }
+class AdaptivePredictor {
+    constructor(data) {
+        this.raw = data;
+        this.processed = this.preprocess(data);
+        this.stats = this.buildStats();
+        this.patterns = this.buildPatterns();
+        this.adaptiveWeights = this.initAdaptiveWeights();
+        this.performance = this.initPerformance();
+        this.lastSignals = null;
+        if (this.processed.length >= 100) this.learnFromRecent(100);
+    }
 
-    process() {
-        const p = [];
-        for (let i = 0; i < this.raw.length; i++) {
-            const d = this.raw[i];
-            const dice = [d.x1, d.x2, d.x3];
-            const kq = d.ket_qua;
-            const r = (kq === 'tài' || kq === 'tai') ? 1 : 0;
-
-            p.push({
-                phien: d.phien, result: r, resultStr: kq, total: d.tong,
-                x1: d.x1, x2: d.x2, x3: d.x3, dice,
-                sum: d.x1 + d.x2 + d.x3, min: Math.min(...dice), max: Math.max(...dice),
-                range: Math.max(...dice) - Math.min(...dice),
-                isTriple: d.x1 === d.x2 && d.x2 === d.x3,
-                isPair: (d.x1 === d.x2 || d.x1 === d.x3 || d.x2 === d.x3) && !(d.x1 === d.x2 && d.x2 === d.x3),
-                tripleVal: d.x1 === d.x2 && d.x2 === d.x3 ? d.x1 : 0,
-                pairVal: d.x1 === d.x2 ? d.x1 : (d.x1 === d.x3 ? d.x1 : (d.x2 === d.x3 ? d.x2 : 0)),
-                variance: Utils.variance(dice), product: dice[0] * dice[1] * dice[2],
-                sumSq: dice[0] ** 2 + dice[1] ** 2 + dice[2] ** 2,
-                has1: dice.includes(1), has2: dice.includes(2), has3: dice.includes(3),
-                has4: dice.includes(4), has5: dice.includes(5), has6: dice.includes(6),
-                cnt1: dice.filter(x => x === 1).length, cnt2: dice.filter(x => x === 2).length,
-                cnt3: dice.filter(x => x === 3).length, cnt4: dice.filter(x => x === 4).length,
-                cnt5: dice.filter(x => x === 5).length, cnt6: dice.filter(x => x === 6).length,
-                encoded: dice[0] * 100 + dice[1] * 10 + dice[2]
-            });
-        }
-
-        for (let i = 0; i < p.length; i++) {
-            if (i === 0) { p[i].streak = 1; continue; }
+    preprocess(data) {
+        return data.map((item, idx, arr) => {
+            const dice = [item.xuc_xac_1, item.xuc_xac_2, item.xuc_xac_3];
+            const result = item.ket_qua === "tài" ? 1 : 0;
             let streak = 1;
-            for (let j = i - 1; j >= 0; j--) { if (p[j].result === p[i].result) streak++; else break; }
-            p[i].streak = streak;
-            p[i].prevResult = p[i - 1].result;
-            p[i].totalDelta = p[i].total - p[i - 1].total;
+            if (idx > 0 && arr[idx - 1].ket_qua === item.ket_qua) streak = arr[idx - 1].streak + 1;
+            let face1Streak = 0, face6Streak = 0;
+            for (let j = idx; j >= 0; j--) {
+                if (arr[j].xuc_xac_1 === 1 || arr[j].xuc_xac_2 === 1 || arr[j].xuc_xac_3 === 1) face1Streak++;
+                else break;
+            }
+            for (let j = idx; j >= 0; j--) {
+                if (arr[j].xuc_xac_1 === 6 || arr[j].xuc_xac_2 === 6 || arr[j].xuc_xac_3 === 6) face6Streak++;
+                else break;
+            }
+            return {
+                phien: item.phien, result, resultStr: item.ket_qua, total: item.tong, dice,
+                streak, face1Streak, face6Streak,
+                isTriple: dice[0] === dice[1] && dice[1] === dice[2],
+                tripleVal: dice[0],
+                isPair: (dice[0] === dice[1] || dice[0] === dice[2] || dice[1] === dice[2]) && !(dice[0] === dice[1] && dice[1] === dice[2]),
+                pairVal: dice[0] === dice[1] ? dice[0] : (dice[0] === dice[2] ? dice[0] : dice[1]),
+                sum: dice[0] + dice[1] + dice[2],
+                range: Math.max(...dice) - Math.min(...dice),
+                has: (v) => dice.includes(v),
+                cnt: (v) => dice.filter(x => x === v).length
+            };
+        });
+    }
+
+    buildStats() {
+        const stats = {
+            benTai: { 1: 0.5386, 2: 0.582, 3: 0.485, 4: 0.361, 5: 0.45, 6: 0.52 },
+            benXiu: { 1: 0.4614, 2: 0.567, 3: 0.462, 4: 0.338, 5: 0.55, 6: 0.48 },
+            daoChieuTai: { 2: 0.418, 3: 0.515, 4: 0.639, 5: 0.55, 6: 0.48 },
+            daoChieuXiu: { 2: 0.433, 3: 0.538, 4: 0.662, 5: 0.45, 6: 0.52 },
+            afterTotal: {}, absence: {}, afterTriple: {}, afterPair: {}, afterRange: {}, patterns: {}
+        };
+
+        const specialTotals = [3, 4, 5, 6, 15, 16, 17, 18];
+        for (let t of specialTotals) {
+            let tai = 0, xiu = 0;
+            for (let i = 1; i < this.processed.length; i++) {
+                if (this.processed[i - 1].total === t) {
+                    if (this.processed[i].result === 1) tai++; else xiu++;
+                }
+            }
+            if (tai + xiu > 10) stats.afterTotal[t] = { Tai: tai / (tai + xiu), Xiu: xiu / (tai + xiu) };
         }
 
-        for (let i = 0; i < p.length; i++) {
+        for (let gap of [5, 6, 7, 8, 9, 10, 12, 15]) {
             for (let f = 1; f <= 6; f++) {
-                let streak = 0, absence = 0;
-                for (let j = i; j >= 0; j--) {
-                    if (p[j][`has${f}`]) { streak++; absence = 0; }
-                    else { if (streak === 0) absence++; else break; }
+                let tai = 0, xiu = 0;
+                for (let i = gap; i < this.processed.length - 1; i++) {
+                    let absent = true;
+                    for (let j = i - gap + 1; j <= i; j++) { if (this.processed[j].has(f)) { absent = false; break; } }
+                    if (absent && this.processed[i + 1].has(f)) {
+                        if (this.processed[i + 1].result === 1) tai++; else xiu++;
+                    }
                 }
-                p[i][`face${f}Streak`] = streak;
-                p[i][`face${f}Absence`] = absence;
+                if (tai + xiu > 8) stats.absence[`f${f}_gap${gap}`] = { Tai: tai / (tai + xiu), Xiu: xiu / (tai + xiu) };
             }
         }
 
-        for (let i = 9; i < p.length; i++) {
-            const last10 = p.slice(i - 9, i + 1).map(x => x.result);
-            p[i].entropy10 = Utils.entropy(last10);
-            p[i].trend10 = (p[i].result - p[i - 9].result) / 10;
+        for (let i = 1; i < this.processed.length; i++) {
+            if (this.processed[i - 1].isTriple) {
+                const tv = this.processed[i - 1].tripleVal;
+                if (!stats.afterTriple[tv]) stats.afterTriple[tv] = { Tai: 0, Xiu: 0 };
+                if (this.processed[i].result === 1) stats.afterTriple[tv].Tai++; else stats.afterTriple[tv].Xiu++;
+            }
+        }
+        for (let tv = 1; tv <= 6; tv++) {
+            if (stats.afterTriple[tv] && (stats.afterTriple[tv].Tai + stats.afterTriple[tv].Xiu) > 5) {
+                const total = stats.afterTriple[tv].Tai + stats.afterTriple[tv].Xiu;
+                stats.afterTriple[tv].Tai /= total; stats.afterTriple[tv].Xiu /= total;
+            }
         }
 
-        this.processed = p;
-        return p;
+        for (let i = 1; i < this.processed.length; i++) {
+            if (this.processed[i - 1].isPair && !this.processed[i - 1].isTriple) {
+                const pv = this.processed[i - 1].pairVal;
+                if (!stats.afterPair[pv]) stats.afterPair[pv] = { Tai: 0, Xiu: 0 };
+                if (this.processed[i].result === 1) stats.afterPair[pv].Tai++; else stats.afterPair[pv].Xiu++;
+            }
+        }
+        for (let pv = 1; pv <= 6; pv++) {
+            if (stats.afterPair[pv] && (stats.afterPair[pv].Tai + stats.afterPair[pv].Xiu) > 8) {
+                const total = stats.afterPair[pv].Tai + stats.afterPair[pv].Xiu;
+                stats.afterPair[pv].Tai /= total; stats.afterPair[pv].Xiu /= total;
+            }
+        }
+
+        for (let r = 0; r <= 5; r++) {
+            let tai = 0, xiu = 0;
+            for (let i = 1; i < this.processed.length; i++) {
+                if (this.processed[i - 1].range === r) {
+                    if (this.processed[i].result === 1) tai++; else xiu++;
+                }
+            }
+            if (tai + xiu > 15) stats.afterRange[r] = { Tai: tai / (tai + xiu), Xiu: xiu / (tai + xiu) };
+        }
+
+        for (let len of [2, 3, 4]) {
+            for (let i = len; i < this.processed.length; i++) {
+                const pattern = this.processed.slice(i - len, i).map(p => p.result).join('');
+                const next = this.processed[i].result;
+                if (!stats.patterns[pattern]) stats.patterns[pattern] = { Tai: 0, Xiu: 0 };
+                if (next === 1) stats.patterns[pattern].Tai++; else stats.patterns[pattern].Xiu++;
+            }
+        }
+
+        return stats;
     }
-}
 
-// ============ PATTERN DETECTOR ============
-class PatternDetector {
-    constructor(data) { this.data = data; }
-    cauBet() { if (this.data.length < 2) return null; const last = this.data[this.data.length - 1]; const s = last.streak; if (s >= 4 && s <= 6) return { pred: last.result === 1 ? "tai" : "xiu", conf: 55 + s * 2, name: "Bệt" }; if (s >= 7) return { pred: last.result === 1 ? "xiu" : "tai", conf: 65 + (s - 6) * 2, name: "Bệt_sap_gay" }; return null; }
-    cau11() { if (this.data.length < 6) return null; const l5 = this.data.slice(-5).map(p => p.result); for (let i = 1; i < 5; i++) if (l5[i] === l5[i - 1]) return null; const lastResult = this.data[this.data.length - 1].result; return { pred: lastResult === 1 ? "xiu" : "tai", conf: 72, name: "1-1" }; }
-    cau22() { if (this.data.length < 8) return null; const l8 = this.data.slice(-8).map(p => p.result); for (let i = 2; i < 8; i += 2) if (l8[i] !== l8[i - 2]) return null; if (l8[0] === l8[1]) return null; return { pred: l8[7] === 1 ? "xiu" : "tai", conf: 68, name: "2-2" }; }
-    cau121() { if (this.data.length < 8) return null; const l8 = this.data.slice(-8).map(p => p.result); const p1 = [1, 1, 0, 0, 1, 1, 0, 0], p2 = [0, 0, 1, 1, 0, 0, 1, 1]; let m1 = true, m2 = true; for (let i = 0; i < 8; i++) { if (l8[i] !== p1[i]) m1 = false; if (l8[i] !== p2[i]) m2 = false; } if (m1) return { pred: "tai", conf: 70, name: "1-2-1" }; if (m2) return { pred: "xiu", conf: 70, name: "1-2-1" }; return null; }
-    cau212() { if (this.data.length < 8) return null; const l8 = this.data.slice(-8).map(p => p.result); const p1 = [1, 1, 0, 1, 1, 0, 1, 1], p2 = [0, 0, 1, 0, 0, 1, 0, 0]; let m1 = true, m2 = true; for (let i = 0; i < 8; i++) { if (l8[i] !== p1[i]) m1 = false; if (l8[i] !== p2[i]) m2 = false; } if (m1) return { pred: "xiu", conf: 72, name: "2-1-2" }; if (m2) return { pred: "tai", conf: 72, name: "2-1-2" }; return null; }
-    cau321() { if (this.data.length < 6) return null; const l6 = this.data.slice(-6).map(p => p.result); const p1 = [1, 1, 1, 0, 0, 0], p2 = [0, 0, 0, 1, 1, 1]; let m1 = true, m2 = true; for (let i = 0; i < 6; i++) { if (l6[i] !== p1[i]) m1 = false; if (l6[i] !== p2[i]) m2 = false; } if (m1) return { pred: "xiu", conf: 68, name: "3-2-1" }; if (m2) return { pred: "tai", conf: 68, name: "3-2-1" }; return null; }
-    cauZigzag() { if (this.data.length < 10) return null; const l10 = this.data.slice(-10).map(p => p.result); for (let i = 1; i < 10; i++) if (l10[i] === l10[i - 1]) return null; return { pred: l10[9] === 1 ? "xiu" : "tai", conf: 70, name: "Zigzag" }; }
-    getAll() { return [this.cauBet(), this.cau11(), this.cau22(), this.cau121(), this.cau212(), this.cau321(), this.cauZigzag()].filter(s => s); }
-}
+    buildPatterns() {
+        const patterns = {};
+        for (let i = 2; i < this.processed.length; i++) {
+            const p2 = `${this.processed[i - 2].result}${this.processed[i - 1].result}`;
+            if (!patterns[p2]) patterns[p2] = { Tai: 0, Xiu: 0 };
+            this.processed[i].result === 1 ? patterns[p2].Tai++ : patterns[p2].Xiu++;
+        }
+        for (let i = 3; i < this.processed.length; i++) {
+            const p3 = `${this.processed[i - 3].result}${this.processed[i - 2].result}${this.processed[i - 1].result}`;
+            if (!patterns[p3]) patterns[p3] = { Tai: 0, Xiu: 0 };
+            this.processed[i].result === 1 ? patterns[p3].Tai++ : patterns[p3].Xiu++;
+        }
+        for (let i = 4; i < this.processed.length; i++) {
+            const p4 = `${this.processed[i - 4].result}${this.processed[i - 3].result}${this.processed[i - 2].result}${this.processed[i - 1].result}`;
+            if (!patterns[p4]) patterns[p4] = { Tai: 0, Xiu: 0 };
+            this.processed[i].result === 1 ? patterns[p4].Tai++ : patterns[p4].Xiu++;
+        }
+        for (let i = 5; i < this.processed.length; i++) {
+            const p5 = `${this.processed[i - 5].result}${this.processed[i - 4].result}${this.processed[i - 3].result}${this.processed[i - 2].result}${this.processed[i - 1].result}`;
+            if (!patterns[p5]) patterns[p5] = { Tai: 0, Xiu: 0 };
+            this.processed[i].result === 1 ? patterns[p5].Tai++ : patterns[p5].Xiu++;
+        }
+        return patterns;
+    }
 
-// ============ EXPLOIT DETECTOR ============
-class ExploitDetector {
-    constructor(data) { this.data = data; }
-    triple1() { const last = this.data[this.data.length - 1]; if (last.isTriple && last.tripleVal === 1) return { pred: "xiu", conf: 87, name: "Triple1" }; return null; }
-    triple6() { const last = this.data[this.data.length - 1]; if (last.isTriple && last.tripleVal === 6) return { pred: "tai", conf: 84, name: "Triple6" }; return null; }
-    totalHigh() { const last = this.data[this.data.length - 1]; if (last.total >= 15) return { pred: "xiu", conf: 66, name: "TotalHigh" }; return null; }
-    totalLow() { const last = this.data[this.data.length - 1]; if (last.total <= 5) return { pred: "tai", conf: 68, name: "TotalLow" }; return null; }
-    face1Absence() { const last = this.data[this.data.length - 1]; if (last.face1Absence >= 12) return { pred: "xiu", conf: 78, name: "Face1Absence" }; return null; }
-    face6Absence() { const last = this.data[this.data.length - 1]; if (last.face6Absence >= 12) return { pred: "tai", conf: 76, name: "Face6Absence" }; return null; }
-    double1() { const last = this.data[this.data.length - 1]; if (last.cnt1 >= 2) return { pred: "xiu", conf: 65, name: "Double1" }; return null; }
-    double6() { const last = this.data[this.data.length - 1]; if (last.cnt6 >= 2) return { pred: "tai", conf: 65, name: "Double6" }; return null; }
-    pair1() { const last = this.data[this.data.length - 1]; if (last.isPair && last.pairVal === 1) return { pred: "xiu", conf: 68, name: "Pair1" }; return null; }
-    pair6() { const last = this.data[this.data.length - 1]; if (last.isPair && last.pairVal === 6) return { pred: "tai", conf: 68, name: "Pair6" }; return null; }
-    rangeZero() { const last = this.data[this.data.length - 1]; if (last.isTriple) { if (last.tripleVal <= 2) return { pred: "xiu", conf: 82, name: "RangeZero" }; if (last.tripleVal >= 5) return { pred: "tai", conf: 80, name: "RangeZero" }; } return null; }
-    getAll() { return [this.triple1(), this.triple6(), this.totalHigh(), this.totalLow(), this.face1Absence(), this.face6Absence(), this.double1(), this.double6(), this.pair1(), this.pair6(), this.rangeZero()].filter(s => s); }
-}
-
-// ============ TECHNICAL INDICATORS ============
-class TechnicalIndicators {
-    constructor(data) { this.data = data; }
-    markov(order) { if (this.data.length < order + 2) return null; const r = this.data.map(p => p.result); const trans = new Map(); for (let i = 0; i <= r.length - order - 1; i++) { const state = r.slice(i, i + order).join(''); const next = r[i + order]; if (!trans.has(state)) trans.set(state, { 0: 0, 1: 0 }); trans.get(state)[next]++; } const lastState = r.slice(-order).join(''); const cnt = trans.get(lastState); if (cnt && cnt[0] + cnt[1] >= 2) { const conf = Math.max(cnt[0], cnt[1]) / (cnt[0] + cnt[1]) * 100; return { pred: cnt[1] > cnt[0] ? "tai" : "xiu", conf, name: `Markov${order}` }; } return null; }
-    patternDB() { if (this.data.length < 10) return null; const last8 = this.data.slice(-8).map(p => p.result).join(''); let matches = []; for (let i = 0; i <= this.data.length - 9; i++) { const p = this.data.slice(i, i + 8).map(p => p.result).join(''); if (p === last8) matches.push(this.data[i + 8].result); } if (matches.length >= 2) { const t = matches.filter(m => m === 1).length; return { pred: t > matches.length / 2 ? "tai" : "xiu", conf: 55 + Math.min(30, matches.length * 2), name: "PatternDB" }; } return null; }
-    rsi() { if (this.data.length < 20) return null; const r = this.data.slice(-20).map(p => p.result); let g = 0, l = 0; for (let i = 1; i < r.length; i++) { const d = r[i] - r[i - 1]; if (d > 0) g += d; else l += -d; } const rsi = 100 - 100 / (1 + g / (l + 0.001)); if (rsi > 70) return { pred: "xiu", conf: 65, name: "RSI" }; if (rsi < 30) return { pred: "tai", conf: 65, name: "RSI" }; return null; }
-    macd() { if (this.data.length < 26) return null; const r = this.data.map(p => p.result); const ema12 = Utils.avg(r.slice(-12)); const ema26 = Utils.avg(r); const macd = ema12 - ema26; if (macd > 0.05) return { pred: "tai", conf: 60, name: "MACD" }; if (macd < -0.05) return { pred: "xiu", conf: 60, name: "MACD" }; return null; }
-    bollinger() { if (this.data.length < 20) return null; const r = this.data.slice(-20).map(p => p.result); const sma = Utils.avg(r); const std = Utils.std(r); const last = r[r.length - 1]; if (last > sma + 1.5 * std) return { pred: "xiu", conf: 62, name: "Bollinger" }; if (last < sma - 1.5 * std) return { pred: "tai", conf: 62, name: "Bollinger" }; return null; }
-    stochastic() { if (this.data.length < 14) return null; const r = this.data.slice(-14).map(p => p.result); const low = Math.min(...r), high = Math.max(...r); const last = r[r.length - 1]; const stoch = 100 * (last - low) / (high - low + 0.001); if (stoch > 80) return { pred: "xiu", conf: 62, name: "Stochastic" }; if (stoch < 20) return { pred: "tai", conf: 62, name: "Stochastic" }; return null; }
-    wavelet() { if (this.data.length < 30) return null; let r = this.data.slice(-30).map(p => p.result); for (let l = 0; l < 2; l++) { const smooth = []; for (let i = 0; i < r.length - 1; i += 2) smooth.push((r[i] + r[i + 1]) / 2, (r[i] + r[i + 1]) / 2); if (r.length % 2 === 1) smooth.push(r[r.length - 1]); r = smooth; } const trend = r[r.length - 1] - r[r.length - 5]; if (Math.abs(trend) > 0.12) return { pred: trend > 0 ? "tai" : "xiu", conf: 65 + Math.abs(trend) * 50, name: "Wavelet" }; return null; }
-    kalman() { if (this.data.length < 30) return null; const r = this.data.map(p => p.result); let e = 0.5, err = 0.25; for (let i = 0; i < r.length; i++) { const kg = err / (err + 0.1); e = e + kg * (r[i] - e); err = (1 - kg) * err + 0.01; } const conf = Math.abs(e - 0.5) * 2 * 100; if (conf > 55) return { pred: e >= 0.5 ? "tai" : "xiu", conf, name: "Kalman" }; return null; }
-    hurst() { if (this.data.length < 100) return null; const r = this.data.slice(-200).map(p => p.result); const lags = [10, 20, 30, 40, 50]; const rs = []; for (const lag of lags) { if (r.length < lag * 2) continue; const ranges = []; for (let s = 0; s + lag <= r.length; s += lag) { const chunk = r.slice(s, s + lag); const mean = Utils.avg(chunk); let cum = 0, maxCum = -Infinity, minCum = Infinity; for (let i = 0; i < lag; i++) { cum += chunk[i] - mean; if (cum > maxCum) maxCum = cum; if (cum < minCum) minCum = cum; } const R = maxCum - minCum; const S = Math.sqrt(Utils.variance(chunk)); if (S > 0) ranges.push(R / S); } if (ranges.length) rs.push(Math.log(Utils.avg(ranges))); } if (rs.length < 2) return null; const hurst = (rs[rs.length - 1] - rs[0]) / (Math.log(lags[rs.length - 1]) - Math.log(lags[0])); if (hurst > 0.65) return { pred: r[r.length - 1] === 1 ? "tai" : "xiu", conf: 70 + (hurst - 0.65) * 50, name: "HurstTrend" }; if (hurst < 0.35) return { pred: r[r.length - 1] === 1 ? "xiu" : "tai", conf: 68, name: "HurstReverse" }; return null; }
-    entropy() { if (this.data.length < 20) return null; const last = this.data[this.data.length - 1]; const e = last.entropy10 || 0.5; if (e < 0.3) return { pred: last.result === 1 ? "tai" : "xiu", conf: 70, name: "EntropyLow" }; if (e > 0.9) { const last10 = this.data.slice(-10).map(p => p.result); const t = Utils.sum(last10); if (t > 6) return { pred: "xiu", conf: 65, name: "EntropyHigh" }; if (t < 4) return { pred: "tai", conf: 65, name: "EntropyHigh" }; } return null; }
-    meanReversion() { if (this.data.length < 20) return null; const t = this.data.slice(-20).map(p => p.total); const m = Utils.avg(t); const last = t[t.length - 1]; if (last > m + 3) return { pred: "xiu", conf: 65, name: "MeanReversion" }; if (last < m - 3) return { pred: "tai", conf: 65, name: "MeanReversion" }; return null; }
-    momentum() { if (this.data.length < 10) return null; const last5 = this.data.slice(-5).map(p => p.result).reduce((a, b) => a + b, 0); const prev5 = this.data.slice(-10, -5).map(p => p.result).reduce((a, b) => a + b, 0); const mom = last5 - prev5; if (mom > 2) return { pred: "xiu", conf: 60, name: "Momentum" }; if (mom < -2) return { pred: "tai", conf: 60, name: "Momentum" }; return null; }
-    frequency() { if (this.data.length < 30) return null; const r = this.data.slice(-30).map(p => p.result); const t = Utils.sum(r); if (t > 20) return { pred: "xiu", conf: 65, name: "Frequency" }; if (t < 10) return { pred: "tai", conf: 65, name: "Frequency" }; return null; }
-    totalAnalysis() { if (this.data.length < 20) return null; const t = this.data.slice(-20).map(p => p.total); const m = Utils.avg(t); const last = t[t.length - 1]; if (last > m + 2.5) return { pred: "xiu", conf: 62, name: "TotalAnalysis" }; if (last < m - 2.5) return { pred: "tai", conf: 62, name: "TotalAnalysis" }; return null; }
-    diceAnalysis() { const last = this.data[this.data.length - 1]; const dice = [last.x1, last.x2, last.x3]; let score = 0; for (const f of dice) { if (f <= 2) score--; if (f >= 5) score++; } if (score >= 2) return { pred: "tai", conf: 60, name: "DiceAnalysis" }; if (score <= -2) return { pred: "xiu", conf: 60, name: "DiceAnalysis" }; return null; }
-    getAll() { return [this.markov(2), this.markov(3), this.markov(4), this.patternDB(), this.rsi(), this.macd(), this.bollinger(), this.stochastic(), this.wavelet(), this.kalman(), this.hurst(), this.entropy(), this.meanReversion(), this.momentum(), this.frequency(), this.totalAnalysis(), this.diceAnalysis()].filter(s => s); }
-}
-
-// ============ MAIN PREDICTOR ============
-class GodPredictor {
-    constructor(raw) {
-        this.raw = raw;
-        const prep = new DataPreprocessor(raw);
-        this.data = prep.process();
-        this.history = [];
-        this.initPerformance();
+    initAdaptiveWeights() {
+        return { bet: 90, dao: 90, cau11: 85, cau22: 85, cau31: 80, cau13: 80, cau121: 80, cau212: 80, cau321: 75, zigzag: 75, pattern2: 80, pattern3: 80, pattern4: 75, pattern5: 70, tong: 70, matVang: 80, triple: 85, pair: 70, range: 65 };
     }
 
     initPerformance() {
-        this.perf = {};
-        const allNames = ['Bệt', '1-1', '2-2', '1-2-1', '2-1-2', '3-2-1', 'Zigzag', 'Triple1', 'Triple6', 'TotalHigh', 'TotalLow', 'Face1Absence', 'Face6Absence', 'Double1', 'Double6', 'Pair1', 'Pair6', 'RangeZero', 'Markov2', 'Markov3', 'Markov4', 'PatternDB', 'RSI', 'MACD', 'Bollinger', 'Stochastic', 'Wavelet', 'Kalman', 'HurstTrend', 'HurstReverse', 'EntropyLow', 'EntropyHigh', 'MeanReversion', 'Momentum', 'Frequency', 'TotalAnalysis', 'DiceAnalysis'];
-        for (const name of allNames) this.perf[name] = { correct: 0, total: 0, weight: 1.0 };
+        const perf = {};
+        for (const k of Object.keys(this.adaptiveWeights)) perf[k] = { correct: 0, total: 0, recent: [] };
+        return perf;
+    }
+
+    learnFromRecent(n = 100) {
+        const recent = this.processed.slice(-n);
+        let cau11Count = 0, cau22Count = 0, cau31Count = 0, cau13Count = 0;
+        let cau121Count = 0, cau212Count = 0, cau321Count = 0, zigzagCount = 0;
+        for (let i = 2; i < recent.length; i++) {
+            const p2 = `${recent[i - 2].result}${recent[i - 1].result}`;
+            if (p2 === "01" || p2 === "10") cau11Count++;
+            if (i >= 4) {
+                const p4 = `${recent[i - 4]?.result}${recent[i - 3]?.result}${recent[i - 2]?.result}${recent[i - 1]?.result}`;
+                if (p4 === "1100" || p4 === "0011") cau121Count++;
+                if (p4 === "1011" || p4 === "0100") cau212Count++;
+            }
+            let isZigzag = true;
+            for (let j = 1; j <= 5; j++) { if (recent[i - j]?.result === recent[i - j + 1]?.result) { isZigzag = false; break; } }
+            if (isZigzag && i >= 5) zigzagCount++;
+        }
+        if (cau11Count > 15) this.adaptiveWeights.cau11 = Math.min(98, this.adaptiveWeights.cau11 + 8);
+        if (cau121Count > 10) this.adaptiveWeights.cau121 = Math.min(98, this.adaptiveWeights.cau121 + 8);
+        if (cau212Count > 10) this.adaptiveWeights.cau212 = Math.min(98, this.adaptiveWeights.cau212 + 8);
+        if (zigzagCount > 12) this.adaptiveWeights.zigzag = Math.min(98, this.adaptiveWeights.zigzag + 8);
+        const lastStreak = recent[recent.length - 1].streak;
+        if (lastStreak >= 3) { this.adaptiveWeights.bet = Math.min(95, this.adaptiveWeights.bet + 10); this.adaptiveWeights.dao = Math.min(95, this.adaptiveWeights.dao + 12); }
+    }
+
+    batBet() {
+        const last = this.processed[this.processed.length - 1];
+        if (last.streak === 1) return null;
+        if (last.result === 1) {
+            const prob = this.stats.benTai[Math.min(last.streak, 6)];
+            if (prob && prob > 0.55) return { pred: "tài", conf: prob * 100, reason: `Bệt Tài ${last.streak}`, type: "bet" };
+            if (last.streak >= 3) {
+                const daoProb = this.stats.daoChieuTai[Math.min(last.streak, 6)];
+                if (daoProb && daoProb > 0.52) return { pred: "xỉu", conf: daoProb * 100, reason: `Đứt bệt Tài ${last.streak}`, type: "dao" };
+            }
+        } else {
+            const prob = this.stats.benXiu[Math.min(last.streak, 6)];
+            if (prob && prob > 0.55) return { pred: "xỉu", conf: prob * 100, reason: `Bệt Xỉu ${last.streak}`, type: "bet" };
+            if (last.streak >= 3) {
+                const daoProb = this.stats.daoChieuXiu[Math.min(last.streak, 6)];
+                if (daoProb && daoProb > 0.52) return { pred: "tài", conf: daoProb * 100, reason: `Đứt bệt Xỉu ${last.streak}`, type: "dao" };
+            }
+        }
+        return null;
+    }
+
+    batCau11() {
+        if (this.processed.length < 2) return null;
+        const last2 = this.processed.slice(-2);
+        if (last2[0].result !== last2[1].result) {
+            const p2 = `${last2[0].result}${last2[1].result}`;
+            const pattern = this.patterns[p2];
+            if (pattern && (pattern.Tai + pattern.Xiu) > 15) {
+                const taiProb = pattern.Tai / (pattern.Tai + pattern.Xiu);
+                if (taiProb > 0.57) return { pred: "tài", conf: taiProb * 100, reason: `Cầu 1-1 (${p2 === "01" ? "Xỉu→Tài" : "Tài→Xỉu"})`, type: "cau11" };
+                if (taiProb < 0.43) return { pred: "xỉu", conf: (1 - taiProb) * 100, reason: `Cầu 1-1 (${p2 === "01" ? "Xỉu→Tài" : "Tài→Xỉu"})`, type: "cau11" };
+            }
+        }
+        return null;
+    }
+
+    batCau22() {
+        if (this.processed.length < 4) return null;
+        const last4 = this.processed.slice(-4).map(p => p.result);
+        if (last4[0] === last4[1] && last4[2] === last4[3] && last4[0] !== last4[2]) {
+            const p4 = last4.join('');
+            const pattern = this.patterns[p4];
+            if (pattern && (pattern.Tai + pattern.Xiu) > 10) {
+                const taiProb = pattern.Tai / (pattern.Tai + pattern.Xiu);
+                if (taiProb > 0.57) return { pred: "tài", conf: taiProb * 100, reason: `Cầu 2-2 (${p4})`, type: "cau22" };
+                if (taiProb < 0.43) return { pred: "xỉu", conf: (1 - taiProb) * 100, reason: `Cầu 2-2 (${p4})`, type: "cau22" };
+            }
+        }
+        return null;
+    }
+
+    batCau31() {
+        if (this.processed.length < 4) return null;
+        const last4 = this.processed.slice(-4).map(p => p.result);
+        if (last4[0] === last4[1] && last4[1] === last4[2] && last4[2] !== last4[3]) {
+            return { pred: last4[0] === 1 ? "xỉu" : "tài", conf: 62, reason: `Cầu 3-1`, type: "cau31" };
+        }
+        return null;
+    }
+
+    batCau13() {
+        if (this.processed.length < 4) return null;
+        const last4 = this.processed.slice(-4).map(p => p.result);
+        if (last4[0] !== last4[1] && last4[1] === last4[2] && last4[2] === last4[3]) {
+            return { pred: last4[3] === 1 ? "xỉu" : "tài", conf: 61, reason: `Cầu 1-3`, type: "cau13" };
+        }
+        return null;
+    }
+
+    batCau121() {
+        if (this.processed.length < 5) return null;
+        const last5 = this.processed.slice(-5).map(p => p.result);
+        if (last5[0] !== last5[1] && last5[1] === last5[2] && last5[2] !== last5[3] && last5[3] !== last5[4]) {
+            const p5 = last5.join('');
+            const pattern = this.patterns[p5];
+            if (pattern && (pattern.Tai + pattern.Xiu) > 8) {
+                const taiProb = pattern.Tai / (pattern.Tai + pattern.Xiu);
+                if (taiProb > 0.6) return { pred: "tài", conf: 62, reason: `Cầu 1-2-1`, type: "cau121" };
+                if (taiProb < 0.4) return { pred: "xỉu", conf: 62, reason: `Cầu 1-2-1`, type: "cau121" };
+            }
+        }
+        return null;
+    }
+
+    batCau212() {
+        if (this.processed.length < 5) return null;
+        const last5 = this.processed.slice(-5).map(p => p.result);
+        if (last5[0] === last5[1] && last5[1] !== last5[2] && last5[2] !== last5[3] && last5[3] === last5[4]) {
+            const p5 = last5.join('');
+            const pattern = this.patterns[p5];
+            if (pattern && (pattern.Tai + pattern.Xiu) > 8) {
+                const taiProb = pattern.Tai / (pattern.Tai + pattern.Xiu);
+                if (taiProb > 0.6) return { pred: "tài", conf: 62, reason: `Cầu 2-1-2`, type: "cau212" };
+                if (taiProb < 0.4) return { pred: "xỉu", conf: 62, reason: `Cầu 2-1-2`, type: "cau212" };
+            }
+        }
+        return null;
+    }
+
+    batCau321() {
+        if (this.processed.length < 6) return null;
+        const last6 = this.processed.slice(-6).map(p => p.result);
+        if (last6[0] === last6[1] && last6[1] === last6[2] && last6[2] !== last6[3] && last6[3] !== last6[4] && last6[4] !== last6[5]) {
+            return { pred: last6[0] === 1 ? "xỉu" : "tài", conf: 60, reason: `Cầu 3-2-1`, type: "cau321" };
+        }
+        return null;
+    }
+
+    batZigzag() {
+        if (this.processed.length < 6) return null;
+        const last6 = this.processed.slice(-6).map(p => p.result);
+        let isZigzag = true;
+        for (let i = 1; i < 6; i++) { if (last6[i] === last6[i - 1]) { isZigzag = false; break; } }
+        if (isZigzag) return { pred: last6[5] === 1 ? "xỉu" : "tài", conf: 65, reason: `Zigzag 6 nhịp`, type: "zigzag" };
+        return null;
+    }
+
+    batPattern(len) {
+        if (this.processed.length < len + 1) return null;
+        const lastPattern = this.processed.slice(-len).map(p => p.result).join('');
+        const patternStat = this.stats.patterns[lastPattern];
+        if (patternStat && (patternStat.Tai + patternStat.Xiu) > 10) {
+            const taiProb = patternStat.Tai / (patternStat.Tai + patternStat.Xiu);
+            if (taiProb > 0.58) return { pred: "tài", conf: taiProb * 100, reason: `Pattern ${len}p`, type: `pattern${len}` };
+            if (taiProb < 0.42) return { pred: "xỉu", conf: (1 - taiProb) * 100, reason: `Pattern ${len}p`, type: `pattern${len}` };
+        }
+        return null;
+    }
+
+    phuTroTong() {
+        const last = this.processed[this.processed.length - 1];
+        const tStat = this.stats.afterTotal[last.total];
+        if (tStat && (tStat.Tai > 0.58 || tStat.Xiu > 0.58)) {
+            return { pred: tStat.Tai > 0.58 ? "tài" : "xỉu", conf: (tStat.Tai > 0.58 ? tStat.Tai : tStat.Xiu) * 100, reason: `Tổng ${last.total}`, type: "tong" };
+        }
+        return null;
+    }
+
+    phuTroMatVang() {
+        for (let gap of [6, 7, 8, 9, 10, 12]) {
+            for (let f = 1; f <= 6; f++) {
+                const key = `f${f}_gap${gap}`;
+                if (this.stats.absence[key]) {
+                    let absent = true;
+                    for (let j = this.processed.length - gap; j < this.processed.length; j++) { if (this.processed[j].has(f)) { absent = false; break; } }
+                    if (absent) {
+                        const stat = this.stats.absence[key];
+                        if (stat.Tai > 0.6) return { pred: "tài", conf: stat.Tai * 100, reason: `Mặt ${f} vắng ${gap}p`, type: "matVang" };
+                        if (stat.Xiu > 0.6) return { pred: "xỉu", conf: stat.Xiu * 100, reason: `Mặt ${f} vắng ${gap}p`, type: "matVang" };
+                        break;
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    phuTroTriple() {
+        const last = this.processed[this.processed.length - 1];
+        if (last.isTriple && this.stats.afterTriple[last.tripleVal]) {
+            const stat = this.stats.afterTriple[last.tripleVal];
+            if (stat.Tai > 0.62) return { pred: "tài", conf: stat.Tai * 100, reason: `Sau bộ ba ${last.tripleVal}`, type: "triple" };
+            if (stat.Xiu > 0.62) return { pred: "xỉu", conf: stat.Xiu * 100, reason: `Sau bộ ba ${last.tripleVal}`, type: "triple" };
+        }
+        return null;
+    }
+
+    phuTroPair() {
+        const last = this.processed[this.processed.length - 1];
+        if (last.isPair && !last.isTriple && this.stats.afterPair[last.pairVal]) {
+            const stat = this.stats.afterPair[last.pairVal];
+            if (stat.Tai > 0.58) return { pred: "tài", conf: stat.Tai * 100, reason: `Sau cặp ${last.pairVal}`, type: "pair" };
+            if (stat.Xiu > 0.58) return { pred: "xỉu", conf: stat.Xiu * 100, reason: `Sau cặp ${last.pairVal}`, type: "pair" };
+        }
+        return null;
+    }
+
+    phuTroRange() {
+        const last = this.processed[this.processed.length - 1];
+        const rStat = this.stats.afterRange[last.range];
+        if (rStat && (rStat.Tai > 0.58 || rStat.Xiu > 0.58)) {
+            return { pred: rStat.Tai > 0.58 ? "tài" : "xỉu", conf: (rStat.Tai > 0.58 ? rStat.Tai : rStat.Xiu) * 100, reason: `Range ${last.range}`, type: "range" };
+        }
+        return null;
+    }
+
+    updateWeights(signals, actualResult) {
+        for (const sig of signals) {
+            const isCorrect = sig.pred === actualResult;
+            const perf = this.performance[sig.type];
+            if (perf) {
+                perf.total++;
+                if (isCorrect) perf.correct++;
+                perf.recent.push(isCorrect ? 1 : 0);
+                if (perf.recent.length > 50) perf.recent.shift();
+                if (perf.total >= 20) {
+                    const recentAcc = perf.recent.reduce((a, b) => a + b, 0) / perf.recent.length;
+                    this.adaptiveWeights[sig.type] = Math.min(98, Math.max(55, recentAcc * 100));
+                }
+            }
+        }
     }
 
     predict() {
-        const patterns = new PatternDetector(this.data).getAll();
-        const exploits = new ExploitDetector(this.data).getAll();
-        const technicals = new TechnicalIndicators(this.data).getAll();
-        const allSignals = [...patterns, ...exploits, ...technicals];
-        const validSignals = allSignals.filter(s => s.conf >= 55);
+        const signals = [];
+        const batBet = this.batBet(); if (batBet) signals.push({ ...batBet, weight: this.adaptiveWeights[batBet.type] });
+        const cau11 = this.batCau11(); if (cau11) signals.push({ ...cau11, weight: this.adaptiveWeights.cau11 });
+        const cau22 = this.batCau22(); if (cau22) signals.push({ ...cau22, weight: this.adaptiveWeights.cau22 });
+        const cau31 = this.batCau31(); if (cau31) signals.push({ ...cau31, weight: this.adaptiveWeights.cau31 });
+        const cau13 = this.batCau13(); if (cau13) signals.push({ ...cau13, weight: this.adaptiveWeights.cau13 });
+        const cau121 = this.batCau121(); if (cau121) signals.push({ ...cau121, weight: this.adaptiveWeights.cau121 });
+        const cau212 = this.batCau212(); if (cau212) signals.push({ ...cau212, weight: this.adaptiveWeights.cau212 });
+        const cau321 = this.batCau321(); if (cau321) signals.push({ ...cau321, weight: this.adaptiveWeights.cau321 });
+        const zigzag = this.batZigzag(); if (zigzag) signals.push({ ...zigzag, weight: this.adaptiveWeights.zigzag });
+        for (let len of [2, 3, 4, 5]) { const pattern = this.batPattern(len); if (pattern) signals.push({ ...pattern, weight: this.adaptiveWeights[`pattern${len}`] }); }
+        const tong = this.phuTroTong(); if (tong) signals.push({ ...tong, weight: this.adaptiveWeights.tong });
+        const vang = this.phuTroMatVang(); if (vang) signals.push({ ...vang, weight: this.adaptiveWeights.matVang });
+        const triple = this.phuTroTriple(); if (triple) signals.push({ ...triple, weight: this.adaptiveWeights.triple });
+        const pair = this.phuTroPair(); if (pair) signals.push({ ...pair, weight: this.adaptiveWeights.pair });
+        const range = this.phuTroRange(); if (range) signals.push({ ...range, weight: this.adaptiveWeights.range });
+
+        const validSignals = signals.filter(s => s.conf >= 55);
+
+        if (validSignals.length === 0) {
+            const last10 = this.processed.slice(-10).map(p => p.result);
+            const taiCount = last10.reduce((a, b) => a + b, 0);
+            const pred = taiCount >= 7 ? "xỉu" : (taiCount <= 3 ? "tài" : (Math.random() > 0.5 ? "tài" : "xỉu"));
+            return { prediction: pred, confidence: 52, signals: [], fallback: true };
+        }
 
         let taiScore = 0, xiuScore = 0;
-        const details = [];
+        validSignals.forEach(s => { const w = (s.weight / 100) * (s.conf / 100); if (s.pred === "tài") taiScore += w; else xiuScore += w; });
 
-        for (const sig of validSignals) {
-            const weight = this.perf[sig.name]?.weight || 1.0;
-            const weighted = sig.conf * weight;
-            if (sig.pred === "tai") taiScore += weighted;
-            else xiuScore += weighted;
-            details.push({ name: sig.name, pred: sig.pred, conf: sig.conf, weight: weight.toFixed(2), weighted: weighted.toFixed(1) });
-        }
+        const finalPred = taiScore >= xiuScore ? "tài" : "xỉu";
+        const totalScore = taiScore + xiuScore;
+        let confidence = totalScore > 0 ? Math.max(taiScore, xiuScore) / totalScore * 100 : 50;
+        confidence = Math.min(95, Math.max(60, confidence));
 
-        let final, confidence;
-        if (validSignals.length === 0) {
-            const last = this.data[this.data.length - 1];
-            const last10Tai = this.data.slice(-10).reduce((a, b) => a + b.result, 0) / 10;
-            final = last10Tai > 0.55 ? "xiu" : (last10Tai < 0.45 ? "tai" : (last.result === 1 ? "tai" : "xiu"));
-            confidence = 55;
-        } else {
-            final = taiScore >= xiuScore ? "tai" : "xiu";
-            const totalScore = taiScore + xiuScore;
-            confidence = totalScore > 0 ? Math.max(taiScore, xiuScore) / totalScore * 100 : 50;
-            confidence = Utils.clamp(confidence, 50, 98);
-        }
+        this.lastSignals = validSignals;
 
-        const last = this.data[this.data.length - 1];
-        const recentTotals = this.data.slice(-10).map(p => p.total);
-        const avgRecent = Utils.avg(recentTotals);
-        let predTotal = Math.round(avgRecent);
-        if (last.total >= 15) predTotal = Math.min(predTotal, 12);
-        if (last.total <= 5) predTotal = Math.max(predTotal, 9);
-        predTotal = Utils.clamp(predTotal, 3, 18);
+        return { prediction: finalPred, confidence: Math.round(confidence), signals: validSignals.sort((a, b) => b.weight - a.weight), fallback: false };
+    }
 
-        let pattern = "";
-        for (let i = Math.max(0, this.data.length - 15); i < this.data.length; i++) {
-            pattern += this.data[i].result === 1 ? "t" : "x";
-        }
-
-        return {
-            prediction: final,
-            confidence: Utils.round(confidence),
-            predictedTotal: predTotal,
-            pattern: pattern,
-            totalSignals: validSignals.length,
-            topSignals: details.sort((a, b) => parseFloat(b.weighted) - parseFloat(a.weighted)).slice(0, 15),
-            timestamp: new Date().toISOString()
-        };
+    updateWithResult(actualResult) {
+        if (this.lastSignals) this.updateWeights(this.lastSignals, actualResult);
     }
 }
 
@@ -281,19 +504,16 @@ class GodPredictor {
 async function fetchData() {
     for (let attempt = 1; attempt <= 3; attempt++) {
         try {
-            const res = await axios.get(API_URL, { timeout: 15000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } });
+            const res = await axios.get(API_URL, { timeout: 15000, headers: { 'User-Agent': 'Mozilla/5.0' } });
             const raw = res.data;
-            let dataArray = null;
-            if (raw && raw.data && Array.isArray(raw.data)) dataArray = raw.data;
-            else if (Array.isArray(raw)) dataArray = raw;
-            if (dataArray && dataArray.length >= 15) {
-                return dataArray.map(normalize).sort((a, b) => a.phien - b.phien);
-            }
+            let arr = null;
+            if (raw?.data && Array.isArray(raw.data)) arr = raw.data;
+            else if (Array.isArray(raw)) arr = raw;
+            if (arr && arr.length >= 15) return arr.map(normalize).sort((a, b) => a.phien - b.phien);
             await new Promise(r => setTimeout(r, 2000));
-        } catch (error) { await new Promise(r => setTimeout(r, 3000)); }
+        } catch { await new Promise(r => setTimeout(r, 3000)); }
     }
-    if (gameHistory.length >= 15) return gameHistory;
-    return null;
+    return gameHistory.length >= 15 ? gameHistory : null;
 }
 
 // ============ UPDATE ============
@@ -307,49 +527,55 @@ async function updatePrediction() {
         const latest = data[data.length - 1];
         const latestPhien = latest.phien;
 
-        // Kiểm tra xem có phiên mới không
         if (gameHistory.length > 0 && latestPhien === gameHistory[gameHistory.length - 1].phien && currentPrediction) {
-            isUpdating = false;
-            return;
+            isUpdating = false; return;
         }
 
-        // Kiểm tra kết quả dự đoán trước đó
-        if (currentPrediction && currentPrediction.phien_truoc > 0 && currentPrediction.phien_hien_tai > 0) {
+        if (currentPrediction && currentPrediction.phien_hien_tai > 0) {
             const predictedPhien = currentPrediction.phien_hien_tai;
             const actual = data.find(s => s.phien === predictedPhien);
             if (actual) {
-                const isCorrect = addToHistory(
-                    predictedPhien,
-                    currentPrediction.du_doan,
-                    actual.ket_qua,
-                    currentPrediction.do_tin_cay
-                );
-                console.log(`📝 Phiên ${predictedPhien}: Dự đoán ${currentPrediction.du_doan} | Thực tế ${actual.ket_qua} | ${isCorrect ? '✅ THẮNG' : '❌ THUA'}`);
+                const isCorrect = addToHistory(predictedPhien, currentPrediction.du_doan, actual.ket_qua, currentPrediction.do_tin_cay);
+                if (isCorrect !== null) console.log(`📝 Phiên ${predictedPhien}: Dự đoán ${currentPrediction.du_doan} | Thực tế ${actual.ket_qua} | ${isCorrect ? '✅ THẮNG' : '❌ THUA'}`);
             }
         }
 
         gameHistory = data;
-        predictor = new GodPredictor(data.slice(-500));
+        predictor = new AdaptivePredictor(data.slice(-500));
         const pred = predictor.predict();
+
+        // Pattern 15
+        let pattern = "";
+        for (let i = Math.max(0, data.length - 15); i < data.length; i++) {
+            pattern += data[i].ket_qua === "tài" ? "t" : "x";
+        }
+
+        // Dự đoán tổng
+        const last = data[data.length - 1];
+        const recentTotals = data.slice(-10).map(p => p.tong);
+        let predTotal = Math.round(recentTotals.reduce((a, b) => a + b, 0) / 10);
+        if (last.tong >= 15) predTotal = Math.min(predTotal, 12);
+        if (last.tong <= 5) predTotal = Math.max(predTotal, 9);
+        predTotal = Math.min(18, Math.max(3, predTotal));
 
         currentPrediction = {
             id: "AnhKhoizZz",
             phien_truoc: latest.phien,
-            xuc_xac1: latest.x1,
-            xuc_xac2: latest.x2,
-            xuc_xac3: latest.x3,
+            xuc_xac1: latest.xuc_xac_1,
+            xuc_xac2: latest.xuc_xac_2,
+            xuc_xac3: latest.xuc_xac_3,
             tong: latest.tong,
             ket_qua: latest.ket_qua,
-            pattern: pred.pattern,
+            pattern: pattern,
             phien_hien_tai: latest.phien + 1,
             du_doan: pred.prediction,
             do_tin_cay: pred.confidence + "%",
-            tong_du_doan: pred.predictedTotal
+            tong_du_doan: predTotal
         };
 
         const winCount = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const winRate = verifiedResults.length > 0 ? (winCount / verifiedResults.length * 100).toFixed(1) : '0.0';
-        console.log(`💀 GOD V15: ${pred.prediction} (${pred.confidence}%) | Tổng ~${pred.predictedTotal} | Pattern: ${pred.pattern} | Thắng/Thua: ${winCount}/${verifiedResults.length} (${winRate}%)`);
+        console.log(`✅ DỰ ĐOÁN: ${pred.prediction} (${pred.confidence}%) | Tổng ~${predTotal} | Pattern: ${pattern} | Thắng: ${winCount}/${verifiedResults.length} (${winRate}%)`);
     } catch (e) { console.error('❌ Update error:', e.message); }
     isUpdating = false;
 }
@@ -362,39 +588,20 @@ app.get('/taixiu', async (req, res) => {
         const winRate = verifiedResults.length > 0 ? (winCount / verifiedResults.length * 100).toFixed(1) : '0.0';
         return res.json({
             ...currentPrediction,
-            lich_su: {
-                tong_phien: verifiedResults.length,
-                thang: winCount,
-                thua: verifiedResults.length - winCount,
-                ty_le_thang: winRate + "%"
-            },
+            lich_su: { tong_phien: verifiedResults.length, thang: winCount, thua: verifiedResults.length - winCount, ty_le_thang: winRate + "%" },
             bang_thang_thua: verifiedResults.slice(0, 20)
         });
     }
-    res.json({
-        id: "AnhKhoizZz",
-        phien_truoc: 0,
-        xuc_xac1: 0, xuc_xac2: 0, xuc_xac3: 0,
-        tong: 0, ket_qua: "đang tải", pattern: "",
-        phien_hien_tai: 0, du_doan: "đang tải", do_tin_cay: "0%", tong_du_doan: 0,
-        lich_su: { tong_phien: 0, thang: 0, thua: 0, ty_le_thang: "0%" },
-        bang_thang_thua: []
-    });
+    res.json({ id: "AnhKhoizZz", phien_truoc: 0, xuc_xac1: 0, xuc_xac2: 0, xuc_xac3: 0, tong: 0, ket_qua: "đang tải", pattern: "", phien_hien_tai: 0, du_doan: "đang tải", do_tin_cay: "0%", tong_du_doan: 0, lich_su: { tong_phien: 0, thang: 0, thua: 0, ty_le_thang: "0%" }, bang_thang_thua: [] });
 });
 
-app.get('/', (req, res) => res.json({
-    status: "OK",
-    engine: "God of Prediction V15.0",
-    dataCount: gameHistory.length,
-    historyCount: verifiedResults.length,
-    hasPrediction: currentPrediction !== null
-}));
+app.get('/', (req, res) => res.json({ status: "OK", engine: "Adaptive Predictor V3.0", hasPrediction: currentPrediction !== null, dataCount: gameHistory.length, historyCount: verifiedResults.length }));
 
 // ============ KHỞI ĐỘNG ============
 loadHistory();
 console.log('='.repeat(60));
-console.log('   👑 GOD OF PREDICTION V15.0 - THE FINAL FORM 👑');
-console.log('   55+ thuật toán | Tự lưu lịch sử thắng/thua | Max 500 phiên');
+console.log('   🎯 ADAPTIVE PREDICTOR V3.0 🎯');
+console.log('   20+ thuật toán | Trọng số động | Học liên tục');
 console.log('   API: lovetrang-xinkgai.onrender.com/data');
 console.log('='.repeat(60));
 
