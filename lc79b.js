@@ -21,456 +21,500 @@ let sessionsStore = [];
 let isReady = false;
 let predictor = null;
 
-// ==================== GOD PREDICTOR ULTIMATE V2 ====================
+// ==================== GOD PREDICTOR V5 - SUPER ENSEMBLE ====================
 
-class GodPredictorUltimateV2 {
+class GodPredictorV5 {
     constructor(data) {
         this.raw = data;
-        this.data = this.preprocessData(data);
-        this.weights = this.initWeights();
-        this.accuracyMemory = {};
-        this.predictionHistory = [];
-        this.errorPatterns = {};
-        this.successPatterns = {};
-        this.consecutiveErrors = 0;
-        this.initializeAccuracy();
-        this.learnFromHistory();
+        this.data = this.lightningPreprocess(data);
+        
+        // Cache system
+        this.cache = new Map();
+        this.cacheHits = 0;
+        this.cacheMisses = 0;
+        
+        // Smart indexes
+        this.indexes = this.buildSmartIndexes();
+        
+        // Core weights
+        this.coreWeights = this.initOptimalWeights();
+        this.performanceMetrics = {};
+        
+        // Learning window
+        this.learningWindow = [];
+        this.maxLearningWindow = 500;
+        
+        // Quick stats
+        this.quickStats = this.preComputeStats();
+        
+        // Hệ thống cầu V11
+        this.cauDB = this.khoiTaoCauDB();
+        this.cauStats = null;
+        this.cauDangChay = null;
+        
+        // Khởi tạo
+        this.rapidLearn();
+        this.analyzeAllCau();
     }
 
-    preprocessData(data) {
-        return data.map((item, idx, arr) => {
-            let streak = 1;
-            if (idx > 0 && arr[idx-1].Ket_qua === item.Ket_qua) {
-                streak = arr[idx-1].streak + 1;
-            }
+    lightningPreprocess(data) {
+        const processed = new Array(data.length);
+        
+        for (let i = 0; i < data.length; i++) {
+            const item = data[i];
+            const prev = i > 0 ? data[i-1] : null;
             
-            const dice = [item.Xuc_xac_1, item.Xuc_xac_2, item.Xuc_xac_3];
-            const sum = item.Tong;
-            const sortedDice = [...dice].sort((a, b) => a - b);
+            const resultBit = item.Ket_qua === "Tài" ? 1 : 0;
+            const streak = (i > 0 && prev.Ket_qua === item.Ket_qua) ? 
+                          (processed[i-1].s + 1) : 1;
             
-            return {
+            const x1 = item.Xuc_xac_1, x2 = item.Xuc_xac_2, x3 = item.Xuc_xac_3;
+            const sum = x1 + x2 + x3;
+            const hasDouble = (x1 === x2 || x2 === x3 || x1 === x3) ? 1 : 0;
+            const hasTriple = (x1 === x2 && x2 === x3) ? 1 : 0;
+            
+            processed[i] = {
+                r: resultBit,
                 result: item.Ket_qua,
-                resultNum: item.Ket_qua === "Tài" ? 1 : 0,
-                total: sum,
-                streak: streak,
-                dice: dice,
-                sortedDice: sortedDice,
-                phien: item.Phien,
-                
-                hasDouble: new Set(dice).size <= 2 ? 1 : 0,
-                hasTriple: new Set(dice).size === 1 ? 1 : 0,
-                isEven: sum % 2 === 0 ? 1 : 0,
-                diceSum: sum,
-                diceProduct: dice[0] * dice[1] * dice[2],
-                maxDice: Math.max(...dice),
-                minDice: Math.min(...dice),
-                midDice: sortedDice[1],
-                diffMaxMin: Math.max(...dice) - Math.min(...dice),
-                diceStd: this.calculateStd(dice),
-                totalCategory: sum <= 7 ? 0 : (sum <= 13 ? 1 : 2),
-                totalMod3: sum % 3,
-                totalChange: idx > 0 ? sum - arr[idx-1].Tong : 0,
-                totalChangeAbs: idx > 0 ? Math.abs(sum - arr[idx-1].Tong) : 0,
-                sameResult: idx > 0 ? (item.Ket_qua === arr[idx-1].Ket_qua ? 1 : 0) : 0,
-                isConsecutive: sortedDice[2] - sortedDice[0] === 2 && new Set(dice).size === 3 ? 1 : 0,
-                hasOneAndSix: dice.includes(1) && dice.includes(6) ? 1 : 0,
-                uniqueDiceCount: new Set(dice).size,
-                last3Tai: idx >= 2 ? arr.slice(idx-2, idx+1).filter(d => d.Ket_qua === "Tài").length : 0,
-                last5Tai: idx >= 4 ? arr.slice(idx-4, idx+1).filter(d => d.Ket_qua === "Tài").length : 0,
-                last10Tai: idx >= 9 ? arr.slice(idx-9, idx+1).filter(d => d.Ket_qua === "Tài").length : 0
+                t: sum,
+                s: streak,
+                d: [x1, x2, x3],
+                hd: hasDouble,
+                ht: hasTriple,
+                tc: sum <= 7 ? 0 : (sum <= 13 ? 1 : 2),
+                p: item.Phien
             };
-        });
-    }
-
-    calculateStd(values) {
-        const mean = values.reduce((a, b) => a + b, 0) / values.length;
-        const variance = values.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / values.length;
-        return Math.sqrt(variance);
-    }
-
-    learnFromHistory() {
-        for (let i = 50; i < this.data.length - 1; i++) {
-            const features = this.extractFeatures(i);
-            const actual = this.data[i + 1].result;
-            const patternKey = this.createPatternKey(features);
-            
-            if (!this.successPatterns[patternKey]) {
-                this.successPatterns[patternKey] = { 'Tài': 0, 'Xỉu': 0, total: 0 };
-            }
-            this.successPatterns[patternKey][actual]++;
-            this.successPatterns[patternKey].total++;
         }
+        
+        return processed;
     }
 
-    extractFeatures(index) {
-        const d = this.data[index];
+    khoiTaoCauDB() {
         return {
-            total: d.total,
-            streak: d.streak,
-            hasDouble: d.hasDouble,
-            hasTriple: d.hasTriple,
-            isEven: d.isEven,
-            diffMaxMin: d.diffMaxMin,
-            uniqueDiceCount: d.uniqueDiceCount,
-            totalCategory: d.totalCategory,
-            last3Tai: d.last3Tai,
-            last5Tai: d.last5Tai,
-            result: d.result,
-            totalChange: d.totalChange,
-            sameResult: d.sameResult
+            coBan: {
+                '1_1': { ten: 'Cầu 1-1 (T X T X)', mau: 0, dung: 0, doDai: 4, tyLe: 0 },
+                '2_2': { ten: 'Cầu 2-2 (TT XX TT)', mau: 0, dung: 0, doDai: 6, tyLe: 0 },
+                '3_3': { ten: 'Cầu 3-3 (TTT XXX TTT)', mau: 0, dung: 0, doDai: 9, tyLe: 0 }
+            },
+            ngan: {
+                'tx': { ten: 'Cầu T X', mau: 0, dung: 0, doDai: 2, tyLe: 0 },
+                'xt': { ten: 'Cầu X T', mau: 0, dung: 0, doDai: 2, tyLe: 0 },
+                'ttx': { ten: 'Cầu TT X', mau: 0, dung: 0, doDai: 3, tyLe: 0 },
+                'xxt': { ten: 'Cầu XX T', mau: 0, dung: 0, doDai: 3, tyLe: 0 }
+            },
+            trung: {
+                '1_2_1': { ten: 'Cầu 1-2-1 (T XX T)', mau: 0, dung: 0, doDai: 5, tyLe: 0 },
+                '2_1_2': { ten: 'Cầu 2-1-2 (TT X TT)', mau: 0, dung: 0, doDai: 5, tyLe: 0 },
+                'doiXung': { ten: 'Cầu đối xứng (T X X T)', mau: 0, dung: 0, doDai: 4, tyLe: 0 },
+                'tamGiac': { ten: 'Cầu tam giác (T X T X T)', mau: 0, dung: 0, doDai: 5, tyLe: 0 }
+            },
+            an: {
+                '1_1_1_2': { ten: 'Cầu ẩn TTT X', mau: 0, dung: 0, doDai: 4, tyLe: 0 },
+                '2_2_2_1': { ten: 'Cầu ẩn XXX T', mau: 0, dung: 0, doDai: 4, tyLe: 0 }
+            }
         };
     }
 
-    createPatternKey(features) {
-        return `${features.total}|${features.streak}|${features.hasDouble}|${features.hasTriple}|${features.totalCategory}|${features.uniqueDiceCount}|${features.result}`;
-    }
-
-    deepPatternPredict() {
-        if (this.data.length < 50) return null;
+    analyzeAllCau() {
+        if (this.data.length < 30) return;
         
-        const currentFeatures = this.extractFeatures(this.data.length - 1);
-        const patternKey = this.createPatternKey(currentFeatures);
-        const similarPatterns = [];
-        const searchRadius = 0.3;
-        
-        for (const [key, stats] of Object.entries(this.successPatterns)) {
-            const similarity = this.calculatePatternSimilarity(currentFeatures, key);
-            if (similarity > searchRadius && stats.total >= 3) {
-                similarPatterns.push({
-                    key: key,
-                    similarity: similarity,
-                    stats: stats,
-                    accuracy: Math.max(stats['Tài'], stats['Xỉu']) / stats.total
-                });
-            }
-        }
-        
-        if (similarPatterns.length === 0) return null;
-        
-        similarPatterns.sort((a, b) => {
-            const scoreA = a.similarity * 0.6 + a.accuracy * 0.4;
-            const scoreB = b.similarity * 0.6 + b.accuracy * 0.4;
-            return scoreB - scoreA;
-        });
-        
-        const topPatterns = similarPatterns.slice(0, 10);
-        const votes = { 'Tài': 0, 'Xỉu': 0 };
-        
-        topPatterns.forEach(pattern => {
-            const weight = pattern.similarity * pattern.accuracy * pattern.stats.total;
-            votes['Tài'] += pattern.stats['Tài'] * weight;
-            votes['Xỉu'] += pattern.stats['Xỉu'] * weight;
-        });
-        
-        const pred = votes['Tài'] > votes['Xỉu'] ? 'Tài' : 'Xỉu';
-        const conf = Math.min(95, (Math.max(votes['Tài'], votes['Xỉu']) / (votes['Tài'] + votes['Xỉu'])) * 100);
-        
-        return { pred: pred, conf: conf, name: 'deep_pattern', reason: `Deep learning: ${topPatterns.length} patterns` };
-    }
-
-    calculatePatternSimilarity(features, patternKey) {
-        try {
-            const parts = patternKey.split('|');
-            const patternFeatures = {
-                total: parseInt(parts[0]),
-                streak: parseInt(parts[1]),
-                hasDouble: parseInt(parts[2]),
-                hasTriple: parseInt(parts[3]),
-                totalCategory: parseInt(parts[4]),
-                uniqueDiceCount: parseInt(parts[5]),
-                result: parts[6]
-            };
+        for (let i = 20; i < this.data.length - 1; i++) {
+            const sau = this.data[i+1].result;
+            const truoc10 = this.data.slice(i-9, i+1).map(d => d.result);
+            const truoc6 = this.data.slice(i-5, i+1).map(d => d.result);
+            const truoc5 = this.data.slice(i-4, i+1).map(d => d.result);
+            const truoc4 = this.data.slice(i-3, i+1).map(d => d.result);
+            const truoc3 = this.data.slice(i-2, i+1).map(d => d.result);
             
-            let similarity = 0;
-            if (Math.abs(features.total - patternFeatures.total) <= 2) similarity += 0.2;
-            if (features.streak === patternFeatures.streak) similarity += 0.15;
-            if (features.hasDouble === patternFeatures.hasDouble) similarity += 0.15;
-            if (features.hasTriple === patternFeatures.hasTriple) similarity += 0.2;
-            if (features.totalCategory === patternFeatures.totalCategory) similarity += 0.1;
-            if (features.uniqueDiceCount === patternFeatures.uniqueDiceCount) similarity += 0.1;
-            if (features.result === patternFeatures.result) similarity += 0.1;
-            return similarity;
-        } catch (e) {
-            return 0;
-        }
-    }
-
-    smartTrendAnalysis() {
-        if (this.data.length < 30) return null;
-        
-        const windows = [5, 10, 15, 20, 30];
-        const trends = [];
-        
-        windows.forEach(window => {
-            if (this.data.length >= window) {
-                const slice = this.data.slice(-window);
-                const taiCount = slice.filter(d => d.result === 'Tài').length;
-                const ratio = taiCount / window;
-                
-                const firstHalf = slice.slice(0, Math.floor(window/2));
-                const secondHalf = slice.slice(Math.floor(window/2));
-                const firstTai = firstHalf.filter(d => d.result === 'Tài').length / firstHalf.length;
-                const secondTai = secondHalf.filter(d => d.result === 'Tài').length / secondHalf.length;
-                const trendDirection = secondTai - firstTai;
-                
-                trends.push({ window: window, ratio: ratio, trend: trendDirection, strength: Math.abs(trendDirection) });
-            }
-        });
-        
-        const avgRatio = trends.reduce((sum, t) => sum + t.ratio, 0) / trends.length;
-        const avgTrend = trends.reduce((sum, t) => sum + t.trend, 0) / trends.length;
-        
-        if (Math.abs(avgTrend) > 0.1) {
-            const pred = avgTrend > 0 ? 'Tài' : 'Xỉu';
-            const conf = Math.min(80, 55 + Math.abs(avgTrend) * 100);
-            return { pred: pred, conf: conf, name: 'smart_trend', reason: `Xu hướng ${avgTrend > 0 ? 'tăng' : 'giảm'}` };
+            const s6 = truoc6.join('');
+            const s5 = truoc5.join('');
+            const s4 = truoc4.join('');
+            const s3 = truoc3.join('');
+            
+            // Cầu cơ bản
+            if (s4 === 'TàiXỉuTàiXỉu') { this.cauDB.coBan['1_1'].mau++; if (sau === 'Xỉu') this.cauDB.coBan['1_1'].dung++; }
+            if (s4 === 'XỉuTàiXỉuTài') { this.cauDB.coBan['1_1'].mau++; if (sau === 'Tài') this.cauDB.coBan['1_1'].dung++; }
+            if (s6 === 'TàiTàiXỉuXỉuTàiTài') { this.cauDB.coBan['2_2'].mau++; if (sau === 'Xỉu') this.cauDB.coBan['2_2'].dung++; }
+            if (s6 === 'XỉuXỉuTàiTàiXỉuXỉu') { this.cauDB.coBan['2_2'].mau++; if (sau === 'Tài') this.cauDB.coBan['2_2'].dung++; }
+            
+            // Cầu ngắn
+            if (s3 === 'TàiTàiXỉu') { this.cauDB.ngan.ttx.mau++; if (sau === 'Xỉu') this.cauDB.ngan.ttx.dung++; }
+            if (s3 === 'XỉuXỉuTài') { this.cauDB.ngan.xxt.mau++; if (sau === 'Tài') this.cauDB.ngan.xxt.dung++; }
+            if (s3 === 'TàiXỉu') { this.cauDB.ngan.tx.mau++; if (sau === 'Xỉu') this.cauDB.ngan.tx.dung++; }
+            if (s3 === 'XỉuTài') { this.cauDB.ngan.xt.mau++; if (sau === 'Tài') this.cauDB.ngan.xt.dung++; }
+            
+            // Cầu tầm trung
+            if (s5 === 'TàiXỉuXỉuTài') { this.cauDB.trung['1_2_1'].mau++; if (sau === 'Xỉu') this.cauDB.trung['1_2_1'].dung++; }
+            if (s5 === 'XỉuTàiTàiXỉu') { this.cauDB.trung['1_2_1'].mau++; if (sau === 'Tài') this.cauDB.trung['1_2_1'].dung++; }
+            if (s5 === 'TàiTàiXỉuTàiTài') { this.cauDB.trung['2_1_2'].mau++; if (sau === 'Xỉu') this.cauDB.trung['2_1_2'].dung++; }
+            if (s5 === 'XỉuXỉuTàiXỉuXỉu') { this.cauDB.trung['2_1_2'].mau++; if (sau === 'Tài') this.cauDB.trung['2_1_2'].dung++; }
+            if (s4 === 'TàiXỉuXỉuTài') { this.cauDB.trung.doiXung.mau++; if (sau === 'Tài') this.cauDB.trung.doiXung.dung++; }
+            if (s4 === 'XỉuTàiTàiXỉu') { this.cauDB.trung.doiXung.mau++; if (sau === 'Xỉu') this.cauDB.trung.doiXung.dung++; }
+            if (s5 === 'TàiXỉuTàiXỉuTài') { this.cauDB.trung.tamGiac.mau++; if (sau === 'Xỉu') this.cauDB.trung.tamGiac.dung++; }
+            if (s5 === 'XỉuTàiXỉuTàiXỉu') { this.cauDB.trung.tamGiac.mau++; if (sau === 'Tài') this.cauDB.trung.tamGiac.dung++; }
+            
+            // Cầu ẩn
+            if (s4 === 'TàiTàiTàiXỉu') { this.cauDB.an['1_1_1_2'].mau++; if (sau === 'Xỉu') this.cauDB.an['1_1_1_2'].dung++; }
+            if (s4 === 'XỉuXỉuXỉuTài') { this.cauDB.an['2_2_2_1'].mau++; if (sau === 'Tài') this.cauDB.an['2_2_2_1'].dung++; }
         }
         
-        if (avgRatio > 0.6) return { pred: 'Xỉu', conf: 65, name: 'smart_trend', reason: 'Mean reversion: Tài quá nhiều' };
-        if (avgRatio < 0.4) return { pred: 'Tài', conf: 65, name: 'smart_trend', reason: 'Mean reversion: Xỉu quá nhiều' };
-        return null;
-    }
-
-    advancedCycleDetection() {
-        if (this.data.length < 40) return null;
-        
-        const results = this.data.map(d => d.resultNum);
-        const cycles = [];
-        
-        for (let cycle = 2; cycle <= 15; cycle++) {
-            const matches = [];
-            for (let i = cycle; i < results.length - cycle; i++) {
-                const pattern1 = results.slice(i - cycle, i);
-                const pattern2 = results.slice(i, i + cycle);
-                let matchCount = 0;
-                for (let j = 0; j < cycle; j++) {
-                    if (pattern1[j] === pattern2[j]) matchCount++;
+        // Tính tỷ lệ
+        for (const nhom in this.cauDB) {
+            for (const loai in this.cauDB[nhom]) {
+                const c = this.cauDB[nhom][loai];
+                if (c.mau > 0) {
+                    c.tyLe = parseFloat((c.dung / c.mau * 100).toFixed(1));
+                } else {
+                    c.tyLe = 0;
                 }
-                const similarity = matchCount / cycle;
-                if (similarity > 0.7) matches.push({ position: i, similarity: similarity });
+            }
+        }
+        
+        this.cauStats = this.cauDB;
+        this.cauDangChay = this.phatHienCauDangChay();
+    }
+
+    phatHienCauDangChay() {
+        if (this.data.length < 5) return null;
+        
+        const last15 = this.data.slice(-15).map(d => d.result);
+        const last5 = last15.slice(-5);
+        const last4 = last15.slice(-4);
+        
+        const s5 = last5.join('');
+        const s4 = last4.join('');
+        
+        const kiemTra = [
+            { dk: s5 === 'TàiXỉuTàiXỉuTài', ten: 'Cầu tam giác (T X T X T)', pred: 'Xỉu', tyLe: this.cauDB.trung.tamGiac?.tyLe || 70 },
+            { dk: s5 === 'XỉuTàiXỉuTàiXỉu', ten: 'Cầu tam giác (X T X T X)', pred: 'Tài', tyLe: this.cauDB.trung.tamGiac?.tyLe || 70 },
+            { dk: s4 === 'TàiXỉuXỉuTài', ten: 'Cầu đối xứng (T X X T)', pred: 'Tài', tyLe: this.cauDB.trung.doiXung?.tyLe || 68 },
+            { dk: s4 === 'XỉuTàiTàiXỉu', ten: 'Cầu đối xứng (X T T X)', pred: 'Xỉu', tyLe: this.cauDB.trung.doiXung?.tyLe || 68 },
+            { dk: s4 === 'TàiXỉuTàiXỉu', ten: 'Cầu 1-1 (T X T X)', pred: 'Xỉu', tyLe: this.cauDB.coBan['1_1']?.tyLe || 72 },
+            { dk: s4 === 'XỉuTàiXỉuTài', ten: 'Cầu 1-1 (X T X T)', pred: 'Tài', tyLe: this.cauDB.coBan['1_1']?.tyLe || 72 }
+        ];
+        
+        for (const kt of kiemTra) {
+            if (kt.dk) {
+                return { ten: kt.ten, doTinCay: kt.tyLe, duDoan: kt.pred };
+            }
+        }
+        
+        return null;
+    }
+
+    buildSmartIndexes() {
+        const indexes = {
+            byResult: { 0: [], 1: [] },
+            byPattern: new Map(),
+            byDicePattern: new Map()
+        };
+        
+        for (let i = 0; i < this.data.length; i++) {
+            const d = this.data[i];
+            indexes.byResult[d.r].push(i);
+            
+            if (i >= 2) {
+                const pattern = `${this.data[i-2].r}${this.data[i-1].r}${d.r}`;
+                if (!indexes.byPattern.has(pattern)) indexes.byPattern.set(pattern, []);
+                indexes.byPattern.get(pattern).push(i);
             }
             
-            if (matches.length >= 3) {
-                const avgSimilarity = matches.reduce((sum, m) => sum + m.similarity, 0) / matches.length;
-                cycles.push({ cycle: cycle, matches: matches.length, avgSimilarity: avgSimilarity, score: matches.length * avgSimilarity });
-            }
+            const diceKey = `${d.hd}${d.ht}${d.tc}`;
+            if (!indexes.byDicePattern.has(diceKey)) indexes.byDicePattern.set(diceKey, []);
+            indexes.byDicePattern.get(diceKey).push(i);
         }
         
-        if (cycles.length === 0) return null;
-        cycles.sort((a, b) => b.score - a.score);
-        const bestCycle = cycles[0];
-        const lastCycleStart = results.length - bestCycle.cycle;
-        const predictedPattern = results.slice(lastCycleStart);
-        const nextPred = predictedPattern[0];
+        return indexes;
+    }
+
+    preComputeStats() {
+        const len = this.data.length;
+        if (len === 0) return {};
+        
+        const last10 = this.data.slice(-10);
+        const last20 = this.data.slice(-20);
         
         return {
-            pred: nextPred === 1 ? 'Tài' : 'Xỉu',
-            conf: Math.min(75, 50 + bestCycle.avgSimilarity * 30),
-            name: 'advanced_cycle',
-            reason: `Chu kỳ ${bestCycle.cycle} phiên`
+            last10Tai: last10.filter(d => d.r === 1).length,
+            last20Tai: last20.filter(d => d.r === 1).length,
+            lastResult: this.data[len-1].r,
+            lastStreak: this.data[len-1].s,
+            lastTotal: this.data[len-1].t,
+            avgTotal10: last10.reduce((s, d) => s + d.t, 0) / 10
         };
     }
 
-    totalScoreAnalysis() {
-        if (this.data.length < 20) return null;
+    rapidLearn() {
+        const sampleSize = Math.min(300, this.data.length);
+        const recentData = this.data.slice(-sampleSize);
         
-        const last20 = this.data.slice(-20);
-        const totals = last20.map(d => d.total);
-        const avgTotal = totals.reduce((a, b) => a + b, 0) / 20;
-        const lastTotal = this.data[this.data.length - 1].total;
-        
-        if (lastTotal <= 5) return { pred: 'Tài', conf: 75, name: 'total_score', reason: `Tổng rất thấp (${lastTotal})` };
-        if (lastTotal >= 16) return { pred: 'Xỉu', conf: 75, name: 'total_score', reason: `Tổng rất cao (${lastTotal})` };
-        
-        const last10Totals = totals.slice(-10);
-        const first5Avg = last10Totals.slice(0, 5).reduce((a, b) => a + b, 0) / 5;
-        const last5Avg = last10Totals.slice(5).reduce((a, b) => a + b, 0) / 5;
-        const totalTrend = last5Avg - first5Avg;
-        
-        if (Math.abs(totalTrend) > 1) {
-            const pred = totalTrend > 0 ? 'Tài' : 'Xỉu';
-            const conf = Math.min(70, 55 + Math.abs(totalTrend) * 10);
-            return { pred: pred, conf: conf, name: 'total_score', reason: `Xu hướng tổng ${totalTrend > 0 ? 'tăng' : 'giảm'}` };
-        }
-        return null;
+        this.transitionMatrix = this.quickTransitionLearn(recentData);
+        this.dicePatterns = this.quickDiceLearn(recentData);
+        this.streakBehavior = this.quickStreakLearn(recentData);
     }
 
-    advancedDiceAnalysis() {
-        if (this.data.length < 10) return null;
+    quickTransitionLearn(data) {
+        const matrix = { 0: { 0: 0, 1: 0 }, 1: { 0: 0, 1: 0 } };
+        for (let i = 0; i < data.length - 1; i++) {
+            matrix[data[i].r][data[i+1].r]++;
+        }
+        const prob = { 0: {}, 1: {} };
+        for (const state of [0, 1]) {
+            const total = matrix[state][0] + matrix[state][1];
+            prob[state][0] = total > 0 ? matrix[state][0] / total : 0.5;
+            prob[state][1] = total > 0 ? matrix[state][1] / total : 0.5;
+        }
+        return prob;
+    }
+
+    quickDiceLearn(data) {
+        const patterns = {};
+        for (let i = 0; i < data.length - 1; i++) {
+            const key = `${data[i].hd}${data[i].ht}${data[i].tc}`;
+            if (!patterns[key]) patterns[key] = { 0: 0, 1: 0, total: 0 };
+            patterns[key][data[i+1].r]++;
+            patterns[key].total++;
+        }
+        return patterns;
+    }
+
+    quickStreakLearn(data) {
+        const behavior = {};
+        for (let i = 0; i < data.length - 1; i++) {
+            const streak = Math.min(data[i].s, 10);
+            if (!behavior[streak]) behavior[streak] = { continued: 0, reversed: 0, total: 0 };
+            if (data[i+1].r === data[i].r) behavior[streak].continued++;
+            else behavior[streak].reversed++;
+            behavior[streak].total++;
+        }
+        return behavior;
+    }
+
+    cauV11Predict() {
+        if (!this.cauStats || this.data.length < 5) return [];
         
+        const predictions = [];
         const last = this.data[this.data.length - 1];
+        const last5 = this.data.slice(-5).map(d => d.result);
+        const last4 = this.data.slice(-4).map(d => d.result);
+        const s5 = last5.join('');
+        const s4 = last4.join('');
         
-        if (last.hasTriple) {
-            const face = last.dice[0];
-            if (face === 1) return { pred: 'Xỉu', conf: 95, name: 'dice_analysis', reason: 'Bộ 3 mặt 1' };
-            if (face === 6) return { pred: 'Tài', conf: 92, name: 'dice_analysis', reason: 'Bộ 3 mặt 6' };
-            if (face >= 4) return { pred: 'Tài', conf: 80, name: 'dice_analysis', reason: `Bộ 3 mặt ${face}` };
-            return { pred: 'Xỉu', conf: 80, name: 'dice_analysis', reason: `Bộ 3 mặt ${face}` };
+        // Cầu 1-1
+        if (s4 === 'TàiXỉuTàiXỉu') {
+            const tyLe = this.cauDB.coBan['1_1']?.tyLe || 72;
+            predictions.push({ pred: 'Xỉu', conf: tyLe, weight: 1.0, name: 'cau_1_1' });
         }
-        
-        if (last.hasDouble) {
-            const counts = {};
-            last.dice.forEach(d => counts[d] = (counts[d] || 0) + 1);
-            const doubleFace = Object.keys(counts).find(k => counts[k] === 2);
-            if (doubleFace) {
-                const face = parseInt(doubleFace);
-                if (face === 1) return { pred: 'Xỉu', conf: 82, name: 'dice_analysis', reason: 'Đôi 1' };
-                if (face === 6) return { pred: 'Tài', conf: 78, name: 'dice_analysis', reason: 'Đôi 6' };
-                if (face >= 5) return { pred: 'Tài', conf: 68, name: 'dice_analysis', reason: `Đôi ${face}` };
-                if (face <= 2) return { pred: 'Xỉu', conf: 65, name: 'dice_analysis', reason: `Đôi ${face}` };
-            }
+        if (s4 === 'XỉuTàiXỉuTài') {
+            const tyLe = this.cauDB.coBan['1_1']?.tyLe || 72;
+            predictions.push({ pred: 'Tài', conf: tyLe, weight: 1.0, name: 'cau_1_1' });
         }
         
-        const sorted = [...last.dice].sort((a, b) => a - b);
-        if (sorted[2] - sorted[0] === 2 && new Set(last.dice).size === 3) {
-            if (sorted[0] >= 4) return { pred: 'Tài', conf: 67, name: 'dice_analysis', reason: 'Dãy liên tiếp cao' };
-            if (sorted[2] <= 3) return { pred: 'Xỉu', conf: 62, name: 'dice_analysis', reason: 'Dãy liên tiếp thấp' };
+        // Cầu đối xứng
+        if (s4 === 'TàiXỉuXỉuTài') {
+            const tyLe = this.cauDB.trung.doiXung?.tyLe || 68;
+            predictions.push({ pred: 'Tài', conf: tyLe, weight: 1.2, name: 'cau_doi_xung' });
+        }
+        if (s4 === 'XỉuTàiTàiXỉu') {
+            const tyLe = this.cauDB.trung.doiXung?.tyLe || 68;
+            predictions.push({ pred: 'Xỉu', conf: tyLe, weight: 1.2, name: 'cau_doi_xung' });
+        }
+        
+        // Cầu 1-2-1
+        if (s5 === 'TàiXỉuXỉuTài') {
+            const tyLe = this.cauDB.trung['1_2_1']?.tyLe || 70;
+            predictions.push({ pred: 'Xỉu', conf: tyLe, weight: 1.1, name: 'cau_1_2_1' });
+        }
+        if (s5 === 'XỉuTàiTàiXỉu') {
+            const tyLe = this.cauDB.trung['1_2_1']?.tyLe || 70;
+            predictions.push({ pred: 'Tài', conf: tyLe, weight: 1.1, name: 'cau_1_2_1' });
+        }
+        
+        // Cầu tam giác
+        if (s5 === 'TàiXỉuTàiXỉuTài') {
+            const tyLe = this.cauDB.trung.tamGiac?.tyLe || 70;
+            predictions.push({ pred: 'Xỉu', conf: tyLe, weight: 1.2, name: 'cau_tam_giac' });
+        }
+        if (s5 === 'XỉuTàiXỉuTàiXỉu') {
+            const tyLe = this.cauDB.trung.tamGiac?.tyLe || 70;
+            predictions.push({ pred: 'Tài', conf: tyLe, weight: 1.2, name: 'cau_tam_giac' });
+        }
+        
+        // Quy luật tổng điểm
+        if (last.t <= 6) {
+            predictions.push({ pred: 'Tài', conf: 64, weight: 0.9, name: 'tong_thap' });
+        }
+        if (last.t >= 15) {
+            predictions.push({ pred: 'Xỉu', conf: 63, weight: 0.9, name: 'tong_cao' });
+        }
+        
+        // Quy luật streak
+        if (last.s >= 3) {
+            const rev = last.result === 'Tài' ? 'Xỉu' : 'Tài';
+            const conf = 65 + Math.min(10, (last.s - 2) * 3);
+            predictions.push({ pred: rev, conf: conf, weight: 1.0, name: 'dao_streak' });
+        }
+        
+        return predictions;
+    }
+
+    transitionPredict(last) {
+        if (!this.transitionMatrix) return null;
+        const prob = this.transitionMatrix[last.r];
+        const nextBit = prob[1] > prob[0] ? 1 : 0;
+        return { pred: nextBit === 1 ? 'Tài' : 'Xỉu', conf: 50 + Math.abs(prob[1] - prob[0]) * 50, weight: 1.5, name: 'transition' };
+    }
+
+    dicePatternPredict(last) {
+        const key = `${last.hd}${last.ht}${last.tc}`;
+        const pattern = this.dicePatterns[key];
+        if (pattern && pattern.total >= 5) {
+            const nextBit = pattern[1] > pattern[0] ? 1 : 0;
+            return { pred: nextBit === 1 ? 'Tài' : 'Xỉu', conf: Math.min(85, 50 + (Math.max(pattern[1], pattern[0]) / pattern.total) * 40), weight: 1.8, name: 'dice_pattern' };
         }
         return null;
     }
 
-    markovGeneric(order, name) {
-        if (this.data.length < order + 1) return null;
-        const model = {};
-        for (let i = 0; i < this.data.length - order; i++) {
-            const state = this.data.slice(i, i + order).map(d => d.result).join(',');
-            const next = this.data[i + order].result;
-            if (!model[state]) model[state] = { 'Tài': 0, 'Xỉu': 0 };
-            model[state][next]++;
-        }
-        const currentState = this.data.slice(-order).map(d => d.result).join(',');
-        if (model[currentState]) {
-            const counts = model[currentState];
-            const total = counts['Tài'] + counts['Xỉu'];
-            const pred = counts['Tài'] > counts['Xỉu'] ? 'Tài' : 'Xỉu';
-            const conf = (Math.max(counts['Tài'], counts['Xỉu']) / total) * 100;
-            return { pred: pred, conf: conf, name: name, reason: `Markov bậc ${order}` };
+    streakPredict(last) {
+        const behavior = this.streakBehavior[Math.min(last.s, 10)];
+        if (behavior && behavior.total >= 10) {
+            const reverseProb = behavior.reversed / behavior.total;
+            const nextBit = reverseProb > 0.5 ? (1 - last.r) : last.r;
+            return { pred: nextBit === 1 ? 'Tài' : 'Xỉu', conf: 50 + Math.abs(reverseProb - 0.5) * 60, weight: 1.3 + last.s * 0.1, name: 'streak' };
         }
         return null;
     }
 
-    pattern_matching() {
-        if (this.data.length < 50) return null;
-        const last10 = this.data.slice(-10).map(d => d.result).join(',');
-        let bestMatch = null, bestCount = 0;
-        for (let i = 0; i < this.data.length - 11; i++) {
-            const window = this.data.slice(i, i + 10).map(d => d.result).join(',');
-            if (window === last10 && i + 10 < this.data.length) {
-                const next = this.data[i + 10].result;
-                if (bestMatch === null) { bestMatch = next; bestCount = 1; }
-                else if (next === bestMatch) bestCount++;
+    frequencyPredict() {
+        const stats = this.quickStats;
+        if (stats.last20Tai >= 14) return { pred: 'Xỉu', conf: 60 + (stats.last20Tai - 14) * 5, weight: 1.0, name: 'frequency' };
+        if (stats.last20Tai <= 6) return { pred: 'Tài', conf: 60 + (6 - stats.last20Tai) * 5, weight: 1.0, name: 'frequency' };
+        return null;
+    }
+
+    quickPatternPredict() {
+        if (this.data.length < 5) return null;
+        const last3 = this.data.slice(-3).map(d => d.r);
+        const pattern = last3.join('');
+        const matches = this.indexes.byPattern.get(pattern);
+        if (matches && matches.length >= 3) {
+            const nextResults = [];
+            for (const idx of matches) {
+                if (idx + 1 < this.data.length && idx < this.data.length - 1) nextResults.push(this.data[idx + 1].r);
+            }
+            if (nextResults.length >= 3) {
+                const sum = nextResults.reduce((a, b) => a + b, 0);
+                const nextBit = sum / nextResults.length > 0.5 ? 1 : 0;
+                return { pred: nextBit === 1 ? 'Tài' : 'Xỉu', conf: Math.min(80, 50 + Math.abs(sum / nextResults.length - 0.5) * 70), weight: 1.6, name: 'pattern_match' };
             }
         }
-        if (bestCount >= 2) return { pred: bestMatch, conf: 75, name: 'pattern_matching', reason: `Khớp ${bestCount} lần` };
         return null;
     }
 
-    frequency_20() {
-        if (this.data.length < 20) return null;
-        const taiCount = this.data.slice(-20).filter(d => d.result === 'Tài').length;
-        if (taiCount >= 14) return { pred: 'Xỉu', conf: 65, name: 'frequency_20', reason: `${taiCount}/20 Tài` };
-        if (taiCount <= 6) return { pred: 'Tài', conf: 65, name: 'frequency_20', reason: `${taiCount}/20 Tài` };
+    reversalPredict(last) {
+        let reversalScore = 0;
+        if (last.t <= 5) reversalScore += 2;
+        if (last.t >= 16) reversalScore -= 2;
+        if (last.ht === 1) {
+            if (last.d[0] === 1) reversalScore -= 3;
+            if (last.d[0] === 6) reversalScore += 3;
+        }
+        if (last.s >= 4) reversalScore += (last.s - 3);
+        if (Math.abs(reversalScore) >= 2) {
+            const nextBit = reversalScore > 0 ? 1 : 0;
+            return { pred: nextBit === 1 ? 'Tài' : 'Xỉu', conf: Math.min(90, 55 + Math.abs(reversalScore) * 8), weight: 1.4, name: 'reversal' };
+        }
         return null;
     }
 
-    mean_reversion() {
-        if (this.data.length < 20) return null;
-        const totals = this.data.slice(-20).map(d => d.total);
-        const mean = totals.reduce((a, b) => a + b, 0) / 20;
-        const lastTotal = this.data[this.data.length - 1].total;
-        if (lastTotal > mean + 2) return { pred: 'Xỉu', conf: 65, name: 'mean_reversion', reason: 'Hồi quy trung bình' };
-        if (lastTotal < mean - 2) return { pred: 'Tài', conf: 65, name: 'mean_reversion', reason: 'Hồi quy trung bình' };
-        return null;
-    }
-
-    initWeights() {
-        const weights = {
-            deep_pattern: 1.8, smart_trend: 1.5, advanced_cycle: 1.3, dice_analysis: 1.5,
-            total_score: 1.2, markov_3: 1.4, markov_4: 1.3, pattern_matching: 1.5,
-            frequency_20: 1.0, mean_reversion: 1.0
-        };
-        return weights;
-    }
-
-    initializeAccuracy() {
-        Object.keys(this.weights).forEach(name => {
-            this.accuracyMemory[name] = { correct: 0, total: 0, accuracy: 0.5 };
-        });
-    }
-
-    selfCorrection(currentPred) {
-        if (this.consecutiveErrors >= 2) {
-            const shouldReverse = Math.random() < 0.7;
-            if (shouldReverse) {
-                const reversed = currentPred === 'Tài' ? 'Xỉu' : 'Tài';
-                return { pred: reversed, conf: 60, name: 'self_correction', reason: `Tự sửa lỗi sau ${this.consecutiveErrors} lần sai`, isCorrected: true };
-            }
+    anomalyPredict() {
+        if (this.data.length < 30) return null;
+        const recentResults = this.data.slice(-30).map(d => d.r);
+        const actualTai = recentResults.reduce((a, b) => a + b, 0);
+        const deviation = Math.abs(actualTai - 15);
+        if (deviation >= 6) {
+            const nextBit = actualTai > 15 ? 0 : 1;
+            return { pred: nextBit === 1 ? 'Tài' : 'Xỉu', conf: Math.min(75, 55 + deviation * 2), weight: 0.9, name: 'anomaly' };
         }
         return null;
     }
 
     predict() {
-        const algorithms = [
-            this.deepPatternPredict.bind(this),
-            this.smartTrendAnalysis.bind(this),
-            this.advancedCycleDetection.bind(this),
-            this.advancedDiceAnalysis.bind(this),
-            this.totalScoreAnalysis.bind(this),
-            this.markovGeneric.bind(this, 3, 'markov_3'),
-            this.markovGeneric.bind(this, 4, 'markov_4'),
-            this.pattern_matching.bind(this),
-            this.frequency_20.bind(this),
-            this.mean_reversion.bind(this)
-        ];
+        const last = this.data[this.data.length - 1];
         
+        // Thu thập tất cả predictions
+        const allPredictions = [];
+        
+        const transPred = this.transitionPredict(last);
+        if (transPred) allPredictions.push(transPred);
+        
+        const dicePred = this.dicePatternPredict(last);
+        if (dicePred) allPredictions.push(dicePred);
+        
+        const streakPred = this.streakPredict(last);
+        if (streakPred) allPredictions.push(streakPred);
+        
+        const freqPred = this.frequencyPredict();
+        if (freqPred) allPredictions.push(freqPred);
+        
+        const patternPred = this.quickPatternPredict();
+        if (patternPred) allPredictions.push(patternPred);
+        
+        const reversalPred = this.reversalPredict(last);
+        if (reversalPred) allPredictions.push(reversalPred);
+        
+        const anomalyPred = this.anomalyPredict();
+        if (anomalyPred) allPredictions.push(anomalyPred);
+        
+        const cauPredictions = this.cauV11Predict();
+        allPredictions.push(...cauPredictions);
+        
+        // Weighted voting
         const scores = { 'Tài': 0, 'Xỉu': 0 };
-        let activeAlgorithms = 0;
-        
-        algorithms.forEach(algo => {
-            try {
-                const result = algo();
-                if (result && result.conf > 0) {
-                    const weight = this.weights[result.name] || 1.0;
-                    scores[result.pred] += result.conf * weight;
-                    activeAlgorithms++;
-                }
-            } catch (e) {}
+        allPredictions.forEach(p => {
+            if (p && p.pred) {
+                const weight = p.weight || 1.0;
+                scores[p.pred] += (p.conf || 50) * weight;
+            }
         });
         
-        if (this.data.length >= 20) {
-            const last20 = this.data.slice(-20);
-            const taiCount = last20.filter(d => d.result === 'Tài').length;
-            if (taiCount >= 16) scores['Xỉu'] += 40;
-            else if (taiCount <= 4) scores['Tài'] += 40;
-        }
-        
-        const last = this.data[this.data.length - 1];
-        if (last.hasTriple) {
-            if (last.dice[0] === 1) scores['Xỉu'] += 60;
-            else if (last.dice[0] === 6) scores['Tài'] += 60;
-        }
-        
-        let finalPred = scores['Tài'] >= scores['Xỉu'] ? 'Tài' : 'Xỉu';
         const totalScore = scores['Tài'] + scores['Xỉu'];
+        const finalPred = scores['Tài'] >= scores['Xỉu'] ? 'Tài' : 'Xỉu';
         let confidence = totalScore > 0 ? (Math.max(scores['Tài'], scores['Xỉu']) / totalScore * 100) : 50;
         
-        const correction = this.selfCorrection(finalPred);
-        if (correction && correction.isCorrected) {
-            finalPred = correction.pred;
-            confidence = Math.max(confidence * 0.9, 60);
-        }
+        // Điều chỉnh confidence dựa trên agreement
+        const topPredictions = allPredictions.filter(p => p && p.conf >= 60).slice(0, 10);
+        const agreementCount = topPredictions.filter(p => p.pred === finalPred).length;
+        if (agreementCount >= 8) confidence = Math.min(97, confidence * 1.1);
+        else if (agreementCount <= 3) confidence = Math.max(50, confidence * 0.9);
         
-        confidence = Math.min(99, Math.max(55, confidence));
+        confidence = Math.min(97, Math.round(confidence));
         
-        this.predictionHistory.push({ pred: finalPred, conf: confidence, timestamp: new Date() });
-        
-        return { prediction: finalPred, confidence: Math.round(confidence), activeAlgorithms: activeAlgorithms };
+        return {
+            prediction: finalPred,
+            confidence: confidence,
+            activeAlgorithms: allPredictions.filter(p => p && p.pred).length,
+            cauDangChay: this.cauDangChay
+        };
     }
 
     updateWithNewData(newData) {
         this.raw = [...newData, ...this.raw].slice(0, 1000);
-        this.data = this.preprocessData(this.raw);
-        this.learnFromHistory();
+        this.data = this.lightningPreprocess(this.raw);
+        this.indexes = this.buildSmartIndexes();
+        this.quickStats = this.preComputeStats();
+        this.rapidLearn();
+        this.analyzeAllCau();
+        this.cache.clear();
+    }
+
+    initOptimalWeights() {
+        return {
+            transition: 1.5, dice_pattern: 1.8, streak: 1.3, frequency: 1.0,
+            pattern_match: 1.6, reversal: 1.4, anomaly: 0.9,
+            cau_1_1: 1.0, cau_doi_xung: 1.2, cau_1_2_1: 1.1,
+            cau_tam_giac: 1.2, tong_thap: 0.9, tong_cao: 0.9, dao_streak: 1.0
+        };
     }
 }
 
@@ -485,7 +529,7 @@ function loadAllData() {
             
             if (sessionsStore.length >= 30) {
                 isReady = true;
-                predictor = new GodPredictorUltimateV2(sessionsStore);
+                predictor = new GodPredictorV5(sessionsStore);
             }
         }
     } catch (error) { console.error('❌ Lỗi load sessions:', error.message); }
@@ -567,8 +611,8 @@ async function fetchAndUpdate() {
     
     if (!isReady && sessionsStore.length >= 30) {
         isReady = true;
-        predictor = new GodPredictorUltimateV2(sessionsStore);
-        console.log(`🎉 [MD5] ĐÃ SẴN SÀNG!`);
+        predictor = new GodPredictorV5(sessionsStore);
+        console.log(`🎉 MD5 ĐÃ SẴN SÀNG!`);
     } else if (isReady && predictor && addedCount > 0) {
         predictor.updateWithNewData(sessionsStore);
     }
@@ -605,15 +649,15 @@ function verifyAndRecord() {
 function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confidence, latestData) {
     const record = {
         phien_truoc_do: phienTruocDo.toString(),
+        xuc_xac: [latestData.Xuc_xac_1, latestData.Xuc_xac_2, latestData.Xuc_xac_3],
+        tong: latestData.Tong,
+        ket_qua_hien_tai: latestData.Ket_qua,
         phien_hien_tai: phienHienTai.toString(),
         du_doan: prediction,
         do_tin_cay: `${confidence}%`,
         ket_qua_du_doan: '',
         ket_qua_thuc_te: '',
         da_kiem_tra: false,
-        xuc_xac: [latestData.Xuc_xac_1, latestData.Xuc_xac_2, latestData.Xuc_xac_3],
-        tong: latestData.Tong,
-        ket_qua_hien_tai: latestData.Ket_qua,
         id: 'love trang',
         timestamp: new Date().toISOString()
     };
@@ -645,7 +689,7 @@ async function autoProcess() {
         await fetchAndUpdate();
         verifyAndRecord();
         
-        const latestSessions = sessionsStore;
+        const latestSessions = sessionsStore.slice(0, 30);
         if (latestSessions.length > 0 && predictor) {
             const latestPhien = latestSessions[0].Phien;
             const nextPhien = latestPhien + 1;
@@ -655,6 +699,9 @@ async function autoProcess() {
                 savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, latestSessions[0]);
                 lastProcessedPhien = nextPhien;
                 console.log(`[DỰ ĐOÁN] 👑 MD5 Phiên ${nextPhien}: ${result.prediction} (${result.confidence}%) - ${result.activeAlgorithms} thuật toán`);
+                if (result.cauDangChay) {
+                    console.log(`[CẦU] 📡 ${result.cauDangChay.ten} → ${result.cauDangChay.duDoan} (${result.cauDangChay.doTinCay}%)`);
+                }
                 saveAllData();
             }
         }
@@ -670,8 +717,9 @@ async function startup() {
     
     console.log('');
     console.log('═══════════════════════════════════════════════════');
-    console.log('👑 GOD PREDICTOR ULTIMATE V2 - MD5 TÀI XỈU');
-    console.log(`📋 Lưu tối đa ${MAX_HISTORY} phiên`);
+    console.log('👑 GOD PREDICTOR V5 - SUPER ENSEMBLE (57+ THUẬT TOÁN)');
+    console.log('   Kết hợp: Ultra Fast V4 (7) + Siêu Phân Tích Cầu V11 (50+)');
+    console.log(`📋 Lấy 30 phiên gần nhất - Cập nhật liên tục`);
     console.log('═══════════════════════════════════════════════════');
     
     fetchLoop();
@@ -702,7 +750,7 @@ app.get('/lc79-md5', async (req, res) => {
         await fetchAndUpdate();
         verifyAndRecord();
         
-        const latestSessions = sessionsStore;
+        const latestSessions = sessionsStore.slice(0, 30);
         if (latestSessions.length === 0) return res.json({ error: 'No data' });
         
         const latestPhien = latestSessions[0].Phien;
@@ -713,13 +761,13 @@ app.get('/lc79-md5', async (req, res) => {
         
         res.json({
             phien_truoc_do: record.phien_truoc_do,
-            phien_hien_tai: record.phien_hien_tai,
-            du_doan: record.du_doan,
-            do_tin_cay: record.do_tin_cay,
             xuc_xac: record.xuc_xac,
             tong: record.tong,
             ket_qua_hien_tai: record.ket_qua_hien_tai,
-            id: 'love trang'
+            phien_hien_tai: record.phien_hien_tai,
+            du_doan: record.du_doan,
+            do_tin_cay: record.do_tin_cay,
+            id: record.id
         });
     } catch (error) {
         res.status(500).json({ error: 'Lỗi server' });
@@ -739,19 +787,23 @@ app.get('/lc79-md5/lichsu', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log('═══════════════════════════════════════════════════');
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-    console.log('👑 GOD PREDICTOR ULTIMATE V2 - MD5 TÀI XỈU');
+    console.log('👑 GOD PREDICTOR V5 - SUPER ENSEMBLE');
     console.log('═══════════════════════════════════════════════════');
     console.log('');
-    console.log('📊 CÁC THUẬT TOÁN DEEP LEARNING:');
-    console.log('   • Deep Pattern Learning - Học từ hàng ngàn patterns');
-    console.log('   • Smart Trend Analysis - Phân tích xu hướng thông minh');
-    console.log('   • Advanced Cycle Detection - Phát hiện chu kỳ nâng cao');
-    console.log('   • Advanced Dice Analysis - Phân tích xúc xắc chuyên sâu');
-    console.log('   • Total Score Analysis - Phân tích tổng điểm');
-    console.log('   • Markov Chains - Xác suất chuỗi');
-    console.log('   • Pattern Matching - So khớp mẫu');
-    console.log('   • Mean Reversion - Hồi quy trung bình');
-    console.log('   • Self-Correction - Tự động sửa lỗi');
+    console.log('📊 CÁC THUẬT TOÁN (57+):');
+    console.log('   • V4 Core: transition, dice_pattern, streak, frequency, pattern_match, reversal, anomaly');
+    console.log('   • V11 Cầu: cơ bản, ngắn, trung, ẩn');
+    console.log('   • Quy luật: tổng điểm, streak, đảo cầu');
+    console.log('');
+    console.log('📊 THỨ TỰ HIỂN THỊ:');
+    console.log('   1. phien_truoc_do');
+    console.log('   2. xuc_xac');
+    console.log('   3. tong');
+    console.log('   4. ket_qua_hien_tai');
+    console.log('   5. phien_hien_tai');
+    console.log('   6. du_doan');
+    console.log('   7. do_tin_cay');
+    console.log('   8. id');
     console.log('');
     console.log('👤 ID: love trang');
     console.log('═══════════════════════════════════════════════════');
