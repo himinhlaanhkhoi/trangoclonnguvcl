@@ -8,13 +8,16 @@ const PORT = 5000;
 const API_URL_MD5 = 'https://wtxmd52.tele68.com/v1/txmd5/sessions';
 const HISTORY_FILE = 'lichsu_du_doan.json';
 const SESSIONS_FILE = 'sessions_data.json';
+const THANGTHUA_FILE = 'bang_thang_thua.json';
 
 // ===== CẤU HÌNH =====
-const MAX_HISTORY = 500;
-const FETCH_PER_REQUEST = 30;
+const MAX_HISTORY = 50; // Lưu tối đa 50 phiên thắng thua
+const MAX_SESSIONS = 15; // Chỉ lấy 15 phiên gần nhất
+const FETCH_PER_REQUEST = 15;
 const FETCH_INTERVAL = 3000;
 const AUTO_SAVE_INTERVAL = 10000;
 
+let bangThangThua = [];
 let predictionHistory = [];
 let lastProcessedPhien = null;
 let sessionsStore = [];
@@ -130,7 +133,7 @@ class GodPredictorV6 {
     }
 
     initialize() {
-        if (this.data.length >= 30) {
+        if (this.data.length >= 15) {
             this.analyzeAllCau();
             this.learnPatterns();
             this.optimizeWeights();
@@ -517,16 +520,38 @@ class GodPredictorV6 {
 
 // ==================== LOAD/SAVE FUNCTIONS ====================
 
+function loadBangThangThua() {
+    try {
+        if (fs.existsSync(THANGTHUA_FILE)) {
+            const data = fs.readFileSync(THANGTHUA_FILE, 'utf8');
+            bangThangThua = JSON.parse(data);
+            console.log(`✅ Đã tải bảng thắng thua: ${bangThangThua.length} phiên`);
+        }
+    } catch (error) { console.error('❌ Lỗi load thắng thua:', error.message); }
+}
+
+function saveBangThangThua() {
+    try {
+        // Giữ tối đa MAX_HISTORY phiên
+        if (bangThangThua.length > MAX_HISTORY) {
+            bangThangThua = bangThangThua.slice(0, MAX_HISTORY);
+        }
+        fs.writeFileSync(THANGTHUA_FILE, JSON.stringify(bangThangThua, null, 2));
+    } catch (error) { console.error('❌ Lỗi save thắng thua:', error.message); }
+}
+
 function loadAllData() {
+    loadBangThangThua();
+    
     try {
         if (fs.existsSync(SESSIONS_FILE)) {
             const data = fs.readFileSync(SESSIONS_FILE, 'utf8');
             sessionsStore = JSON.parse(data);
             console.log(`✅ Đã tải sessions: ${sessionsStore.length} phiên`);
             
-            if (sessionsStore.length >= 30) {
+            if (sessionsStore.length >= MAX_SESSIONS) {
                 isReady = true;
-                predictor = new GodPredictorV6(sessionsStore);
+                predictor = new GodPredictorV6(sessionsStore.slice(0, MAX_SESSIONS * 2));
                 console.log(`🎯 GOD PREDICTOR V6 ĐÃ SẴN SÀNG!`);
             }
         }
@@ -594,8 +619,9 @@ function updateSessions(newData) {
     }
     
     sessionsStore.sort((a, b) => b.Phien - a.Phien);
-    if (sessionsStore.length > 1000) {
-        sessionsStore = sessionsStore.slice(0, 1000);
+    // Chỉ giữ tối đa 200 phiên để phân tích, nhưng dự đoán chỉ dùng 15 phiên gần nhất
+    if (sessionsStore.length > 200) {
+        sessionsStore = sessionsStore.slice(0, 200);
     }
     return addedCount;
 }
@@ -607,50 +633,101 @@ async function fetchAndUpdate() {
     const addedCount = updateSessions(data);
     if (addedCount > 0) saveAllData();
     
-    if (!isReady && sessionsStore.length >= 30) {
+    if (!isReady && sessionsStore.length >= MAX_SESSIONS) {
         isReady = true;
-        predictor = new GodPredictorV6(sessionsStore);
+        predictor = new GodPredictorV6(sessionsStore.slice(0, MAX_SESSIONS * 2));
         console.log(`🎉 MD5 ĐÃ SẴN SÀNG!`);
     } else if (isReady && predictor && addedCount > 0) {
-        predictor.updateWithNewData(sessionsStore);
+        // Chỉ lấy 15 phiên gần nhất để cập nhật
+        const recentSessions = sessionsStore.slice(0, MAX_SESSIONS);
+        predictor.updateWithNewData(recentSessions);
     }
     return true;
 }
 
-// ==================== VERIFY & RECORD ====================
+// ==================== VERIFY & RECORD (1 PHIÊN 1 BẢN GHI) ====================
 
 function verifyAndRecord() {
     if (!predictor) return;
     
     let updated = false;
     
+    // Kiểm tra từng dự đoán chưa được kiểm tra
     for (let i = 0; i < predictionHistory.length; i++) {
         const record = predictionHistory[i];
         if (record.da_kiem_tra) continue;
         
         const actualResult = sessionsStore.find(d => d.Phien.toString() === record.phien_du_doan);
         if (actualResult) {
-            record.ket_qua_du_doan = record.du_doan === actualResult.Ket_qua ? 'Đúng ✅' : 'Sai ❌';
+            // Chuẩn hóa tên
+            const duDoanChuan = record.du_doan.toLowerCase() === 'tài' ? 'tài' : 'xỉu';
+            const ketQuaChuan = actualResult.Ket_qua.toLowerCase() === 'tài' ? 'tài' : 'xỉu';
+            const isCorrect = duDoanChuan === ketQuaChuan;
+            
+            record.ket_qua_du_doan = isCorrect ? 'Đúng ✅' : 'Sai ❌';
             record.ket_qua_thuc_te = actualResult.Ket_qua;
             record.da_kiem_tra = true;
+            
+            // Thêm vào bảng thắng thua - CHỈ 1 BẢN GHI DUY NHẤT CHO MỖI PHIÊN
+            const danhGia = isCorrect ? 'thang' : 'thua';
+            const existingIndex = bangThangThua.findIndex(item => item.phien === record.phien_du_doan);
+            
+            const thangThuaRecord = {
+                phien: parseInt(record.phien_du_doan),
+                du_doan: duDoanChuan,
+                ket_qua: ketQuaChuan,
+                danh_gia: danhGia,
+                do_tin_cay: record.do_tin_cay,
+                timestamp: record.timestamp || new Date().toISOString()
+            };
+            
+            if (existingIndex !== -1) {
+                bangThangThua[existingIndex] = thangThuaRecord;
+            } else {
+                bangThangThua.unshift(thangThuaRecord);
+            }
+            
             updated = true;
         }
     }
     
+    // Giữ tối đa MAX_HISTORY phiên
+    if (bangThangThua.length > MAX_HISTORY) {
+        bangThangThua = bangThangThua.slice(0, MAX_HISTORY);
+    }
     if (predictionHistory.length > MAX_HISTORY) {
         predictionHistory = predictionHistory.slice(0, MAX_HISTORY);
     }
     
-    if (updated) saveAllData();
+    if (updated) {
+        saveBangThangThua();
+        saveAllData();
+        
+        // Tính thống kê và log
+        const thongKe = tinhThongKeThangThua();
+        console.log(`📊 THỐNG KÊ: Thắng=${thongKe.thang}, Thua=${thongKe.thua}, Tỉ lệ=${thongKe.ty_le_thang}%`);
+    }
+}
+
+function tinhThongKeThangThua() {
+    const thang = bangThangThua.filter(item => item.danh_gia === 'thang').length;
+    const thua = bangThangThua.filter(item => item.danh_gia === 'thua').length;
+    const tong = thang + thua;
+    const tyLe = tong > 0 ? (thang / tong * 100).toFixed(1) : 0;
+    return { thang, thua, tong, ty_le_thang: tyLe };
 }
 
 function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confidence, latestData) {
+    // Kiểm tra xem đã có dự đoán cho phiên này chưa
+    const existingIndex = predictionHistory.findIndex(r => r.phien_du_doan === phienHienTai.toString());
+    
     const record = {
         phien_truoc_do: phienTruocDo.toString(),
         xuc_xac: [latestData.Xuc_xac_1, latestData.Xuc_xac_2, latestData.Xuc_xac_3],
         tong: latestData.Tong,
         ket_qua_hien_tai: latestData.Ket_qua,
         phien_hien_tai: phienHienTai.toString(),
+        phien_du_doan: phienHienTai.toString(),
         du_doan: prediction,
         do_tin_cay: `${confidence}%`,
         ket_qua_du_doan: '',
@@ -660,7 +737,12 @@ function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confide
         timestamp: new Date().toISOString()
     };
     
-    predictionHistory.unshift(record);
+    if (existingIndex !== -1) {
+        predictionHistory[existingIndex] = record;
+    } else {
+        predictionHistory.unshift(record);
+    }
+    
     if (predictionHistory.length > MAX_HISTORY) {
         predictionHistory = predictionHistory.slice(0, MAX_HISTORY);
     }
@@ -672,6 +754,7 @@ function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confide
 async function fetchLoop() {
     console.log('═══════════════════════════════════════════════════');
     console.log('🔄 BẮT ĐẦU FETCH DỮ LIỆU MD5...');
+    console.log(`📋 Lấy ${FETCH_PER_REQUEST} phiên mỗi lần - Chỉ giữ ${MAX_SESSIONS} phiên gần nhất để dự đoán`);
     console.log('═══════════════════════════════════════════════════');
     
     while (true) {
@@ -687,8 +770,9 @@ async function autoProcess() {
         await fetchAndUpdate();
         verifyAndRecord();
         
-        const latestSessions = sessionsStore.slice(0, 30);
-        if (latestSessions.length > 0 && predictor) {
+        // Lấy 15 phiên gần nhất để dự đoán
+        const latestSessions = sessionsStore.slice(0, MAX_SESSIONS);
+        if (latestSessions.length >= MAX_SESSIONS && predictor) {
             const latestPhien = latestSessions[0].Phien;
             const nextPhien = latestPhien + 1;
             
@@ -697,10 +781,12 @@ async function autoProcess() {
                 savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, latestSessions[0]);
                 lastProcessedPhien = nextPhien;
                 
+                const thongKe = tinhThongKeThangThua();
                 let msg = `[DỰ ĐOÁN] 👑 MD5 Phiên ${nextPhien}: ${result.prediction} (${result.confidence}%) - ${result.activeAlgorithms} thuật toán`;
                 if (result.cauDangChay) {
                     msg += ` | CẦU: ${result.cauDangChay.ten} → ${result.cauDangChay.duDoan} (${result.cauDangChay.doTinCay}%)`;
                 }
+                msg += ` | 📊 TL: ${thongKe.ty_le_thang}% (${thongKe.thang}/${thongKe.tong})`;
                 console.log(msg);
                 saveAllData();
             }
@@ -719,7 +805,7 @@ async function startup() {
     console.log('═══════════════════════════════════════════════════');
     console.log('👑 GOD PREDICTOR V6 - SIÊU CHUẨN XÁC TUYỆT ĐỐI');
     console.log('   Ultra Fast V4 + Siêu Phân Tích Cầu V13 = 100+ thuật toán');
-    console.log(`📋 Lấy 30 phiên gần nhất - Cập nhật liên tục`);
+    console.log(`📋 Lấy ${MAX_SESSIONS} phiên gần nhất - Lưu thắng thua ${MAX_HISTORY} phiên`);
     console.log('═══════════════════════════════════════════════════');
     
     fetchLoop();
@@ -736,26 +822,34 @@ app.get('/', (req, res) => {
 });
 
 app.get('/status', (req, res) => {
+    const thongKe = tinhThongKeThangThua();
     res.json({
-        md5: { sessions: sessionsStore.length, ready: isReady }
+        md5: { 
+            sessions: sessionsStore.length, 
+            ready: isReady,
+            so_phien_da_phan_tich: sessionsStore.length,
+            so_phien_du_doan: bangThangThua.length
+        },
+        thong_ke: thongKe
     });
 });
 
 app.get('/lc79-md5', async (req, res) => {
     try {
         if (!isReady || !predictor) {
-            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.length}/30` });
+            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.length}/${MAX_SESSIONS}` });
         }
         
         await fetchAndUpdate();
         verifyAndRecord();
         
-        const latestSessions = sessionsStore.slice(0, 30);
+        const latestSessions = sessionsStore.slice(0, MAX_SESSIONS);
         if (latestSessions.length === 0) return res.json({ error: 'No data' });
         
         const latestPhien = latestSessions[0].Phien;
         const nextPhien = latestPhien + 1;
         const result = predictor.predict(false);
+        const thongKe = tinhThongKeThangThua();
         
         const record = savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, latestSessions[0]);
         
@@ -765,8 +859,14 @@ app.get('/lc79-md5', async (req, res) => {
             tong: record.tong,
             ket_qua_hien_tai: record.ket_qua_hien_tai,
             phien_hien_tai: record.phien_hien_tai,
-            du_doan: record.du_doan,
+            du_doan: record.du_doan.toLowerCase(),
             do_tin_cay: record.do_tin_cay,
+            thong_ke: {
+                tong_phien: thongKe.tong,
+                thang: thongKe.thang,
+                thua: thongKe.thua,
+                ty_le_thang: `${thongKe.ty_le_thang}%`
+            },
             id: record.id
         });
     } catch (error) {
@@ -775,10 +875,32 @@ app.get('/lc79-md5', async (req, res) => {
 });
 
 app.get('/lc79-md5/lichsu', (req, res) => {
+    const thongKe = tinhThongKeThangThua();
     res.json({
         type: 'Lẩu Cua 79 - Tài Xỉu MD5',
+        thong_ke: {
+            tong_phien: thongKe.tong,
+            thang: thongKe.thang,
+            thua: thongKe.thua,
+            ty_le_thang: `${thongKe.ty_le_thang}%`
+        },
+        bang_thang_thua: bangThangThua,
         lich_su_du_doan: predictionHistory,
-        tong_so: predictionHistory.length
+        tong_so_du_doan: predictionHistory.length
+    });
+});
+
+app.get('/lc79-md5/thongke', (req, res) => {
+    const thongKe = tinhThongKeThangThua();
+    res.json({
+        type: 'MD5',
+        thong_ke: {
+            tong_phien: thongKe.tong,
+            thang: thongKe.thang,
+            thua: thongKe.thua,
+            ty_le_thang: `${thongKe.ty_le_thang}%`
+        },
+        bang_thang_thua: bangThangThua.slice(0, 20)
     });
 });
 
@@ -799,6 +921,12 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('   • Cầu siêu hiếm: 3 dạng đặc biệt');
     console.log('   • Deep pattern learning');
     console.log('');
+    console.log('📊 CẤU HÌNH MỚI:');
+    console.log(`   • Chỉ lấy ${MAX_SESSIONS} phiên gần nhất để dự đoán`);
+    console.log(`   • Lưu thắng thua tối đa ${MAX_HISTORY} phiên`);
+    console.log(`   • Tự động xóa khi quá ${MAX_HISTORY} phiên`);
+    console.log('   • Mỗi phiên chỉ 1 bản ghi - không bị trùng');
+    console.log('');
     console.log('📊 THỨ TỰ HIỂN THỊ:');
     console.log('   1. phien_truoc_do');
     console.log('   2. xuc_xac');
@@ -807,7 +935,8 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('   5. phien_hien_tai');
     console.log('   6. du_doan');
     console.log('   7. do_tin_cay');
-    console.log('   8. id');
+    console.log('   8. thong_ke (tổng, thắng, thua, tỉ lệ)');
+    console.log('   9. id');
     console.log('');
     console.log('👤 ID: love trang');
     console.log('═══════════════════════════════════════════════════');
