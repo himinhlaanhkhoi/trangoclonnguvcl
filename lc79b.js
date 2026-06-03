@@ -13,8 +13,7 @@ const THANGTHUA_FILE = 'bang_thang_thua.json';
 // ===== CẤU HÌNH =====
 const MAX_HISTORY = 500;
 const MAX_SESSIONS = 20;
-const FETCH_PER_REQUEST = 20;
-const FETCH_INTERVAL = 3000;
+const FETCH_INTERVAL = 5000;
 const AUTO_SAVE_INTERVAL = 10000;
 
 let bangThangThua = [];
@@ -68,11 +67,11 @@ class GodPredictorV8 {
         
         for (let i = 0; i < data.length; i++) {
             const item = data[i];
-            const resultBit = item.ket_qua === "Tài" ? 1 : 0;
-            const streak = (i > 0 && data[i-1].ket_qua === item.ket_qua) ? 
+            const resultBit = item.Ket_qua === "Tài" ? 1 : 0;
+            const streak = (i > 0 && data[i-1].Ket_qua === item.Ket_qua) ? 
                 (processed[i-1]?.s + 1 || 1) : 1;
-            const dice = [item.d1, item.d2, item.d3];
-            const sum = item.tong;
+            const dice = [item.Xuc_xac_1, item.Xuc_xac_2, item.Xuc_xac_3];
+            const sum = item.Tong;
             const hasDouble = (dice[0] === dice[1] || dice[1] === dice[2] || dice[0] === dice[2]) ? 1 : 0;
             const hasTriple = (dice[0] === dice[1] && dice[1] === dice[2]) ? 1 : 0;
             const diceRange = Math.max(...dice) - Math.min(...dice);
@@ -81,17 +80,17 @@ class GodPredictorV8 {
             let last5Tai = 0, last10Tai = 0;
             if (i >= 4) {
                 const last5 = data.slice(i-4, i+1);
-                last5Tai = last5.filter(d => d.ket_qua === "Tài").length;
+                last5Tai = last5.filter(d => d.Ket_qua === "Tài").length;
             }
             if (i >= 9) {
                 const last10 = data.slice(i-9, i+1);
-                last10Tai = last10.filter(d => d.ket_qua === "Tài").length;
+                last10Tai = last10.filter(d => d.Ket_qua === "Tài").length;
             }
             
             processed.push({
-                result: item.ket_qua, r: resultBit, t: sum, s: streak,
+                result: item.Ket_qua, r: resultBit, t: sum, s: streak,
                 d: dice, hd: hasDouble, ht: hasTriple, dr: diceRange, tc: totalCategory,
-                l5t: last5Tai, l10t: last10Tai, p: item.phien
+                l5t: last5Tai, l10t: last10Tai, p: item.Phien
             });
         }
         return processed;
@@ -164,55 +163,20 @@ class GodPredictorV8 {
             const s4 = truoc7.slice(-4).join('');
             const s3 = truoc7.slice(-3).join('');
             
-            // Cầu cơ bản
             if (s4 === 'TàiXỉuTàiXỉu') { this.inc('coBan', '1_1'); if (sau === 'Xỉu') this.incD('coBan', '1_1'); }
             if (s4 === 'XỉuTàiXỉuTài') { this.inc('coBan', '1_1'); if (sau === 'Tài') this.incD('coBan', '1_1'); }
             if (s6 === 'TàiTàiXỉuXỉuTàiTài') { this.inc('coBan', '2_2'); if (sau === 'Xỉu') this.incD('coBan', '2_2'); }
             if (s6 === 'XỉuXỉuTàiTàiXỉuXỉu') { this.inc('coBan', '2_2'); if (sau === 'Tài') this.incD('coBan', '2_2'); }
-            
-            // Cầu ngắn
             if (s3 === 'TàiTàiXỉu') { this.inc('ngan', 'TTX'); if (sau === 'Xỉu') this.incD('ngan', 'TTX'); }
             if (s3 === 'XỉuXỉuTài') { this.inc('ngan', 'XXT'); if (sau === 'Tài') this.incD('ngan', 'XXT'); }
-            if (s3 === 'TàiXỉuTài') { this.inc('ngan', 'TXT'); if (sau === 'Xỉu') this.incD('ngan', 'TXT'); }
-            if (s3 === 'XỉuTàiXỉu') { this.inc('ngan', 'XTX'); if (sau === 'Tài') this.incD('ngan', 'XTX'); }
-            
-            // Cầu tầm trung
             if (s4 === 'TàiXỉuXỉuTài') { this.inc('trung', 'TXXT'); if (sau === 'Tài') this.incD('trung', 'TXXT'); }
             if (s4 === 'XỉuTàiTàiXỉu') { this.inc('trung', 'XTTX'); if (sau === 'Xỉu') this.incD('trung', 'XTTX'); }
-            if (s5 === 'TàiXỉuTàiXỉuTài') { this.inc('trung', 'TXTXT'); if (sau === 'Xỉu') this.incD('trung', 'TXTXT'); }
-            if (s5 === 'XỉuTàiXỉuTàiXỉu') { this.inc('trung', 'XTXTX'); if (sau === 'Tài') this.incD('trung', 'XTXTX'); }
-            
-            // Cầu ẩn
             if (s4 === 'TàiTàiTàiXỉu') { this.inc('an', '1112'); if (sau === 'Xỉu') this.incD('an', '1112'); }
             if (s4 === 'XỉuXỉuXỉuTài') { this.inc('an', '2221'); if (sau === 'Tài') this.incD('an', '2221'); }
-            if (s7 === 'TàiTàiTàiXỉuTàiTàiTài') { this.inc('an', '313'); if (sau === 'Xỉu') this.incD('an', '313'); }
-            
-            // Cầu siêu hiếm
-            if (s7 === 'TàiTàiXỉuXỉuXỉuTàiTài') { this.inc('sieuHiem', 'sh1'); if (sau === 'Xỉu') this.incD('sieuHiem', 'sh1'); }
-            
-            // Cầu đặc biệt
             if (this.data[i].ht === 1) {
                 this.inc('dacBiet', 'sauTriple');
                 if (sau === (this.data[i].d[0] <= 3 ? 'Tài' : 'Xỉu')) this.incD('dacBiet', 'sauTriple');
             }
-            if (this.data[i].t === 3) {
-                this.inc('dacBiet', 'sauTong3');
-                if (sau === 'Tài') this.incD('dacBiet', 'sauTong3');
-            }
-            if (this.data[i].t === 18) {
-                this.inc('dacBiet', 'sauTong18');
-                if (sau === 'Xỉu') this.incD('dacBiet', 'sauTong18');
-            }
-            
-            // Cầu mô phỏng
-            const totals = this.data.slice(i-4, i+1).map(d => d.t);
-            let tang = true, giam = true;
-            for (let j = 1; j < 5; j++) {
-                if (totals[j] <= totals[j-1]) tang = false;
-                if (totals[j] >= totals[j-1]) giam = false;
-            }
-            if (tang) { this.inc('moPhong', 'tongTang'); if (sau === 'Xỉu') this.incD('moPhong', 'tongTang'); }
-            if (giam) { this.inc('moPhong', 'tongGiam'); if (sau === 'Tài') this.incD('moPhong', 'tongGiam'); }
             if (this.data[i].s >= 5) {
                 this.inc('moPhong', 'streakDai');
                 if (sau !== this.data[i].result) this.incD('moPhong', 'streakDai');
@@ -237,20 +201,16 @@ class GodPredictorV8 {
         if (this.data.length < 8) return null;
         
         const last8 = this.data.slice(-8).map(d => d.result);
-        const s7 = last8.slice(-7).join('');
         const s5 = last8.slice(-5).join('');
         const s4 = last8.slice(-4).join('');
         
         const checks = [
-            { kt: s7 === 'TàiTàiXỉuXỉuXỉuTàiTài', ten: 'SIÊU HIẾM', pred: 'Xỉu', nhom: 'sieuHiem', loai: 'sh1' },
             { kt: s5 === 'TàiXỉuTàiXỉuTài', ten: 'Tam giác', pred: 'Xỉu', nhom: 'trung', loai: 'TXTXT' },
             { kt: s5 === 'XỉuTàiXỉuTàiXỉu', ten: 'Tam giác', pred: 'Tài', nhom: 'trung', loai: 'XTXTX' },
             { kt: s4 === 'TàiXỉuXỉuTài', ten: 'Đối xứng', pred: 'Tài', nhom: 'trung', loai: 'TXXT' },
             { kt: s4 === 'XỉuTàiTàiXỉu', ten: 'Đối xứng', pred: 'Xỉu', nhom: 'trung', loai: 'XTTX' },
             { kt: s4 === 'TàiXỉuTàiXỉu', ten: '1-1', pred: 'Xỉu', nhom: 'coBan', loai: '1_1' },
-            { kt: s4 === 'XỉuTàiXỉuTài', ten: '1-1', pred: 'Tài', nhom: 'coBan', loai: '1_1' },
-            { kt: s4 === 'TàiTàiTàiXỉu', ten: 'Ẩn: TTT X', pred: 'Xỉu', nhom: 'an', loai: '1112' },
-            { kt: s4 === 'XỉuXỉuXỉuTài', ten: 'Ẩn: XXX T', pred: 'Tài', nhom: 'an', loai: '2221' }
+            { kt: s4 === 'XỉuTàiXỉuTài', ten: '1-1', pred: 'Tài', nhom: 'coBan', loai: '1_1' }
         ];
         
         for (const c of checks) {
@@ -304,24 +264,16 @@ class GodPredictorV8 {
     findAllMatchingCau() {
         const predictions = [];
         const last8 = this.data.slice(-8).map(d => d.result);
-        const s7 = last8.slice(-7).join('');
         const s5 = last8.slice(-5).join('');
         const s4 = last8.slice(-4).join('');
-        const s3 = last8.slice(-3).join('');
         
         const checks = [
-            { kt: s7 === 'TàiTàiXỉuXỉuXỉuTàiTài', p: 'Xỉu', n: 'sieuHiem', l: 'sh1' },
             { kt: s5 === 'TàiXỉuTàiXỉuTài', p: 'Xỉu', n: 'trung', l: 'TXTXT' },
             { kt: s5 === 'XỉuTàiXỉuTàiXỉu', p: 'Tài', n: 'trung', l: 'XTXTX' },
             { kt: s4 === 'TàiXỉuXỉuTài', p: 'Tài', n: 'trung', l: 'TXXT' },
             { kt: s4 === 'XỉuTàiTàiXỉu', p: 'Xỉu', n: 'trung', l: 'XTTX' },
             { kt: s4 === 'TàiXỉuTàiXỉu', p: 'Xỉu', n: 'coBan', l: '1_1' },
-            { kt: s4 === 'XỉuTàiXỉuTài', p: 'Tài', n: 'coBan', l: '1_1' },
-            { kt: s4 === 'TàiTàiTàiXỉu', p: 'Xỉu', n: 'an', l: '1112' },
-            { kt: s4 === 'XỉuXỉuXỉuTài', p: 'Tài', n: 'an', l: '2221' },
-            { kt: s7 === 'TàiTàiTàiXỉuTàiTàiTài', p: 'Xỉu', n: 'an', l: '313' },
-            { kt: s3 === 'TàiTàiXỉu', p: 'Xỉu', n: 'ngan', l: 'TTX' },
-            { kt: s3 === 'XỉuXỉuTài', p: 'Tài', n: 'ngan', l: 'XXT' }
+            { kt: s4 === 'XỉuTàiXỉuTài', p: 'Tài', n: 'coBan', l: '1_1' }
         ];
         
         for (const check of checks) {
@@ -350,7 +302,6 @@ class GodPredictorV8 {
     runCorePredictors(last) {
         const predictions = [];
         
-        // Transition
         const matrix = { 0: { 0: 0, 1: 0 }, 1: { 0: 0, 1: 0 } };
         for (let i = 0; i < this.data.length - 1; i++) matrix[this.data[i].r][this.data[i+1].r]++;
         const total = matrix[last.r][0] + matrix[last.r][1];
@@ -360,15 +311,7 @@ class GodPredictorV8 {
             else if (probTai < 0.35) predictions.push({ pred: 'Xỉu', conf: (1 - probTai) * 100, weight: 1.5, name: 'transition', reason: `P(T)=${(probTai*100).toFixed(0)}%` });
         }
         
-        // Streak
         if (last.s >= 3) predictions.push({ pred: last.result === 'Tài' ? 'Xỉu' : 'Tài', conf: 65 + Math.min(15, (last.s - 2) * 4), weight: 1.3, name: 'streak', reason: `Đảo sau bệt ${last.s}` });
-        
-        // Frequency
-        if (this.data.length >= 20) {
-            const taiCount = this.data.slice(-20).filter(d => d.r === 1).length;
-            if (taiCount >= 14) predictions.push({ pred: 'Xỉu', conf: 60 + (taiCount - 14) * 5, weight: 1.0, name: 'frequency', reason: `${taiCount}/20 Tài` });
-            else if (taiCount <= 6) predictions.push({ pred: 'Tài', conf: 60 + (6 - taiCount) * 5, weight: 1.0, name: 'frequency', reason: `${taiCount}/20 Tài` });
-        }
         
         return predictions;
     }
@@ -429,16 +372,11 @@ class GodPredictorV8 {
         const totalScore = scores['Tài'] + scores['Xỉu'];
         let confidence = totalScore > 0 ? (Math.max(scores['Tài'], scores['Xỉu']) / totalScore * 100) : 50;
         
-        const sieuHiemPred = allPredictions.find(p => p.name.includes('sieuHiem') && p.conf >= 75);
-        if (sieuHiemPred) { finalPred = sieuHiemPred.pred; confidence = Math.max(confidence, sieuHiemPred.conf); }
-        
         confidence = Math.min(97, Math.round(confidence));
         const result = { prediction: finalPred, confidence: confidence, activeAlgorithms: allPredictions.length, cauDangChay: this.cauDangChay };
         
         this.cacheL1.set(cacheKey, result);
         if (this.cacheL1.size > 500) { const firstKey = this.cacheL1.keys().next().value; this.cacheL1.delete(firstKey); }
-        
-        if (this.data.length % 30 === 0) { this.analyzeAllCau(); this.deepLearn(); this.optimizeWeights(); }
         
         if (showDetail) console.log(`🎯 DỰ ĐOÁN: ${result.prediction} | ĐTC: ${result.confidence}% | ${result.activeAlgorithms} thuật toán`);
         return result;
@@ -478,11 +416,6 @@ function loadAllData() {
         if (fs.existsSync(SESSIONS_FILE)) {
             sessionsStore = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'));
             console.log(`✅ Đã tải sessions: ${sessionsStore.length} phiên`);
-            if (sessionsStore.length >= 3) {
-                isReady = true;
-                predictor = new GodPredictorV8(sessionsStore);
-                console.log(`🎯 GOD PREDICTOR V8 ĐÃ SẴN SÀNG!`);
-            }
         }
     } catch (error) { console.error('❌ Lỗi load sessions:', error.message); }
     try {
@@ -504,10 +437,19 @@ function saveAllData() {
 
 async function fetchDataSunwin() {
     try {
-        const response = await axios.get(API_URL_SUNWIN, { timeout: 15000 });
+        console.log('🔄 Đang fetch dữ liệu từ API Sunwin...');
+        const response = await axios.get(API_URL_SUNWIN, { 
+            timeout: 15000,
+            headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/json'
+            }
+        });
         
-        if (response.data && Array.isArray(response.data)) {
-            return response.data.map(item => ({
+        console.log(`📥 Nhận được response: status=${response.status}, data length=${response.data?.length || 0}`);
+        
+        if (response.data && Array.isArray(response.data) && response.data.length > 0) {
+            const converted = response.data.map(item => ({
                 Phien: item.phiên,
                 Ket_qua: item.kết_quả === "Tài" ? "Tài" : "Xỉu",
                 Xuc_xac_1: item.d1,
@@ -515,10 +457,14 @@ async function fetchDataSunwin() {
                 Xuc_xac_3: item.d3,
                 Tong: item.tổng
             }));
+            console.log(`✅ Chuyển đổi thành công: ${converted.length} phiên`);
+            return converted;
         }
+        console.log('⚠️ Không có dữ liệu trong response');
         return null;
     } catch (error) {
         console.error('❌ [SUNWIN] Fetch error:', error.message);
+        if (error.response) console.error('   Status:', error.response.status);
         return null;
     }
 }
@@ -528,7 +474,10 @@ function updateSessions(newData) {
     const existingMap = new Map(sessionsStore.map(s => [s.Phien, s]));
     let addedCount = 0;
     for (const s of newData) {
-        if (!existingMap.has(s.Phien)) { sessionsStore.push(s); addedCount++; }
+        if (!existingMap.has(s.Phien)) { 
+            sessionsStore.push(s); 
+            addedCount++; 
+        }
     }
     sessionsStore.sort((a, b) => b.Phien - a.Phien);
     if (sessionsStore.length > 500) sessionsStore = sessionsStore.slice(0, 500);
@@ -537,13 +486,21 @@ function updateSessions(newData) {
 
 async function fetchAndUpdate() {
     const data = await fetchDataSunwin();
-    if (!data) return false;
+    if (!data || data.length === 0) {
+        console.log('⚠️ Không có dữ liệu mới từ API');
+        return false;
+    }
+    
     const addedCount = updateSessions(data);
-    if (addedCount > 0) saveAllData();
+    if (addedCount > 0) {
+        console.log(`📥 Thêm ${addedCount} phiên mới, tổng: ${sessionsStore.length} phiên`);
+        saveAllData();
+    }
+    
     if (!isReady && sessionsStore.length >= 3) {
         isReady = true;
-        predictor = new GodPredictorV8(sessionsStore);
-        console.log(`🎉 SUNWIN ĐÃ SẴN SÀNG!`);
+        predictor = new GodPredictorV8(sessionsStore.slice(0, MAX_SESSIONS));
+        console.log(`🎉 SUNWIN ĐÃ SẴN SÀNG! (${sessionsStore.length} phiên)`);
     } else if (isReady && predictor && addedCount > 0) {
         predictor.updateWithNewData(sessionsStore.slice(0, MAX_SESSIONS));
     }
@@ -586,7 +543,21 @@ function tinhThongKeThangThua() {
 
 function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confidence, latestData) {
     const existingIndex = predictionHistory.findIndex(r => r.phien_du_doan === phienHienTai.toString());
-    const record = { phien_truoc_do: phienTruocDo.toString(), xuc_xac: [latestData.Xuc_xac_1, latestData.Xuc_xac_2, latestData.Xuc_xac_3], tong: latestData.Tong, ket_qua_hien_tai: latestData.Ket_qua, phien_hien_tai: phienHienTai.toString(), phien_du_doan: phienHienTai.toString(), du_doan: prediction.toLowerCase(), do_tin_cay: `${confidence}%`, ket_qua_du_doan: '', ket_qua_thuc_te: '', da_kiem_tra: false, id: 'love trang', timestamp: new Date().toISOString() };
+    const record = { 
+        phien_truoc_do: phienTruocDo.toString(), 
+        xuc_xac: [latestData.Xuc_xac_1, latestData.Xuc_xac_2, latestData.Xuc_xac_3], 
+        tong: latestData.Tong, 
+        ket_qua_hien_tai: latestData.Ket_qua, 
+        phien_hien_tai: phienHienTai.toString(), 
+        phien_du_doan: phienHienTai.toString(), 
+        du_doan: prediction.toLowerCase(), 
+        do_tin_cay: `${confidence}%`, 
+        ket_qua_du_doan: '', 
+        ket_qua_thuc_te: '', 
+        da_kiem_tra: false, 
+        id: 'love trang', 
+        timestamp: new Date().toISOString() 
+    };
     if (existingIndex !== -1) predictionHistory[existingIndex] = record;
     else predictionHistory.unshift(record);
     if (predictionHistory.length > MAX_HISTORY) predictionHistory = predictionHistory.slice(0, MAX_HISTORY);
@@ -596,10 +567,15 @@ function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confide
 async function fetchLoop() {
     console.log('═══════════════════════════════════════════════════');
     console.log('🔄 BẮT ĐẦU FETCH DỮ LIỆU SUNWIN...');
+    console.log(`📋 Fetch mỗi ${FETCH_INTERVAL/1000} giây`);
     console.log('═══════════════════════════════════════════════════');
+    
+    // Fetch ngay lập tức
+    await fetchAndUpdate();
+    
     while (true) {
-        await fetchAndUpdate();
         await new Promise(resolve => setTimeout(resolve, FETCH_INTERVAL));
+        await fetchAndUpdate();
     }
 }
 
@@ -632,28 +608,49 @@ async function startup() {
     console.log('   130+ THUẬT TOÁN - TỰ ĐỘNG HỌC THÍCH NGHI');
     console.log(`📋 Lấy ${MAX_SESSIONS} phiên gần nhất - Lưu thắng thua ${MAX_HISTORY} phiên`);
     console.log('═══════════════════════════════════════════════════');
+    
+    // Chạy fetch loop riêng
     fetchLoop();
-    setTimeout(() => { setInterval(autoProcess, AUTO_SAVE_INTERVAL); }, 5000);
+    
+    // Chạy auto process sau 5 giây
+    setTimeout(() => { 
+        setInterval(autoProcess, AUTO_SAVE_INTERVAL); 
+    }, 5000);
 }
 
 // ==================== ENDPOINT ====================
 
-app.get('/', (req, res) => { res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.send('SUNWIN Tài Xỉu Predictor - love trang'); });
+app.get('/', (req, res) => { 
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8'); 
+    res.send('SUNWIN Tài Xỉu Predictor - love trang'); 
+});
 
 app.get('/sunwin', async (req, res) => {
     try {
-        if (!isReady || !predictor) {
-            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.length}/3 phiên` });
+        // Nếu chưa có dữ liệu, thử fetch ngay
+        if (sessionsStore.length === 0) {
+            await fetchAndUpdate();
         }
+        
+        if (!isReady || !predictor || sessionsStore.length < 3) {
+            return res.json({ 
+                status: 'loading', 
+                message: `Đang tải dữ liệu... Đã có ${sessionsStore.length}/3 phiên`,
+                sessions: sessionsStore.length
+            });
+        }
+        
         await fetchAndUpdate();
         verifyAndRecord();
         const latestSessions = sessionsStore.slice(0, MAX_SESSIONS);
         if (latestSessions.length === 0) return res.json({ error: 'No data' });
+        
         const latestPhien = latestSessions[0].Phien;
         const nextPhien = latestPhien + 1;
         const result = predictor.predict(false);
         const thongKe = tinhThongKeThangThua();
         const record = savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, latestSessions[0]);
+        
         res.json({
             phien_hien_tai: record.phien_truoc_do,
             phien_du_doan: record.phien_hien_tai,
@@ -662,7 +659,12 @@ app.get('/sunwin', async (req, res) => {
             ket_qua_hien_tai: record.ket_qua_hien_tai,
             du_doan: record.du_doan,
             do_tin_cay: record.do_tin_cay,
-            thong_ke: { tong_phien: thongKe.tong, thang: thongKe.thang, thua: thongKe.thua, ty_le_thang: `${thongKe.ty_le_thang}%` },
+            thong_ke: { 
+                tong_phien: thongKe.tong, 
+                thang: thongKe.thang, 
+                thua: thongKe.thua, 
+                ty_le_thang: `${thongKe.ty_le_thang}%` 
+            },
             bang_thang_thua: bangThangThua.slice(0, 30),
             id: record.id
         });
@@ -680,16 +682,7 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('👑 GOD PREDICTOR V8 - SUNWIN TÀI XỈU');
     console.log('═══════════════════════════════════════════════════');
     console.log('');
-    console.log('📊 130+ THUẬT TOÁN:');
-    console.log('   • Cầu cơ bản: 1-1, 2-2, 3-3');
-    console.log('   • Cầu ngắn: TTX, XXT, TXT, XTX');
-    console.log('   • Cầu trung: đối xứng, tam giác, 2-1-2');
-    console.log('   • Cầu ẩn: TTT X, XXX T, TTT X TTT');
-    console.log('   • Cầu siêu hiếm, đặc biệt, mô phỏng');
-    console.log('   • Deep pattern, transition, streak, frequency');
-    console.log('   • Adaptive boost, special predictors');
-    console.log('');
-    console.log('📊 API ENDPOINT:');
+    console.log('📊 ENDPOINT:');
     console.log('   • GET /sunwin - Dự đoán + thống kê + bảng thắng thua');
     console.log('');
     console.log('👤 ID: love trang');
