@@ -5,15 +5,15 @@ const fs = require('fs');
 const app = express();
 const PORT = 5000;
 
-const API_URL_MD5 = 'https://wtxmd52.tele68.com/v1/txmd5/sessions';
+const API_URL_SUNWIN = 'http://103.249.117.201:49483/sunwin/tx/history?key=e9cef4b4e07a547ea51e5d4358286cac3ddad730ee760a48';
 const HISTORY_FILE = 'lichsu_du_doan.json';
 const SESSIONS_FILE = 'sessions_data.json';
 const THANGTHUA_FILE = 'bang_thang_thua.json';
 
 // ===== CẤU HÌNH =====
 const MAX_HISTORY = 500;
-const MAX_SESSIONS = 15;
-const FETCH_PER_REQUEST = 15;
+const MAX_SESSIONS = 20;
+const FETCH_PER_REQUEST = 20;
 const FETCH_INTERVAL = 3000;
 const AUTO_SAVE_INTERVAL = 10000;
 
@@ -68,11 +68,11 @@ class GodPredictorV8 {
         
         for (let i = 0; i < data.length; i++) {
             const item = data[i];
-            const resultBit = item.Ket_qua === "Tài" ? 1 : 0;
-            const streak = (i > 0 && data[i-1].Ket_qua === item.Ket_qua) ? 
+            const resultBit = item.ket_qua === "Tài" ? 1 : 0;
+            const streak = (i > 0 && data[i-1].ket_qua === item.ket_qua) ? 
                 (processed[i-1]?.s + 1 || 1) : 1;
-            const dice = [item.Xuc_xac_1, item.Xuc_xac_2, item.Xuc_xac_3];
-            const sum = dice[0] + dice[1] + dice[2];
+            const dice = [item.d1, item.d2, item.d3];
+            const sum = item.tong;
             const hasDouble = (dice[0] === dice[1] || dice[1] === dice[2] || dice[0] === dice[2]) ? 1 : 0;
             const hasTriple = (dice[0] === dice[1] && dice[1] === dice[2]) ? 1 : 0;
             const diceRange = Math.max(...dice) - Math.min(...dice);
@@ -81,17 +81,17 @@ class GodPredictorV8 {
             let last5Tai = 0, last10Tai = 0;
             if (i >= 4) {
                 const last5 = data.slice(i-4, i+1);
-                last5Tai = last5.filter(d => d.Ket_qua === "Tài").length;
+                last5Tai = last5.filter(d => d.ket_qua === "Tài").length;
             }
             if (i >= 9) {
                 const last10 = data.slice(i-9, i+1);
-                last10Tai = last10.filter(d => d.Ket_qua === "Tài").length;
+                last10Tai = last10.filter(d => d.ket_qua === "Tài").length;
             }
             
             processed.push({
-                result: item.Ket_qua, r: resultBit, t: sum, s: streak,
+                result: item.ket_qua, r: resultBit, t: sum, s: streak,
                 d: dice, hd: hasDouble, ht: hasTriple, dr: diceRange, tc: totalCategory,
-                l5t: last5Tai, l10t: last10Tai, p: item.Phien
+                l5t: last5Tai, l10t: last10Tai, p: item.phien
             });
         }
         return processed;
@@ -145,7 +145,7 @@ class GodPredictorV8 {
     }
 
     initialize() {
-        if (this.data.length >= 10) {
+        if (this.data.length >= 5) {
             this.analyzeAllCau();
             this.deepLearn();
             this.optimizeWeights();
@@ -155,7 +155,7 @@ class GodPredictorV8 {
     analyzeAllCau() {
         if (this.data.length < 20) return;
         
-        for (let i = 20; i < this.data.length - 1; i++) {
+        for (let i = 15; i < this.data.length - 1; i++) {
             const sau = this.data[i+1].result;
             const truoc7 = this.data.slice(i-6, i+1).map(d => d.result);
             const s7 = truoc7.join('');
@@ -502,24 +502,23 @@ function saveAllData() {
 
 // ==================== API DATA FETCHING ====================
 
-function transformApiData(apiData) {
-    if (!apiData?.list) return null;
-    return apiData.list.map(item => ({
-        Phien: item.id,
-        Ket_qua: item.resultTruyenThong === 'TAI' ? 'Tài' : 'Xỉu',
-        Xuc_xac_1: item.dices[0],
-        Xuc_xac_2: item.dices[1],
-        Xuc_xac_3: item.dices[2],
-        Tong: item.point
-    }));
-}
-
-async function fetchDataMd5() {
+async function fetchDataSunwin() {
     try {
-        const response = await axios.get(API_URL_MD5, { timeout: 15000, params: { limit: FETCH_PER_REQUEST } });
-        return transformApiData(response.data);
+        const response = await axios.get(API_URL_SUNWIN, { timeout: 15000 });
+        
+        if (response.data && Array.isArray(response.data)) {
+            return response.data.map(item => ({
+                Phien: item.phiên,
+                Ket_qua: item.kết_quả === "Tài" ? "Tài" : "Xỉu",
+                Xuc_xac_1: item.d1,
+                Xuc_xac_2: item.d2,
+                Xuc_xac_3: item.d3,
+                Tong: item.tổng
+            }));
+        }
+        return null;
     } catch (error) {
-        console.error('❌ [MD5] Fetch error:', error.message);
+        console.error('❌ [SUNWIN] Fetch error:', error.message);
         return null;
     }
 }
@@ -532,19 +531,19 @@ function updateSessions(newData) {
         if (!existingMap.has(s.Phien)) { sessionsStore.push(s); addedCount++; }
     }
     sessionsStore.sort((a, b) => b.Phien - a.Phien);
-    if (sessionsStore.length > 200) sessionsStore = sessionsStore.slice(0, 200);
+    if (sessionsStore.length > 500) sessionsStore = sessionsStore.slice(0, 500);
     return addedCount;
 }
 
 async function fetchAndUpdate() {
-    const data = await fetchDataMd5();
+    const data = await fetchDataSunwin();
     if (!data) return false;
     const addedCount = updateSessions(data);
     if (addedCount > 0) saveAllData();
     if (!isReady && sessionsStore.length >= 3) {
         isReady = true;
         predictor = new GodPredictorV8(sessionsStore);
-        console.log(`🎉 MD5 ĐÃ SẴN SÀNG!`);
+        console.log(`🎉 SUNWIN ĐÃ SẴN SÀNG!`);
     } else if (isReady && predictor && addedCount > 0) {
         predictor.updateWithNewData(sessionsStore.slice(0, MAX_SESSIONS));
     }
@@ -596,7 +595,7 @@ function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confide
 
 async function fetchLoop() {
     console.log('═══════════════════════════════════════════════════');
-    console.log('🔄 BẮT ĐẦU FETCH DỮ LIỆU MD5...');
+    console.log('🔄 BẮT ĐẦU FETCH DỮ LIỆU SUNWIN...');
     console.log('═══════════════════════════════════════════════════');
     while (true) {
         await fetchAndUpdate();
@@ -618,7 +617,7 @@ async function autoProcess() {
                 savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, latestSessions[0]);
                 lastProcessedPhien = nextPhien;
                 const thongKe = tinhThongKeThangThua();
-                console.log(`[DỰ ĐOÁN] 👑 MD5 Phiên ${nextPhien}: ${result.prediction} (${result.confidence}%) - 📊 TL: ${thongKe.ty_le_thang}% (${thongKe.thang}/${thongKe.tong})`);
+                console.log(`[DỰ ĐOÁN] 👑 SUNWIN Phiên ${nextPhien}: ${result.prediction} (${result.confidence}%) - 📊 TL: ${thongKe.ty_le_thang}% (${thongKe.thang}/${thongKe.tong})`);
                 saveAllData();
             }
         }
@@ -629,22 +628,22 @@ async function startup() {
     loadAllData();
     console.log('');
     console.log('═══════════════════════════════════════════════════');
-    console.log('👑 GOD PREDICTOR V8 - SIÊU CHUẨN XÁC TUYỆT ĐỐI');
-    console.log('   130+ THUẬT TOÁN - GIỮ NGUYÊN TẤT CẢ CẦU CŨ');
+    console.log('👑 GOD PREDICTOR V8 - SUNWIN TÀI XỈU');
+    console.log('   130+ THUẬT TOÁN - TỰ ĐỘNG HỌC THÍCH NGHI');
     console.log(`📋 Lấy ${MAX_SESSIONS} phiên gần nhất - Lưu thắng thua ${MAX_HISTORY} phiên`);
     console.log('═══════════════════════════════════════════════════');
     fetchLoop();
     setTimeout(() => { setInterval(autoProcess, AUTO_SAVE_INTERVAL); }, 5000);
 }
 
-// ==================== ENDPOINT DUY NHẤT ====================
+// ==================== ENDPOINT ====================
 
-app.get('/', (req, res) => { res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.send('t.me/CuTools'); });
+app.get('/', (req, res) => { res.setHeader('Content-Type', 'text/plain; charset=utf-8'); res.send('SUNWIN Tài Xỉu Predictor - love trang'); });
 
-app.get('/lc79-md5', async (req, res) => {
+app.get('/sunwin', async (req, res) => {
     try {
         if (!isReady || !predictor) {
-            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.length}/3` });
+            return res.json({ status: 'loading', message: `Đang tải: ${sessionsStore.length}/3 phiên` });
         }
         await fetchAndUpdate();
         verifyAndRecord();
@@ -678,7 +677,7 @@ app.get('/lc79-md5', async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log('═══════════════════════════════════════════════════');
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-    console.log('👑 GOD PREDICTOR V8 - DỰ ĐOÁN TÀI XỈU MD5');
+    console.log('👑 GOD PREDICTOR V8 - SUNWIN TÀI XỈU');
     console.log('═══════════════════════════════════════════════════');
     console.log('');
     console.log('📊 130+ THUẬT TOÁN:');
@@ -690,8 +689,8 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log('   • Deep pattern, transition, streak, frequency');
     console.log('   • Adaptive boost, special predictors');
     console.log('');
-    console.log('📊 ENDPOINT DUY NHẤT:');
-    console.log('   • GET /lc79-md5 - Dự đoán + thống kê + bảng thắng thua');
+    console.log('📊 API ENDPOINT:');
+    console.log('   • GET /sunwin - Dự đoán + thống kê + bảng thắng thua');
     console.log('');
     console.log('👤 ID: love trang');
     console.log('═══════════════════════════════════════════════════');
