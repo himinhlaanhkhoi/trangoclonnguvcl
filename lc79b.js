@@ -5,16 +5,19 @@ const fs = require('fs');
 const app = express();
 const PORT = 5000;
 
-const API_URL_SUNWIN = 'http://103.249.117.201:49483/sunwin/tx/history?key=e9cef4b4e07a547ea51e5d4358286cac3ddad730ee760a48';
+// API mới
+const API_URL = 'https://lovetrang-xinkgai.onrender.com/data';
+
+// File lưu trữ
 const HISTORY_FILE = 'lichsu_du_doan.json';
 const SESSIONS_FILE = 'sessions_data.json';
 const THANGTHUA_FILE = 'bang_thang_thua.json';
 
-// ===== CẤU HÌNH =====
-const MAX_HISTORY = 500;
-const MAX_SESSIONS = 30;
-const FETCH_INTERVAL = 5000;
-const AUTO_SAVE_INTERVAL = 10000;
+// Cấu hình
+const MAX_HISTORY = 500;          // Lưu tối đa 500 phiên thắng thua
+const MAX_SESSIONS = 20;          // Chỉ lấy 20 phiên gần nhất để dự đoán
+const FETCH_INTERVAL = 5000;      // Fetch mỗi 5 giây
+const AUTO_SAVE_INTERVAL = 10000; // Auto save mỗi 10 giây
 
 let bangThangThua = [];
 let predictionHistory = [];
@@ -22,6 +25,7 @@ let lastProcessedPhien = null;
 let sessionsStore = [];
 let isReady = false;
 let predictor = null;
+let lastTrainCount = 0;
 
 // ==================== GOD PREDICTOR V8 ====================
 
@@ -435,10 +439,10 @@ function saveAllData() {
 
 // ==================== API DATA FETCHING ====================
 
-async function fetchDataSunwin() {
+async function fetchData() {
     try {
-        console.log('🔄 Đang fetch dữ liệu từ API Sunwin...');
-        const response = await axios.get(API_URL_SUNWIN, { 
+        console.log('🔄 Đang fetch dữ liệu từ API...');
+        const response = await axios.get(API_URL, { 
             timeout: 15000,
             headers: {
                 'Accept': 'application/json',
@@ -446,62 +450,65 @@ async function fetchDataSunwin() {
             }
         });
         
-        console.log(`📥 Response status: ${response.status}`);
-        
-        // Kiểm tra response data
-        if (response.data && Array.isArray(response.data)) {
-            console.log(`📊 Số phiên nhận được: ${response.data.length}`);
+        if (response.data && response.data.data && Array.isArray(response.data.data)) {
+            const rawData = response.data.data;
+            console.log(`📥 Nhận được ${rawData.length} phiên từ API (tổng API có ${response.data.total} phiên)`);
             
-            // Log mẫu dữ liệu đầu tiên để debug
-            if (response.data.length > 0) {
-                console.log(`📝 Mẫu dữ liệu:`, JSON.stringify(response.data[0]));
-            }
-            
-            const converted = response.data.map(item => ({
-                Phien: item.phiên,
-                Ket_qua: item.kết_quả === "Tài" ? "Tài" : "Xỉu",
-                Xuc_xac_1: item.d1,
-                Xuc_xac_2: item.d2,
-                Xuc_xac_3: item.d3,
-                Tong: item.tổng
+            // Chuyển đổi format
+            const converted = rawData.map(item => ({
+                Phien: item.phien,
+                Ket_qua: item.ket_qua,
+                Xuc_xac_1: item.xuc_xac_1,
+                Xuc_xac_2: item.xuc_xac_2,
+                Xuc_xac_3: item.xuc_xac_3,
+                Tong: item.tong,
+                Thoi_gian: item.thoi_gian,
+                Timestamp: item.timestamp
             }));
             
-            console.log(`✅ Chuyển đổi thành công: ${converted.length} phiên`);
+            // Sắp xếp theo phiên giảm dần (phiên mới nhất lên đầu)
+            converted.sort((a, b) => b.Phien - a.Phien);
+            
+            console.log(`✅ Chuyển đổi thành công: ${converted.length} phiên, mới nhất: ${converted[0]?.Phien}`);
             return converted;
         }
         
-        console.log('⚠️ Response không phải mảng hoặc không có dữ liệu');
-        console.log('Response type:', typeof response.data);
-        if (response.data) console.log('Response keys:', Object.keys(response.data));
-        
+        console.log('⚠️ Response không đúng định dạng');
         return null;
     } catch (error) {
-        console.error('❌ [SUNWIN] Fetch error:', error.message);
-        if (error.response) {
-            console.error('   Status:', error.response.status);
-            console.error('   Data:', JSON.stringify(error.response.data));
-        }
+        console.error('❌ Fetch error:', error.message);
         return null;
     }
 }
 
 function updateSessions(newData) {
     if (!newData?.length) return 0;
-    const existingMap = new Map(sessionsStore.map(s => [s.Phien, s]));
+    
+    // Chỉ giữ MAX_SESSIONS phiên gần nhất
+    const latestSessions = newData.slice(0, MAX_SESSIONS);
+    
+    // Kiểm tra xem có phiên mới không
     let addedCount = 0;
-    for (const s of newData) {
-        if (!existingMap.has(s.Phien)) { 
-            sessionsStore.push(s); 
-            addedCount++; 
+    const existingPhien = new Set(sessionsStore.map(s => s.Phien));
+    
+    for (const s of latestSessions) {
+        if (!existingPhien.has(s.Phien)) {
+            sessionsStore.push(s);
+            addedCount++;
         }
     }
+    
+    // Sắp xếp và giữ MAX_SESSIONS phiên
     sessionsStore.sort((a, b) => b.Phien - a.Phien);
-    if (sessionsStore.length > 1000) sessionsStore = sessionsStore.slice(0, 1000);
+    if (sessionsStore.length > MAX_SESSIONS) {
+        sessionsStore = sessionsStore.slice(0, MAX_SESSIONS);
+    }
+    
     return addedCount;
 }
 
 async function fetchAndUpdate() {
-    const data = await fetchDataSunwin();
+    const data = await fetchData();
     if (!data || data.length === 0) {
         console.log('⚠️ Không có dữ liệu từ API');
         return false;
@@ -509,17 +516,23 @@ async function fetchAndUpdate() {
     
     const addedCount = updateSessions(data);
     if (addedCount > 0) {
-        console.log(`📥 Thêm ${addedCount} phiên mới, tổng: ${sessionsStore.length} phiên`);
+        console.log(`📥 Thêm ${addedCount} phiên mới, tổng: ${sessionsStore.length}/${MAX_SESSIONS} phiên`);
         saveAllData();
+        
+        // Kiểm tra xem có đủ 20 phiên để train lại không
+        if (sessionsStore.length >= MAX_SESSIONS && sessionsStore.length !== lastTrainCount) {
+            lastTrainCount = sessionsStore.length;
+            console.log(`🔄 Đủ ${MAX_SESSIONS} phiên, tiến hành huấn luyện lại model...`);
+            if (predictor) {
+                predictor.updateWithNewData(sessionsStore);
+            } else {
+                predictor = new GodPredictorV8(sessionsStore);
+            }
+            isReady = true;
+            console.log(`✅ Model đã được huấn luyện lại với ${sessionsStore.length} phiên`);
+        }
     }
     
-    if (!isReady && sessionsStore.length >= 3) {
-        isReady = true;
-        predictor = new GodPredictorV8(sessionsStore.slice(0, MAX_SESSIONS));
-        console.log(`🎉 SUNWIN ĐÃ SẴN SÀNG! (${sessionsStore.length} phiên)`);
-    } else if (isReady && predictor && addedCount > 0) {
-        predictor.updateWithNewData(sessionsStore.slice(0, MAX_SESSIONS));
-    }
     return true;
 }
 
@@ -582,8 +595,8 @@ function savePredictionToHistory(phienTruocDo, phienHienTai, prediction, confide
 
 async function fetchLoop() {
     console.log('═══════════════════════════════════════════════════');
-    console.log('🔄 BẮT ĐẦU FETCH DỮ LIỆU SUNWIN...');
-    console.log(`📋 Fetch mỗi ${FETCH_INTERVAL/1000} giây`);
+    console.log('🔄 BẮT ĐẦU FETCH DỮ LIỆU TỪ API...');
+    console.log(`📋 Fetch mỗi ${FETCH_INTERVAL/1000} giây - Giữ ${MAX_SESSIONS} phiên gần nhất`);
     console.log('═══════════════════════════════════════════════════');
     
     // Fetch ngay lập tức
@@ -600,16 +613,16 @@ async function autoProcess() {
     try {
         await fetchAndUpdate();
         verifyAndRecord();
-        const latestSessions = sessionsStore.slice(0, MAX_SESSIONS);
-        if (latestSessions.length >= 3 && predictor) {
-            const latestPhien = latestSessions[0].Phien;
+        
+        if (sessionsStore.length >= 3 && predictor) {
+            const latestPhien = sessionsStore[0].Phien;
             const nextPhien = latestPhien + 1;
             if (lastProcessedPhien !== nextPhien) {
                 const result = predictor.predict(false);
-                savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, latestSessions[0]);
+                savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, sessionsStore[0]);
                 lastProcessedPhien = nextPhien;
                 const thongKe = tinhThongKeThangThua();
-                console.log(`[DỰ ĐOÁN] 👑 SUNWIN Phiên ${nextPhien}: ${result.prediction} (${result.confidence}%) - 📊 TL: ${thongKe.ty_le_thang}% (${thongKe.thang}/${thongKe.tong})`);
+                console.log(`[DỰ ĐOÁN] 👑 Phiên ${nextPhien}: ${result.prediction} (${result.confidence}%) - 📊 TL: ${thongKe.ty_le_thang}% (${thongKe.thang}/${thongKe.tong})`);
                 saveAllData();
             }
         }
@@ -620,12 +633,12 @@ async function startup() {
     loadAllData();
     console.log('');
     console.log('═══════════════════════════════════════════════════');
-    console.log('👑 GOD PREDICTOR V8 - SUNWIN TÀI XỈU');
+    console.log('👑 GOD PREDICTOR V8 - TÀI XỈU');
     console.log('   130+ THUẬT TOÁN - TỰ ĐỘNG HỌC THÍCH NGHI');
     console.log(`📋 Lấy ${MAX_SESSIONS} phiên gần nhất - Lưu thắng thua ${MAX_HISTORY} phiên`);
     console.log('═══════════════════════════════════════════════════');
     
-    // Chạy fetch loop riêng
+    // Chạy fetch loop
     fetchLoop();
     
     // Chạy auto process sau 5 giây
@@ -638,10 +651,10 @@ async function startup() {
 
 app.get('/', (req, res) => { 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8'); 
-    res.send('SUNWIN Tài Xỉu Predictor - love trang'); 
+    res.send('Tài Xỉu Predictor - love trang'); 
 });
 
-app.get('/sunwin', async (req, res) => {
+app.get('/predict', async (req, res) => {
     try {
         // Nếu chưa có dữ liệu, thử fetch ngay
         if (sessionsStore.length === 0) {
@@ -651,21 +664,22 @@ app.get('/sunwin', async (req, res) => {
         if (!isReady || !predictor || sessionsStore.length < 3) {
             return res.json({ 
                 status: 'loading', 
-                message: `Đang tải dữ liệu... Đã có ${sessionsStore.length}/3 phiên`,
-                sessions: sessionsStore.length
+                message: `Đang tải dữ liệu... Đã có ${sessionsStore.length}/${MAX_SESSIONS} phiên`,
+                sessions: sessionsStore.length,
+                required: MAX_SESSIONS
             });
         }
         
         await fetchAndUpdate();
         verifyAndRecord();
-        const latestSessions = sessionsStore.slice(0, MAX_SESSIONS);
-        if (latestSessions.length === 0) return res.json({ error: 'No data' });
         
-        const latestPhien = latestSessions[0].Phien;
+        if (sessionsStore.length === 0) return res.json({ error: 'No data' });
+        
+        const latestPhien = sessionsStore[0].Phien;
         const nextPhien = latestPhien + 1;
         const result = predictor.predict(false);
         const thongKe = tinhThongKeThangThua();
-        const record = savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, latestSessions[0]);
+        const record = savePredictionToHistory(latestPhien, nextPhien, result.prediction, result.confidence, sessionsStore[0]);
         
         res.json({
             phien_hien_tai: record.phien_truoc_do,
@@ -695,11 +709,11 @@ app.get('/sunwin', async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log('═══════════════════════════════════════════════════');
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-    console.log('👑 GOD PREDICTOR V8 - SUNWIN TÀI XỈU');
+    console.log('👑 GOD PREDICTOR V8 - TÀI XỈU');
     console.log('═══════════════════════════════════════════════════');
     console.log('');
     console.log('📊 ENDPOINT:');
-    console.log('   • GET /sunwin - Dự đoán + thống kê + bảng thắng thua');
+    console.log('   • GET /predict - Dự đoán + thống kê + bảng thắng thua');
     console.log('');
     console.log('👤 ID: love trang');
     console.log('═══════════════════════════════════════════════════');
