@@ -12,7 +12,7 @@ const THANGTHUA_FILE = 'bang_thang_thua.json';
 
 // ===== CẤU HÌNH =====
 const MAX_HISTORY = 500;
-const MAX_SESSIONS = 20;
+const MAX_SESSIONS = 30;
 const FETCH_INTERVAL = 5000;
 const AUTO_SAVE_INTERVAL = 10000;
 
@@ -446,9 +446,17 @@ async function fetchDataSunwin() {
             }
         });
         
-        console.log(`📥 Nhận được response: status=${response.status}, data length=${response.data?.length || 0}`);
+        console.log(`📥 Response status: ${response.status}`);
         
-        if (response.data && Array.isArray(response.data) && response.data.length > 0) {
+        // Kiểm tra response data
+        if (response.data && Array.isArray(response.data)) {
+            console.log(`📊 Số phiên nhận được: ${response.data.length}`);
+            
+            // Log mẫu dữ liệu đầu tiên để debug
+            if (response.data.length > 0) {
+                console.log(`📝 Mẫu dữ liệu:`, JSON.stringify(response.data[0]));
+            }
+            
             const converted = response.data.map(item => ({
                 Phien: item.phiên,
                 Ket_qua: item.kết_quả === "Tài" ? "Tài" : "Xỉu",
@@ -457,14 +465,22 @@ async function fetchDataSunwin() {
                 Xuc_xac_3: item.d3,
                 Tong: item.tổng
             }));
+            
             console.log(`✅ Chuyển đổi thành công: ${converted.length} phiên`);
             return converted;
         }
-        console.log('⚠️ Không có dữ liệu trong response');
+        
+        console.log('⚠️ Response không phải mảng hoặc không có dữ liệu');
+        console.log('Response type:', typeof response.data);
+        if (response.data) console.log('Response keys:', Object.keys(response.data));
+        
         return null;
     } catch (error) {
         console.error('❌ [SUNWIN] Fetch error:', error.message);
-        if (error.response) console.error('   Status:', error.response.status);
+        if (error.response) {
+            console.error('   Status:', error.response.status);
+            console.error('   Data:', JSON.stringify(error.response.data));
+        }
         return null;
     }
 }
@@ -480,14 +496,14 @@ function updateSessions(newData) {
         }
     }
     sessionsStore.sort((a, b) => b.Phien - a.Phien);
-    if (sessionsStore.length > 500) sessionsStore = sessionsStore.slice(0, 500);
+    if (sessionsStore.length > 1000) sessionsStore = sessionsStore.slice(0, 1000);
     return addedCount;
 }
 
 async function fetchAndUpdate() {
     const data = await fetchDataSunwin();
     if (!data || data.length === 0) {
-        console.log('⚠️ Không có dữ liệu mới từ API');
+        console.log('⚠️ Không có dữ liệu từ API');
         return false;
     }
     
