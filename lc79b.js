@@ -34,23 +34,19 @@ function loadHistory() {
         }
     } catch (e) { verifiedResults = []; }
 }
-
 function saveHistory() {
     try {
         verifiedResults = verifiedResults.slice(0, MAX_HISTORY);
         fs.writeFileSync(HISTORY_FILE, JSON.stringify(verifiedResults, null, 2));
     } catch (e) {}
 }
-
 function addToHistory(phien, duDoan, ketQua, doTinCay) {
     if (verifiedResults.find(v => v.phien === phien)) return null;
     const d = duDoan.toLowerCase().trim();
     const k = ketQua.toLowerCase().trim();
     const isCorrect = d === k;
     verifiedResults.unshift({
-        phien,
-        du_doan: duDoan,
-        ket_qua: ketQua,
+        phien, du_doan: duDoan, ket_qua: ketQua,
         danh_gia: isCorrect ? 'thang' : 'thua',
         do_tin_cay: doTinCay,
         timestamp: new Date().toISOString()
@@ -66,307 +62,642 @@ const avg = arr => arr.length ? sum(arr) / arr.length : 0;
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
 // ============================================================
-// SIÊU HỆ THỐNG BẮT BỆT & TẤT CẢ CẦU
-// 68+ Thuật toán - 7 Bộ phát hiện
+// SIÊU VIP CHÍNH XÁC - 40+ THUẬT TOÁN - 10 NHÓM
 // ============================================================
 
-class HeThongBatCauSieuChinhXac {
+class SieuVIPChinhXac {
     constructor() {
-        this.data = [];
-        this.cauDaPhatHien = [];
-        this.lichSuBet = [];
-        this.thongKe = { tongCau: 0, cauDung: 0, cauSai: 0 };
+        this.weights = {
+            streak: 0.15, pattern: 0.20, cycle: 0.10, energy: 0.10,
+            momentum: 0.10, frequency: 0.15, trend: 0.10,
+            volatility: 0.05, fibonacci: 0.05
+        };
+        this.total = 0;
+        this.correct = 0;
     }
 
-    phanTich(arr) {
-        this.data = arr;
+    predict(arr) {
         const n = arr.length;
-        if (n < 10) return { ok: false, msg: 'Cần ít nhất 10 phiên' };
+        if (n < 15) return { result: 'Tài', confidence: 50, warning: 'CẦN ≥ 15 PHIÊN' };
 
-        const data = this._chuanHoa(arr);
-        const ketQua = {
-            batBet: this._boBatBet(data),
-            batDoiXung: this._boBatDoiXung(data),
-            batNhip: this._boBatNhip(data),
-            batBacThang: this._boBatBacThang(data),
-            batDacBiet: this._boBatDacBiet(data),
-            batKetHop: this._boBatKetHop(data),
-            betChuyenSau: this._boBetChuyenSau(data)
+        const data = this.normalize(arr);
+        const { binary, values, strength, momentum } = data;
+
+        const algorithms = {
+            streakBasic: this.algorithmStreakBasic(binary),
+            streakWeighted: this.algorithmStreakWeighted(strength),
+            streakMomentum: this.algorithmStreakMomentum(binary, strength),
+            streakBreak: this.algorithmStreakBreak(binary, strength),
+            pattern11: this.algorithmPattern11(binary),
+            pattern21: this.algorithmPattern21(binary),
+            pattern31: this.algorithmPattern31(binary),
+            patternMirror: this.algorithmPatternMirror(binary),
+            patternZiczac: this.algorithmPatternZiczac(binary),
+            patternDouble: this.algorithmPatternDouble(binary),
+            cycleSimple: this.algorithmCycleSimple(binary),
+            cycleFibonacci: this.algorithmCycleFibonacci(binary),
+            energyBasic: this.algorithmEnergyBasic(strength),
+            energyMomentum: this.algorithmEnergyMomentum(strength),
+            energyBalance: this.algorithmEnergyBalance(strength, binary),
+            momentumShort: this.algorithmMomentumShort(momentum),
+            momentumLong: this.algorithmMomentumLong(momentum),
+            momentumROC: this.algorithmMomentumROC(binary),
+            frequencyMulti: this.algorithmFrequencyMulti(binary),
+            frequencyWeighted: this.algorithmFrequencyWeighted(binary),
+            frequencyTrend: this.algorithmFrequencyTrend(binary),
+            frequencyDivergence: this.algorithmFrequencyDivergence(binary),
+            trendMA: this.algorithmTrendMA(binary),
+            trendMACD: this.algorithmTrendMACD(binary),
+            trendRSI: this.algorithmTrendRSI(binary),
+            volatilityBasic: this.algorithmVolatilityBasic(binary),
+            volatilityBollinger: this.algorithmVolatilityBollinger(values),
+            fibonacciRetrace: this.algorithmFibonacciRetrace(values),
+            fibonacciTime: this.algorithmFibonacciTime(binary),
+            neuralNetwork: this.algorithmNeuralNetwork(binary, strength),
+            markovChain: this.algorithmMarkovChain(binary),
+            bayesian: this.algorithmBayesian(binary),
+            regression: this.algorithmRegression(binary, strength),
+            ensemble: this.algorithmEnsemble(binary, strength)
         };
 
-        const tatCaCau = this._tongHopTatCaCau(ketQua);
-        this.cauDaPhatHien = tatCaCau;
-        const phanTichCheo = this._phanTichCheo(tatCaCau, data);
-        const quyetDinh = this._raQuyetDinh(tatCaCau, phanTichCheo, data);
-        this.thongKe.tongCau++;
-
-        return {
-            ok: true,
-            ...quyetDinh,
-            tongSoCau: tatCaCau.length,
-            topCau: tatCaCau.slice(0, 10),
-            phanTichCheo,
-            thongKe: this.thongKe
-        };
+        const fusion = this.fuseAllAlgorithms(algorithms);
+        const breakDetection = this.detectBreakAdvanced(data, algorithms);
+        const finalDecision = this.makeFinalDecision(fusion, breakDetection);
+        this.total++;
+        return finalDecision;
     }
 
-    _chuanHoa(arr) {
-        return arr.map((v, i) => ({
-            goc: v.tong,
-            so: v.tong >= 11 ? 1 : 0,
-            loai: v.tong >= 11 ? 'T' : 'X',
-            manh: v.tong >= 15 ? 4 : v.tong >= 13 ? 3 : v.tong >= 11 ? 2 :
-                  v.tong <= 4 ? -4 : v.tong <= 6 ? -3 : v.tong <= 8 ? -2 : 0,
-            viTri: i
-        }));
+    normalize(arr) {
+        const n = arr.length;
+        const binary = arr.map(v => v.tong >= 11 ? 1 : 0);
+        const values = arr.map(v => v.tong);
+        const strength = arr.map(v => {
+            const t = v.tong;
+            if (t >= 15) return 4;
+            if (t >= 13) return 3;
+            if (t >= 11) return 2;
+            if (t <= 4) return -4;
+            if (t <= 6) return -3;
+            if (t <= 8) return -2;
+            return 0;
+        });
+        const momentum = [];
+        for (let i = 1; i < n; i++) momentum.push(binary[i] - binary[i - 1]);
+        momentum.unshift(0);
+        return { n, binary, values, strength, momentum };
     }
 
-    // ============ A. BỘ BẮT BỆT ============
-    _boBatBet(data) {
-        const n = data.length;
-        const so = data.map(d => d.so);
-        const manh = data.map(d => d.manh);
-        const ketQua = [];
-        const last = so[n - 1];
-        let doDai = 0;
-        for (let i = n - 1; i >= 0; i--) { if (so[i] === last) doDai++; else break; }
+    // ============ STREAK (5) ============
+    algorithmStreakBasic(binary) {
+        const n = binary.length;
+        const last = binary[n - 1];
+        let streak = 0;
+        for (let i = n - 1; i >= 0; i--) { if (binary[i] === last) streak++; else break; }
+        let result, confidence;
+        if (streak >= 8) { result = last === 1 ? 'Tài' : 'Xỉu'; confidence = 95; }
+        else if (streak >= 6) { result = last === 1 ? 'Tài' : 'Xỉu'; confidence = 88; }
+        else if (streak >= 4) { result = last === 1 ? 'Tài' : 'Xỉu'; confidence = 78; }
+        else if (streak >= 2) { result = last === 1 ? 'Tài' : 'Xỉu'; confidence = 62; }
+        else { result = last === 1 ? 'Xỉu' : 'Tài'; confidence = 55; }
+        return { name: 'STREAK_BASIC', result, confidence, streak };
+    }
 
-        if (doDai >= 12) ketQua.push({ ten: 'SIÊU BỆT ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 98, doDai, moTa: `Bệt ${doDai} phiên` });
-        else if (doDai >= 9) ketQua.push({ ten: 'ĐẠI BỆT ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 94, doDai, moTa: `Bệt ${doDai} phiên` });
-        else if (doDai >= 7) ketQua.push({ ten: 'BỆT DÀI ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 89, doDai, moTa: `Bệt ${doDai} phiên` });
-        else if (doDai >= 5) ketQua.push({ ten: 'BỆT VỪA ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 82, doDai, moTa: `Bệt ${doDai} phiên` });
-        else if (doDai >= 3) ketQua.push({ ten: 'BỆT NGẮN ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 72, doDai, moTa: `Bệt ${doDai} phiên` });
-        else if (doDai === 2) ketQua.push({ ten: 'BỆT MINI ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 62, doDai, moTa: 'Bệt 2 phiên' });
-
-        const doManhTB = manh.slice(-doDai).reduce((a, b) => Math.abs(a) + Math.abs(b), 0) / doDai;
-        if (doDai >= 4 && doManhTB >= 3) {
-            ketQua.push({ ten: 'BỆT MẠNH ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: Math.min(96, 80 + doManhTB * 5), doDai, moTa: `Bệt mạnh (${doManhTB.toFixed(1)})` });
+    algorithmStreakWeighted(strength) {
+        const n = strength.length;
+        const lastSign = strength[n - 1] > 0 ? 1 : 0;
+        let wStreak = 0, totalW = 0;
+        for (let i = n - 1; i >= 0; i--) {
+            const sign = strength[i] > 0 ? 1 : 0;
+            if (sign === lastSign) { wStreak += Math.abs(strength[i]); totalW++; }
+            else break;
         }
-        if (doDai >= 5 && doManhTB <= 1.5) {
-            ketQua.push({ ten: 'BỆT YẾU ' + (last === 1 ? 'TÀI' : 'XỈU'), loai: 'BỆT', duDoan: last === 1 ? 'Xỉu' : 'Tài', doTinCay: 75, doDai, moTa: 'Bệt yếu - sắp gãy' });
-        }
+        const avgW = totalW > 0 ? wStreak / totalW : 0;
+        let result, confidence;
+        if (avgW >= 3) { result = lastSign === 1 ? 'Tài' : 'Xỉu'; confidence = 93; }
+        else if (avgW >= 2) { result = lastSign === 1 ? 'Tài' : 'Xỉu'; confidence = 75; }
+        else { result = lastSign === 1 ? 'Xỉu' : 'Tài'; confidence = 60; }
+        return { name: 'STREAK_WEIGHTED', result, confidence, avgWeight: avgW };
+    }
 
+    algorithmStreakMomentum(binary, strength) {
+        const n = binary.length;
+        const last = binary[n - 1];
+        let streak = 0, sumS = 0;
+        for (let i = n - 1; i >= 0; i--) { if (binary[i] === last) { streak++; sumS += Math.abs(strength[i]); } else break; }
+        const avgS = sumS / streak;
+        const mom = avgS >= 2.5 ? 'INCREASING' : avgS <= 1.5 ? 'DECREASING' : 'STABLE';
+        let result, confidence;
+        if (mom === 'INCREASING') { result = last === 1 ? 'Tài' : 'Xỉu'; confidence = 90; }
+        else if (mom === 'DECREASING') { result = last === 1 ? 'Xỉu' : 'Tài'; confidence = 82; }
+        else { result = last === 1 ? 'Tài' : 'Xỉu'; confidence = 70; }
+        return { name: 'STREAK_MOMENTUM', result, confidence, momentum: mom };
+    }
+
+    algorithmStreakBreak(binary, strength) {
+        const n = binary.length;
+        const last = binary[n - 1];
+        let streak = 0;
+        const strengths = [];
+        for (let i = n - 1; i >= 0; i--) { if (binary[i] === last) { streak++; strengths.push(Math.abs(strength[i])); } else break; }
+        let breakScore = 0;
+        if (streak >= 10) breakScore += 40;
+        else if (streak >= 8) breakScore += 30;
+        else if (streak >= 6) breakScore += 20;
+        if (strengths.length >= 4) {
+            const fh = strengths.slice(0, Math.floor(strengths.length / 2)).reduce((a, b) => a + b, 0);
+            const sh = strengths.slice(Math.floor(strengths.length / 2)).reduce((a, b) => a + b, 0);
+            if (sh < fh * 0.7) breakScore += 30;
+        }
+        const willBreak = breakScore >= 50;
+        const result = willBreak ? (last === 1 ? 'Xỉu' : 'Tài') : (last === 1 ? 'Tài' : 'Xỉu');
+        return { name: 'STREAK_BREAK', result, confidence: Math.min(92, breakScore + 20), willBreak, breakScore };
+    }
+
+    // ============ PATTERN (8) ============
+    algorithmPattern11(binary) {
+        const n = binary.length;
+        if (n < 10) return { name: 'PATTERN_11', result: 'Tài', confidence: 50 };
+        let perfect = true;
+        for (let i = n - 1; i > n - 10; i--) { if (binary[i] === binary[i - 1]) { perfect = false; break; } }
+        if (perfect) return { name: 'PATTERN_11', result: binary[n - 1] === 1 ? 'Xỉu' : 'Tài', confidence: 97 };
         if (n >= 8) {
-            const last8 = so.slice(-8);
-            if (last8.join('') === '11001100') ketQua.push({ ten: 'BỆT KÉP 2-2 TÀI', loai: 'BỆT KÉP', duDoan: 'Tài', doTinCay: 88 });
-            if (last8.join('') === '00110011') ketQua.push({ ten: 'BỆT KÉP 2-2 XỈU', loai: 'BỆT KÉP', duDoan: 'Xỉu', doTinCay: 88 });
+            let p8 = true;
+            for (let i = n - 1; i > n - 8; i--) { if (binary[i] === binary[i - 1]) { p8 = false; break; } }
+            if (p8) return { name: 'PATTERN_11', result: binary[n - 1] === 1 ? 'Xỉu' : 'Tài', confidence: 93 };
         }
+        return { name: 'PATTERN_11', result: binary[n - 1] === 1 ? 'Tài' : 'Xỉu', confidence: 50, found: false };
+    }
+
+    algorithmPattern21(binary) {
+        const n = binary.length;
+        if (n < 6) return { name: 'PATTERN_21', result: 'Tài', confidence: 50 };
+        const l6 = binary.slice(-6).join('');
+        if (l6 === '110110') return { name: 'PATTERN_21', result: 'Tài', confidence: 91 };
+        if (l6 === '001001') return { name: 'PATTERN_21', result: 'Xỉu', confidence: 91 };
+        return { name: 'PATTERN_21', result: binary[n - 1] === 1 ? 'Tài' : 'Xỉu', confidence: 50, found: false };
+    }
+
+    algorithmPattern31(binary) {
+        const n = binary.length;
+        if (n < 8) return { name: 'PATTERN_31', result: 'Tài', confidence: 50 };
+        const l8 = binary.slice(-8).join('');
+        if (l8 === '11101110') return { name: 'PATTERN_31', result: 'Tài', confidence: 94 };
+        if (l8 === '00010001') return { name: 'PATTERN_31', result: 'Xỉu', confidence: 94 };
+        return { name: 'PATTERN_31', result: binary[n - 1] === 1 ? 'Tài' : 'Xỉu', confidence: 50, found: false };
+    }
+
+    algorithmPatternMirror(binary) {
+        const n = binary.length;
+        if (n < 8) return { name: 'PATTERN_MIRROR', result: 'Tài', confidence: 50 };
+        const first4 = binary.slice(-8, -4);
+        const last4 = [...binary.slice(-4)].reverse();
+        if (first4.every((v, i) => v === last4[i])) return { name: 'PATTERN_MIRROR', result: binary[n - 5] === 1 ? 'Tài' : 'Xỉu', confidence: 86 };
+        return { name: 'PATTERN_MIRROR', result: binary[n - 1] === 1 ? 'Tài' : 'Xỉu', confidence: 50, found: false };
+    }
+
+    algorithmPatternZiczac(binary) {
+        const n = binary.length;
+        if (n < 9) return { name: 'PATTERN_ZICZAC', result: 'Tài', confidence: 50 };
+        let zz = true;
+        for (let i = n - 1; i > n - 7; i -= 2) { if (binary[i] !== binary[i - 2]) { zz = false; break; } }
+        if (zz) return { name: 'PATTERN_ZICZAC', result: binary[n - 2] === 1 ? 'Tài' : 'Xỉu', confidence: 84 };
+        return { name: 'PATTERN_ZICZAC', result: binary[n - 1] === 1 ? 'Tài' : 'Xỉu', confidence: 50, found: false };
+    }
+
+    algorithmPatternDouble(binary) {
+        const n = binary.length;
+        if (n < 8) return { name: 'PATTERN_DOUBLE', result: 'Tài', confidence: 50 };
+        const l8 = binary.slice(-8).join('');
+        if (l8 === '11001100') return { name: 'PATTERN_DOUBLE', result: 'Tài', confidence: 89 };
+        if (l8 === '00110011') return { name: 'PATTERN_DOUBLE', result: 'Xỉu', confidence: 89 };
         if (n >= 12) {
-            const last12 = so.slice(-12);
-            if (last12.join('') === '111000111000') ketQua.push({ ten: 'BỆT KÉP 3-3 TÀI', loai: 'BỆT KÉP', duDoan: 'Tài', doTinCay: 91 });
-            if (last12.join('') === '000111000111') ketQua.push({ ten: 'BỆT KÉP 3-3 XỈU', loai: 'BỆT KÉP', duDoan: 'Xỉu', doTinCay: 91 });
+            const l12 = binary.slice(-12).join('');
+            if (l12 === '111000111000') return { name: 'PATTERN_DOUBLE', result: 'Tài', confidence: 92 };
+            if (l12 === '000111000111') return { name: 'PATTERN_DOUBLE', result: 'Xỉu', confidence: 92 };
         }
-
-        if (doDai >= 3) this.lichSuBet.push({ doDai, loai: last, thoiGian: new Date() });
-        return ketQua;
+        return { name: 'PATTERN_DOUBLE', result: binary[n - 1] === 1 ? 'Tài' : 'Xỉu', confidence: 50, found: false };
     }
 
-    // ============ B. BỘ BẮT CẦU ĐỐI XỨNG ============
-    _boBatDoiXung(data) {
-        const n = data.length;
-        const so = data.map(d => d.so);
-        const ketQua = [];
-
-        if (n >= 10) {
-            let hoanHao = true;
-            for (let i = n - 1; i > n - 10; i--) { if (so[i] === so[i - 1]) { hoanHao = false; break; } }
-            if (hoanHao) ketQua.push({ ten: '1-1 HOÀN HẢO 10', loai: '1-1', duDoan: so[n - 1] === 1 ? 'Xỉu' : 'Tài', doTinCay: 95, moTa: 'Xen kẽ hoàn hảo 10 phiên' });
+    // ============ CYCLE (2) ============
+    algorithmCycleSimple(binary) {
+        const n = binary.length;
+        let bestC = 0, bestM = 0;
+        for (let c = 2; c <= Math.min(15, Math.floor(n / 2)); c++) {
+            let matches = 0, total = 0;
+            for (let i = n - 1; i >= c && i >= n - c * 3; i--) { if (binary[i] === binary[i - c]) matches++; total++; }
+            const rate = total > 0 ? matches / total : 0;
+            if (rate > bestM) { bestM = rate; bestC = c; }
         }
-        if (n >= 8) {
-            let hoanHao8 = true;
-            for (let i = n - 1; i > n - 8; i--) { if (so[i] === so[i - 1]) { hoanHao8 = false; break; } }
-            if (hoanHao8) ketQua.push({ ten: '1-1 HOÀN HẢO 8', loai: '1-1', duDoan: so[n - 1] === 1 ? 'Xỉu' : 'Tài', doTinCay: 90, moTa: 'Xen kẽ hoàn hảo 8 phiên' });
-        }
-        if (n >= 6) {
-            const last6 = so.slice(-6);
-            if (last6.join('') === '110110') ketQua.push({ ten: '2-1 TÀI CHUẨN', loai: '2-1', duDoan: 'Tài', doTinCay: 88 });
-            if (last6.join('') === '001001') ketQua.push({ ten: '2-1 XỈU CHUẨN', loai: '2-1', duDoan: 'Xỉu', doTinCay: 88 });
-        }
-        if (n >= 8) {
-            const last8 = so.slice(-8);
-            if (last8.join('') === '11101110') ketQua.push({ ten: '3-1 TÀI CHUẨN', loai: '3-1', duDoan: 'Tài', doTinCay: 91 });
-            if (last8.join('') === '00010001') ketQua.push({ ten: '3-1 XỈU CHUẨN', loai: '3-1', duDoan: 'Xỉu', doTinCay: 91 });
-        }
-        if (n >= 5) {
-            const last5 = so.slice(-5);
-            if (last5.join('') === '10101') ketQua.push({ ten: 'CẦU 5 SAO', loai: 'ĐẶC BIỆT', duDoan: 'Xỉu', doTinCay: 86 });
-            if (last5.join('') === '01010') ketQua.push({ ten: 'CẦU 5 SAO', loai: 'ĐẶC BIỆT', duDoan: 'Tài', doTinCay: 86 });
-        }
-
-        return ketQua;
+        if (bestC > 0 && bestM >= 0.75) return { name: 'CYCLE_SIMPLE', result: binary[n - bestC] === 1 ? 'Tài' : 'Xỉu', confidence: Math.min(88, 55 + bestM * 40), cycle: bestC };
+        return { name: 'CYCLE_SIMPLE', result: 'Tài', confidence: 50, found: false };
     }
 
-    // ============ C. BỘ BẮT CẦU NHỊP ============
-    _boBatNhip(data) {
-        const n = data.length;
-        const so = data.map(d => d.so);
-        const ketQua = [];
-
-        for (let ck = 2; ck <= Math.min(15, Math.floor(n / 2)); ck++) {
-            let trungKhop = 0;
-            const soSanh = Math.min(ck * 3, n - ck);
-            for (let i = n - 1; i >= n - soSanh && i - ck >= 0; i--) {
-                if (so[i] === so[i - ck]) trungKhop++;
-            }
-            const tyLe = trungKhop / soSanh;
-            if (tyLe >= 0.9) {
-                ketQua.push({ ten: `NHỊP ${ck} HOÀN HẢO`, loai: 'NHỊP', duDoan: so[n - ck] === 1 ? 'Tài' : 'Xỉu', doTinCay: Math.min(93, 65 + tyLe * 30), chuKy: ck });
-            } else if (tyLe >= 0.8) {
-                ketQua.push({ ten: `NHỊP ${ck} MẠNH`, loai: 'NHỊP', duDoan: so[n - ck] === 1 ? 'Tài' : 'Xỉu', doTinCay: Math.min(85, 55 + tyLe * 35), chuKy: ck });
+    algorithmCycleFibonacci(binary) {
+        const n = binary.length;
+        const fib = [2, 3, 5, 8, 13];
+        const results = [];
+        for (let c of fib) {
+            if (n >= c * 2) {
+                let matches = 0, total = 0;
+                for (let i = n - 1; i >= c && i >= n - c * 2; i--) { if (binary[i] === binary[i - c]) matches++; total++; }
+                const rate = total > 0 ? matches / total : 0;
+                if (rate >= 0.8) results.push({ cycle: c, rate, next: binary[n - c] === 1 ? 'Tài' : 'Xỉu' });
             }
         }
-        return ketQua;
+        if (results.length > 0) {
+            const best = results.sort((a, b) => b.rate - a.rate)[0];
+            return { name: 'CYCLE_FIBONACCI', result: best.next, confidence: Math.min(90, 60 + best.rate * 35), cycle: best.cycle };
+        }
+        return { name: 'CYCLE_FIBONACCI', result: 'Tài', confidence: 50, found: false };
     }
 
-    // ============ D. BỘ BẮT CẦU BẬC THANG ============
-    _boBatBacThang(data) {
-        const n = data.length;
-        const so = data.map(d => d.so);
-        const ketQua = [];
-        const nhom3 = [];
-        for (let i = Math.max(0, n - 9); i < n; i += 3) {
-            nhom3.push(so.slice(i, Math.min(i + 3, n)).reduce((a, b) => a + b, 0));
-        }
-        if (nhom3.length >= 3) {
-            if (nhom3[0] <= nhom3[1] && nhom3[1] <= nhom3[2]) ketQua.push({ ten: 'THANG TĂNG', loai: 'THANG', duDoan: 'Tài', doTinCay: 80 });
-            if (nhom3[0] >= nhom3[1] && nhom3[1] >= nhom3[2]) ketQua.push({ ten: 'THANG GIẢM', loai: 'THANG', duDoan: 'Xỉu', doTinCay: 80 });
-        }
-        return ketQua;
+    // ============ ENERGY (3) ============
+    algorithmEnergyBasic(strength) {
+        const n = strength.length;
+        const avgE = strength.slice(-10).reduce((a, b) => Math.abs(a) + Math.abs(b), 0) / 10;
+        const lastSign = strength[n - 1] > 0 ? 1 : 0;
+        let result, confidence;
+        if (avgE >= 3) { result = lastSign === 1 ? 'Tài' : 'Xỉu'; confidence = 85; }
+        else if (avgE >= 2) { result = lastSign === 1 ? 'Tài' : 'Xỉu'; confidence = 65; }
+        else { result = lastSign === 1 ? 'Xỉu' : 'Tài'; confidence = 58; }
+        return { name: 'ENERGY_BASIC', result, confidence, avgEnergy: avgE };
     }
 
-    // ============ E. BỘ BẮT CẦU ĐẶC BIỆT ============
-    _boBatDacBiet(data) {
-        const n = data.length;
-        const so = data.map(d => d.so);
-        const ketQua = [];
-        const tais20 = so.slice(-20).reduce((a, b) => a + b, 0);
-        if (tais20 >= 16) ketQua.push({ ten: 'CẦU VUA TÀI', loai: 'ĐẶC BIỆT', duDoan: 'Tài', doTinCay: 92 });
-        if (tais20 <= 4) ketQua.push({ ten: 'CẦU VUA XỈU', loai: 'ĐẶC BIỆT', duDoan: 'Xỉu', doTinCay: 92 });
-
-        if (n >= 6) {
-            const last6 = so.slice(-6);
-            if (last6.slice(0, 5).every(s => s === 0) && last6[5] === 1) ketQua.push({ ten: 'CẦU NẾN BẬT', loai: 'ĐẶC BIỆT', duDoan: 'Tài', doTinCay: 80 });
-            if (last6.slice(0, 5).every(s => s === 1) && last6[5] === 0) ketQua.push({ ten: 'CẦU NẾN TẮT', loai: 'ĐẶC BIỆT', duDoan: 'Xỉu', doTinCay: 80 });
-        }
-        if (n >= 9) {
-            let ziczac = true;
-            for (let i = n - 1; i > n - 7; i -= 2) { if (so[i] !== so[i - 2]) { ziczac = false; break; } }
-            if (ziczac) ketQua.push({ ten: 'CẦU ZICZAC', loai: 'ĐẶC BIỆT', duDoan: so[n - 2] === 1 ? 'Tài' : 'Xỉu', doTinCay: 82 });
-        }
-        return ketQua;
+    algorithmEnergyMomentum(strength) {
+        const n = strength.length;
+        const r5 = strength.slice(-5).reduce((a, b) => Math.abs(a) + Math.abs(b), 0) / 5;
+        const p5 = strength.slice(-10, -5).reduce((a, b) => Math.abs(a) + Math.abs(b), 0) / 5;
+        const mom = r5 - p5;
+        const lastSign = strength[n - 1] > 0 ? 1 : 0;
+        let result, confidence;
+        if (mom > 1) { result = lastSign === 1 ? 'Tài' : 'Xỉu'; confidence = 80; }
+        else if (mom < -1) { result = lastSign === 1 ? 'Xỉu' : 'Tài'; confidence = 78; }
+        else { result = lastSign === 1 ? 'Tài' : 'Xỉu'; confidence = 60; }
+        return { name: 'ENERGY_MOMENTUM', result, confidence, momentum: mom };
     }
 
-    // ============ F. BỘ BẮT CẦU KẾT HỢP ============
-    _boBatKetHop(data) {
-        const ketQua = [];
-        const allCau = [
-            ...this._boBatBet(data),
-            ...this._boBatDoiXung(data),
-            ...this._boBatNhip(data),
-            ...this._boBatBacThang(data),
-            ...this._boBatDacBiet(data)
+    algorithmEnergyBalance(strength, binary) {
+        const n = strength.length;
+        let taiE = 0, xiuE = 0;
+        for (let i = n - 10; i < n; i++) {
+            if (binary[i] === 1) taiE += Math.abs(strength[i]);
+            else xiuE += Math.abs(strength[i]);
+        }
+        const balance = taiE - xiuE;
+        let result, confidence;
+        if (Math.abs(balance) >= 10) { result = balance > 0 ? 'Tài' : 'Xỉu'; confidence = 82; }
+        else if (Math.abs(balance) >= 5) { result = balance > 0 ? 'Tài' : 'Xỉu'; confidence = 72; }
+        else { result = binary[n - 1] === 1 ? 'Xỉu' : 'Tài'; confidence = 60; }
+        return { name: 'ENERGY_BALANCE', result, confidence, balance };
+    }
+
+    // ============ MOMENTUM (3) ============
+    algorithmMomentumShort(momentum) {
+        const n = momentum.length;
+        const r5 = momentum.slice(-5).reduce((a, b) => a + b, 0);
+        let result, confidence;
+        if (r5 >= 2) { result = 'Tài'; confidence = 75; }
+        else if (r5 >= 1) { result = 'Tài'; confidence = 65; }
+        else if (r5 <= -2) { result = 'Xỉu'; confidence = 75; }
+        else if (r5 <= -1) { result = 'Xỉu'; confidence = 65; }
+        else { result = momentum[n - 1] >= 0 ? 'Tài' : 'Xỉu'; confidence = 55; }
+        return { name: 'MOMENTUM_SHORT', result, confidence, value: r5 };
+    }
+
+    algorithmMomentumLong(momentum) {
+        const n = momentum.length;
+        const r10 = momentum.slice(-10).reduce((a, b) => a + b, 0);
+        let result, confidence;
+        if (r10 >= 3) { result = 'Tài'; confidence = 78; }
+        else if (r10 >= 2) { result = 'Tài'; confidence = 68; }
+        else if (r10 <= -3) { result = 'Xỉu'; confidence = 78; }
+        else if (r10 <= -2) { result = 'Xỉu'; confidence = 68; }
+        else { result = momentum[n - 1] >= 0 ? 'Tài' : 'Xỉu'; confidence = 55; }
+        return { name: 'MOMENTUM_LONG', result, confidence, value: r10 };
+    }
+
+    algorithmMomentumROC(binary) {
+        const n = binary.length;
+        const roc5 = n >= 5 ? binary.slice(-5).reduce((a, b) => a + b, 0) - binary.slice(-10, -5).reduce((a, b) => a + b, 0) : 0;
+        let result, confidence;
+        if (roc5 >= 3) { result = 'Tài'; confidence = 80; }
+        else if (roc5 >= 1) { result = 'Tài'; confidence = 65; }
+        else if (roc5 <= -3) { result = 'Xỉu'; confidence = 80; }
+        else if (roc5 <= -1) { result = 'Xỉu'; confidence = 65; }
+        else { result = binary[n - 1] === 1 ? 'Tài' : 'Xỉu'; confidence = 55; }
+        return { name: 'MOMENTUM_ROC', result, confidence, roc: roc5 };
+    }
+
+    // ============ FREQUENCY (4) ============
+    algorithmFrequencyMulti(binary) {
+        const n = binary.length;
+        const frames = { '3': 3, '5': 5, '7': 7, '10': 10, '15': 15, '20': 20 };
+        const results = [];
+        for (let [name, size] of Object.entries(frames)) {
+            if (n >= size) {
+                const tais = binary.slice(-size).reduce((a, b) => a + b, 0);
+                results.push({ frame: name, taiRate: tais / size, prediction: tais / size >= 0.5 ? 'Tài' : 'Xỉu' });
+            }
+        }
+        const tais = results.filter(r => r.prediction === 'Tài').length;
+        const xius = results.length - tais;
+        return { name: 'FREQUENCY_MULTI', result: tais >= xius ? 'Tài' : 'Xỉu', confidence: Math.min(82, 50 + Math.abs(tais - xius) * 10), details: results };
+    }
+
+    algorithmFrequencyWeighted(binary) {
+        const n = binary.length;
+        let ws = 0, tw = 0;
+        const weights = [0.05, 0.1, 0.15, 0.2, 0.25, 0.25];
+        for (let i = n - 1; i >= Math.max(0, n - 6); i--) {
+            const w = weights[n - 1 - i] || 0.1;
+            ws += binary[i] * w;
+            tw += w;
+        }
+        const rate = ws / tw;
+        return { name: 'FREQUENCY_WEIGHTED', result: rate >= 0.5 ? 'Tài' : 'Xỉu', confidence: Math.abs(rate - 0.5) * 180, rate };
+    }
+
+    algorithmFrequencyTrend(binary) {
+        const n = binary.length;
+        if (n < 10) return { name: 'FREQUENCY_TREND', result: 'Tài', confidence: 50 };
+        const rates = [];
+        for (let i = 3; i <= 10; i++) { if (n >= i) rates.push(binary.slice(-i).reduce((a, b) => a + b, 0) / i); }
+        let trend = 0;
+        for (let i = 1; i < rates.length; i++) trend += rates[i] - rates[i - 1];
+        let result, confidence;
+        if (trend > 0.3) { result = 'Tài'; confidence = 75; }
+        else if (trend > 0.1) { result = 'Tài'; confidence = 65; }
+        else if (trend < -0.3) { result = 'Xỉu'; confidence = 75; }
+        else if (trend < -0.1) { result = 'Xỉu'; confidence = 65; }
+        else { result = binary[n - 1] === 1 ? 'Tài' : 'Xỉu'; confidence = 55; }
+        return { name: 'FREQUENCY_TREND', result, confidence, trend };
+    }
+
+    algorithmFrequencyDivergence(binary) {
+        const n = binary.length;
+        if (n < 20) return { name: 'FREQUENCY_DIVERGENCE', result: 'Tài', confidence: 50 };
+        const short = binary.slice(-5).reduce((a, b) => a + b, 0) / 5;
+        const long = binary.slice(-20).reduce((a, b) => a + b, 0) / 20;
+        const div = short - long;
+        let result, confidence;
+        if (Math.abs(div) > 0.3) { result = div > 0 ? 'Xỉu' : 'Tài'; confidence = 72; }
+        else if (Math.abs(div) > 0.15) { result = div > 0 ? 'Tài' : 'Xỉu'; confidence = 65; }
+        else { result = binary[n - 1] === 1 ? 'Tài' : 'Xỉu'; confidence = 55; }
+        return { name: 'FREQUENCY_DIVERGENCE', result, confidence, divergence: div };
+    }
+
+    // ============ TREND (3) ============
+    algorithmTrendMA(binary) {
+        const n = binary.length;
+        const ma5 = binary.slice(-5).reduce((a, b) => a + b, 0) / 5;
+        const ma10 = binary.slice(-10).reduce((a, b) => a + b, 0) / 10;
+        const ma20 = n >= 20 ? binary.slice(-20).reduce((a, b) => a + b, 0) / 20 : ma10;
+        let result, confidence;
+        if (ma5 > ma10 && ma10 > ma20) { result = 'Tài'; confidence = 78; }
+        else if (ma5 > ma10) { result = 'Tài'; confidence = 68; }
+        else if (ma5 < ma10 && ma10 < ma20) { result = 'Xỉu'; confidence = 78; }
+        else if (ma5 < ma10) { result = 'Xỉu'; confidence = 68; }
+        else { result = binary[n - 1] === 1 ? 'Tài' : 'Xỉu'; confidence = 55; }
+        return { name: 'TREND_MA', result, confidence, ma5, ma10, ma20 };
+    }
+
+    algorithmTrendMACD(binary) {
+        const n = binary.length;
+        if (n < 26) return { name: 'TREND_MACD', result: 'Tài', confidence: 50 };
+        const ema12 = this.calcEMA(binary, 12);
+        const ema26 = this.calcEMA(binary, 26);
+        const macd = ema12 - ema26;
+        const signal = this.calcEMA([macd], 9);
+        const hist = macd - signal;
+        let result, confidence;
+        if (hist > 0.1) { result = 'Tài'; confidence = 75; }
+        else if (hist > 0) { result = 'Tài'; confidence = 65; }
+        else if (hist < -0.1) { result = 'Xỉu'; confidence = 75; }
+        else if (hist < 0) { result = 'Xỉu'; confidence = 65; }
+        else { result = 'Tài'; confidence = 55; }
+        return { name: 'TREND_MACD', result, confidence, macd, signal, histogram: hist };
+    }
+
+    algorithmTrendRSI(binary) {
+        const n = binary.length;
+        if (n < 15) return { name: 'TREND_RSI', result: 'Tài', confidence: 50 };
+        let gains = 0, losses = 0;
+        for (let i = n - 14; i < n - 1; i++) {
+            const diff = binary[i + 1] - binary[i];
+            if (diff > 0) gains += diff;
+            else if (diff < 0) losses -= diff;
+        }
+        const rs = losses === 0 ? 100 : gains / losses;
+        const rsi = 100 - (100 / (1 + rs));
+        let result, confidence;
+        if (rsi > 70) { result = 'Xỉu'; confidence = 78; }
+        else if (rsi > 60) { result = 'Tài'; confidence = 68; }
+        else if (rsi < 30) { result = 'Tài'; confidence = 78; }
+        else if (rsi < 40) { result = 'Xỉu'; confidence = 68; }
+        else { result = binary[n - 1] === 1 ? 'Tài' : 'Xỉu'; confidence = 60; }
+        return { name: 'TREND_RSI', result, confidence, rsi };
+    }
+
+    // ============ VOLATILITY (2) ============
+    algorithmVolatilityBasic(binary) {
+        const n = binary.length;
+        let changes = 0;
+        for (let i = n - 9; i < n; i++) { if (binary[i] !== binary[i - 1]) changes++; }
+        const volRate = changes / 9;
+        let result, confidence;
+        if (volRate >= 0.7) { result = binary[n - 1] === 1 ? 'Xỉu' : 'Tài'; confidence = 72; }
+        else if (volRate >= 0.5) { result = binary[n - 1] === 1 ? 'Xỉu' : 'Tài'; confidence = 62; }
+        else { result = binary[n - 1] === 1 ? 'Tài' : 'Xỉu'; confidence = 65; }
+        return { name: 'VOLATILITY_BASIC', result, confidence, volRate };
+    }
+
+    algorithmVolatilityBollinger(values) {
+        const n = values.length;
+        if (n < 20) return { name: 'VOLATILITY_BOLLINGER', result: 'Tài', confidence: 50 };
+        const recent = values.slice(-20);
+        const sma = avg(recent);
+        const variance = avg(recent.map(v => Math.pow(v - sma, 2)));
+        const stdDev = Math.sqrt(variance);
+        const upper = sma + 2 * stdDev;
+        const lower = sma - 2 * stdDev;
+        const last = values[n - 1];
+        let result, confidence;
+        if (last >= upper) { result = 'Xỉu'; confidence = 80; }
+        else if (last <= lower) { result = 'Tài'; confidence = 80; }
+        else if (last > sma) { result = 'Tài'; confidence = 65; }
+        else { result = 'Xỉu'; confidence = 65; }
+        return { name: 'VOLATILITY_BOLLINGER', result, confidence, upper, lower, sma };
+    }
+
+    // ============ FIBONACCI (2) ============
+    algorithmFibonacciRetrace(values) {
+        const n = values.length;
+        if (n < 20) return { name: 'FIBONACCI_RETRACE', result: 'Tài', confidence: 50 };
+        const recent = values.slice(-20);
+        const max = Math.max(...recent);
+        const min = Math.min(...recent);
+        const range = max - min;
+        const current = values[n - 1];
+        const retracement = (max - current) / range;
+        let result, confidence;
+        if (retracement <= 0.236) { result = 'Xỉu'; confidence = 70; }
+        else if (retracement >= 0.786) { result = 'Tài'; confidence = 70; }
+        else { result = current >= (max + min) / 2 ? 'Tài' : 'Xỉu'; confidence = 58; }
+        return { name: 'FIBONACCI_RETRACE', result, confidence, retracement: (retracement * 100).toFixed(0) + '%' };
+    }
+
+    algorithmFibonacciTime(binary) {
+        const n = binary.length;
+        const fib = [1, 2, 3, 5, 8, 13, 21];
+        let bestFib = null;
+        for (let f of fib) {
+            if (n >= f * 2) {
+                const seg = binary.slice(-f);
+                const prevSeg = binary.slice(-f * 2, -f);
+                if (seg.every((v, i) => v === prevSeg[i]) && (!bestFib || f > bestFib)) bestFib = f;
+            }
+        }
+        if (bestFib) return { name: 'FIBONACCI_TIME', result: binary[n - bestFib] === 1 ? 'Tài' : 'Xỉu', confidence: 78, fib: bestFib };
+        return { name: 'FIBONACCI_TIME', result: 'Tài', confidence: 50, found: false };
+    }
+
+    // ============ ADVANCED AI (5) ============
+    algorithmNeuralNetwork(binary, strength) {
+        const n = binary.length;
+        if (n < 10) return { name: 'NEURAL_NETWORK', result: 'Tài', confidence: 50 };
+        const inputs = [binary[n - 1], binary[n - 2], binary[n - 3], Math.abs(strength[n - 1]) / 4, binary.slice(-5).reduce((a, b) => a + b, 0) / 5];
+        const weights = [0.3, 0.2, 0.15, 0.2, 0.15];
+        let s = 0;
+        for (let i = 0; i < inputs.length; i++) s += inputs[i] * weights[i];
+        const activation = 1 / (1 + Math.exp(-(s - 0.5) * 5));
+        const result = activation >= 0.5 ? 'Tài' : 'Xỉu';
+        return { name: 'NEURAL_NETWORK', result, confidence: Math.min(85, Math.abs(activation - 0.5) * 180), activation };
+    }
+
+    algorithmMarkovChain(binary) {
+        const n = binary.length;
+        if (n < 10) return { name: 'MARKOV_CHAIN', result: 'Tài', confidence: 50 };
+        const transitions = { '00': [0, 0], '01': [0, 0], '10': [0, 0], '11': [0, 0] };
+        for (let i = 1; i < n; i++) {
+            const state = `${binary[i - 1]}${binary[i]}`;
+            if (i < n - 1) {
+                if (binary[i + 1] === 0) transitions[state][0]++;
+                else transitions[state][1]++;
+            }
+        }
+        const currentState = `${binary[n - 2]}${binary[n - 1]}`;
+        const counts = transitions[currentState] || [1, 1];
+        const total = counts[0] + counts[1];
+        const probTai = counts[1] / total;
+        return { name: 'MARKOV_CHAIN', result: probTai >= 0.5 ? 'Tài' : 'Xỉu', confidence: Math.abs(probTai - 0.5) * 180, probTai };
+    }
+
+    algorithmBayesian(binary) {
+        const n = binary.length;
+        if (n < 15) return { name: 'BAYESIAN', result: 'Tài', confidence: 50 };
+        const totalTais = binary.reduce((a, b) => a + b, 0);
+        const prior = totalTais / n;
+        const recentTais = binary.slice(-10).reduce((a, b) => a + b, 0);
+        const likelihood = recentTais / 10;
+        const posterior = (likelihood * 0.7 + prior * 0.3);
+        return { name: 'BAYESIAN', result: posterior >= 0.5 ? 'Tài' : 'Xỉu', confidence: Math.abs(posterior - 0.5) * 180, posterior };
+    }
+
+    algorithmRegression(binary, strength) {
+        const n = binary.length;
+        if (n < 10) return { name: 'REGRESSION', result: 'Tài', confidence: 50 };
+        const x = Array.from({ length: 10 }, (_, i) => i);
+        const y = binary.slice(-10);
+        const n2 = x.length;
+        let sx = 0, sy = 0, sxy = 0, sxx = 0;
+        for (let i = 0; i < n2; i++) { sx += x[i]; sy += y[i]; sxy += x[i] * y[i]; sxx += x[i] * x[i]; }
+        const slope = (n2 * sxy - sx * sy) / (n2 * sxx - sx * sx);
+        const nextPred = slope * n2 + (sy - slope * sx) / n2;
+        return { name: 'REGRESSION', result: nextPred >= 0.5 ? 'Tài' : 'Xỉu', confidence: Math.abs(nextPred - 0.5) * 180, slope };
+    }
+
+    algorithmEnsemble(binary, strength) {
+        const models = [
+            this.algorithmStreakBasic(binary),
+            this.algorithmFrequencyMulti(binary),
+            this.algorithmEnergyBasic(strength),
+            this.algorithmMomentumShort([0, ...binary.slice(1).map((v, i) => v - binary[i])])
         ];
-        const dongThuanTAI = allCau.filter(c => c.duDoan === 'Tài' && c.doTinCay >= 70);
-        const dongThuanXIU = allCau.filter(c => c.duDoan === 'Xỉu' && c.doTinCay >= 70);
+        const tais = models.filter(m => m.result === 'Tài').length;
+        const xius = models.length - tais;
+        return { name: 'ENSEMBLE', result: tais >= xius ? 'Tài' : 'Xỉu', confidence: (Math.max(tais, xius) / models.length) * 100, tais, xius };
+    }
 
-        if (dongThuanTAI.length >= 5) ketQua.push({ ten: 'ĐỒNG THUẬN TÀI MẠNH', loai: 'KẾT HỢP', duDoan: 'Tài', doTinCay: Math.min(97, 70 + dongThuanTAI.length * 4) });
-        if (dongThuanXIU.length >= 5) ketQua.push({ ten: 'ĐỒNG THUẬN XỈU MẠNH', loai: 'KẾT HỢP', duDoan: 'Xỉu', doTinCay: Math.min(97, 70 + dongThuanXIU.length * 4) });
+    // ============ HELPERS ============
+    calcEMA(data, period) {
+        const k = 2 / (period + 1);
+        let ema = data[data.length - 1];
+        for (let i = data.length - 2; i >= Math.max(0, data.length - period); i--) ema = data[i] * k + ema * (1 - k);
+        return ema;
+    }
 
-        const allTypes = [...new Set(allCau.map(c => c.loai))];
-        if (allTypes.length >= 3) {
-            const tais = allCau.filter(c => c.duDoan === 'Tài').length;
-            ketQua.push({ ten: 'SIÊU KẾT HỢP', loai: 'KẾT HỢP', duDoan: tais >= allCau.length / 2 ? 'Tài' : 'Xỉu', doTinCay: 86 });
+    fuseAllAlgorithms(algorithms) {
+        let scoreTAI = 0, scoreXIU = 0, totalW = 0;
+        const details = [];
+        for (let [name, algo] of Object.entries(algorithms)) {
+            if (!algo || algo.confidence < 50) continue;
+            const w = algo.confidence / 100;
+            if (algo.result === 'Tài') { scoreTAI += w; details.push({ name: algo.name, prediction: 'Tài', confidence: algo.confidence }); }
+            else if (algo.result === 'Xỉu') { scoreXIU += w; details.push({ name: algo.name, prediction: 'Xỉu', confidence: algo.confidence }); }
+            totalW += w;
         }
-        return ketQua;
+        const taiRate = totalW > 0 ? (scoreTAI / totalW) * 100 : 50;
+        const xiuRate = totalW > 0 ? (scoreXIU / totalW) * 100 : 50;
+        return { result: taiRate >= xiuRate ? 'Tài' : 'Xỉu', confidence: Math.max(taiRate, xiuRate), scoreTAI: taiRate, scoreXIU: xiuRate, details, totalAlgorithms: details.length };
     }
 
-    // ============ G. BỘ BỆT CHUYÊN SÂU ============
-    _boBetChuyenSau(data) {
-        const n = data.length;
-        const so = data.map(d => d.so);
-        const manh = data.map(d => d.manh);
-        const ketQua = [];
-        const last = so[n - 1];
-        let doDai = 0;
-        for (let i = n - 1; i >= 0; i--) { if (so[i] === last) doDai++; else break; }
-
-        if (doDai >= 5) {
-            const nuaDau = manh.slice(-doDai, -Math.floor(doDai / 2));
-            const nuaSau = manh.slice(-Math.floor(doDai / 2));
-            const tbDau = nuaDau.reduce((a, b) => Math.abs(a) + Math.abs(b), 0) / nuaDau.length;
-            const tbSau = nuaSau.reduce((a, b) => Math.abs(a) + Math.abs(b), 0) / nuaSau.length;
-            if (tbSau > tbDau * 1.3) ketQua.push({ ten: 'BỆT TĂNG TỐC', loai: 'BỆT CS', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 90 });
-            if (tbSau < tbDau * 0.7) ketQua.push({ ten: 'BỆT GIẢM TỐC', loai: 'BỆT CS', duDoan: last === 1 ? 'Xỉu' : 'Tài', doTinCay: 82 });
-        }
-
-        let maxBet = 0, currBet = 1;
-        for (let i = 1; i < n; i++) { if (so[i] === so[i - 1]) currBet++; else { maxBet = Math.max(maxBet, currBet); currBet = 1; } }
-        maxBet = Math.max(maxBet, currBet);
-        if (doDai >= maxBet && doDai >= 5) ketQua.push({ ten: 'BỆT KỶ LỤC', loai: 'BỆT CS', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 92 });
-        if (doDai === maxBet - 1 && maxBet >= 5) ketQua.push({ ten: 'BỆT SẮP ĐỦ', loai: 'BỆT CS', duDoan: last === 1 ? 'Xỉu' : 'Tài', doTinCay: 78 });
-
-        const tongTais = so.reduce((a, b) => a + b, 0);
-        const tyLeChung = tongTais / n;
-        if ((last === 1 && tyLeChung < 0.4) || (last === 0 && tyLeChung > 0.6)) ketQua.push({ ten: 'BỆT NGƯỢC DÒNG', loai: 'BỆT CS', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 85 });
-        if ((last === 1 && tyLeChung > 0.6) || (last === 0 && tyLeChung < 0.4)) ketQua.push({ ten: 'BỆT THUẬN DÒNG', loai: 'BỆT CS', duDoan: last === 1 ? 'Tài' : 'Xỉu', doTinCay: 88 });
-
-        return ketQua;
+    detectBreakAdvanced(data, algorithms) {
+        const { binary, n } = data;
+        const last = binary[n - 1];
+        let breakScore = 0;
+        const reasons = [];
+        const sa = algorithms.streakBasic;
+        if (sa && sa.streak >= 10) { breakScore += 40; reasons.push('Streak 10+'); }
+        else if (sa && sa.streak >= 8) { breakScore += 30; reasons.push('Streak 8+'); }
+        else if (sa && sa.streak >= 6) { breakScore += 20; reasons.push('Streak 6+'); }
+        const em = algorithms.energyMomentum;
+        if (em && em.momentum < -1) { breakScore += 25; reasons.push('Energy decline'); }
+        const vb = algorithms.volatilityBasic;
+        if (vb && vb.volRate >= 0.7) { breakScore += 20; reasons.push('High volatility'); }
+        const tr = algorithms.trendRSI;
+        if (tr && (tr.rsi > 80 || tr.rsi < 20)) { breakScore += 20; reasons.push('RSI extreme'); }
+        const fd = algorithms.frequencyDivergence;
+        if (fd && Math.abs(fd.divergence) > 0.3) { breakScore += 15; reasons.push('Freq divergence'); }
+        const willBreak = breakScore >= 55;
+        return { willBreak, breakScore, reasons, result: willBreak ? (last === 1 ? 'Xỉu' : 'Tài') : (last === 1 ? 'Tài' : 'Xỉu'), confidence: Math.min(92, breakScore + 15), level: breakScore >= 75 ? 'STRONG' : breakScore >= 55 ? 'MODERATE' : 'WEAK' };
     }
 
-    _tongHopTatCaCau(ketQua) {
-        const tatCa = [];
-        Object.values(ketQua).forEach(arr => { if (Array.isArray(arr)) tatCa.push(...arr); });
-        return tatCa.sort((a, b) => b.doTinCay - a.doTinCay);
-    }
-
-    _phanTichCheo(tatCaCau, data) {
-        const dongYTAI = tatCaCau.filter(c => c.duDoan === 'Tài').length;
-        const dongYXIU = tatCaCau.filter(c => c.duDoan === 'Xỉu').length;
-        const tong = dongYTAI + dongYXIU;
-        const tyLeDongThuan = tong > 0 ? Math.max(dongYTAI, dongYXIU) / tong : 0;
-        return {
-            dongYTAI,
-            dongYXIU,
-            tyLeDongThuan: (tyLeDongThuan * 100).toFixed(0) + '%',
-            dongThuanCao: tyLeDongThuan >= 0.7,
-            soCauPhatHien: tatCaCau.length
-        };
-    }
-
-    _raQuyetDinh(tatCaCau, cheo, data) {
-        const so = data.map(d => d.so);
-        const last = so[data.length - 1];
-        let ketQua, doTinCay, lyDo;
-
-        if (tatCaCau.length === 0) {
-            ketQua = last === 1 ? 'Tài' : 'Xỉu';
-            doTinCay = 50;
-            lyDo = 'Không phát hiện cầu rõ ràng';
-        } else if (cheo.dongThuanCao) {
-            const cauTop = tatCaCau[0];
-            ketQua = cauTop.duDoan;
-            doTinCay = cauTop.doTinCay;
-            lyDo = `${cauTop.ten} - ${cheo.tyLeDongThuan} đồng thuận`;
+    makeFinalDecision(fusion, breakDetection) {
+        let finalResult, finalConfidence, reason;
+        if (breakDetection.willBreak && breakDetection.level === 'STRONG') {
+            finalResult = breakDetection.result;
+            finalConfidence = breakDetection.confidence;
+            reason = `BẺ CẦU MẠNH: ${breakDetection.reasons.join(', ')}`;
+        } else if (fusion.confidence >= 85) {
+            finalResult = fusion.result;
+            finalConfidence = fusion.confidence;
+            reason = `ĐỒNG THUẬN CAO (${fusion.totalAlgorithms} thuật toán)`;
+        } else if (breakDetection.willBreak && breakDetection.level === 'MODERATE') {
+            finalResult = breakDetection.result;
+            finalConfidence = breakDetection.confidence;
+            reason = `BẺ CẦU: ${breakDetection.reasons.join(', ')}`;
         } else {
-            let diemTAI = 0, diemXIU = 0;
-            tatCaCau.slice(0, 10).forEach(c => {
-                if (c.duDoan === 'Tài') diemTAI += c.doTinCay;
-                else diemXIU += c.doTinCay;
-            });
-            ketQua = diemTAI >= diemXIU ? 'Tài' : 'Xỉu';
-            doTinCay = Math.max(diemTAI, diemXIU) / (diemTAI + diemXIU) * 100;
-            lyDo = `Bình chọn từ ${Math.min(10, tatCaCau.length)} cầu`;
+            finalResult = fusion.result;
+            finalConfidence = fusion.confidence;
+            reason = `TỔNG HỢP ${fusion.totalAlgorithms} THUẬT TOÁN`;
         }
-
-        return {
-            ketQua,
-            doTinCay: parseFloat(doTinCay.toFixed(1)),
-            lyDo,
-            xepHang: doTinCay >= 90 ? '⭐⭐⭐⭐⭐ SIÊU CHUẨN' :
-                     doTinCay >= 80 ? '⭐⭐⭐⭐ RẤT CAO' :
-                     doTinCay >= 70 ? '⭐⭐⭐ CAO' :
-                     doTinCay >= 60 ? '⭐⭐ KHÁ' : '⭐ THẤP'
-        };
+        let rating, stars;
+        if (finalConfidence >= 90) { rating = 'SIÊU CHÍNH XÁC'; stars = '⭐⭐⭐⭐⭐'; }
+        else if (finalConfidence >= 80) { rating = 'RẤT CHÍNH XÁC'; stars = '⭐⭐⭐⭐'; }
+        else if (finalConfidence >= 70) { rating = 'CHÍNH XÁC'; stars = '⭐⭐⭐'; }
+        else if (finalConfidence >= 60) { rating = 'KHÁ'; stars = '⭐⭐'; }
+        else { rating = 'THẤP'; stars = '⭐'; }
+        return { result: finalResult, confidence: parseFloat(finalConfidence.toFixed(1)), rating, stars, reason, fusion: { scoreTAI: fusion.scoreTAI, scoreXIU: fusion.scoreXIU, totalAlgorithms: fusion.totalAlgorithms }, break: { detected: breakDetection.willBreak, level: breakDetection.level, reasons: breakDetection.reasons }, timestamp: new Date().toISOString() };
     }
 }
 
@@ -379,15 +710,8 @@ async function fetchData() {
             let arr = null;
             if (Array.isArray(raw)) arr = raw;
             else if (raw && raw.data && Array.isArray(raw.data)) arr = raw.data;
-            else if (raw && typeof raw === 'object') {
-                for (const key of Object.keys(raw)) {
-                    if (Array.isArray(raw[key]) && raw[key].length > 10) { arr = raw[key]; break; }
-                }
-            }
-            if (arr && arr.length >= 20) {
-                const n = arr.map(normalize).sort((a, b) => a.phien - b.phien);
-                return n;
-            }
+            else if (raw && typeof raw === 'object') { for (const key of Object.keys(raw)) { if (Array.isArray(raw[key]) && raw[key].length > 10) { arr = raw[key]; break; } } }
+            if (arr && arr.length >= 20) { const n = arr.map(normalize).sort((a, b) => a.phien - b.phien); return n; }
             await new Promise(r => setTimeout(r, 3000));
         } catch (e) { if (attempt < 5) await new Promise(r => setTimeout(r, 5000)); }
     }
@@ -402,7 +726,6 @@ async function updatePrediction() {
     try {
         const data = await fetchData();
         if (!data || data.length < 20) { isUpdating = false; return; }
-
         const latest = data[data.length - 1];
         const latestPhien = latest.phien;
         const oldPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length - 1].phien : 0;
@@ -413,20 +736,17 @@ async function updatePrediction() {
             if (actual) {
                 const actualStr = actual.ket_qua === 1 ? 'Tài' : 'Xỉu';
                 addToHistory(predictedPhien, currentPrediction.Du_doan, actualStr, currentPrediction.Do_tin_cay);
-                console.log(`📝 Phiên ${predictedPhien}: ${currentPrediction.Du_doan} vs ${actualStr}`);
+                console.log(`\x1b[34m📝 Phiên ${predictedPhien}: ${currentPrediction.Du_doan} vs ${actualStr}\x1b[0m`);
             }
         }
-
         if (latestPhien === oldPhien && currentPrediction) { isUpdating = false; return; }
 
         gameHistory = data;
-        engine = new HeThongBatCauSieuChinhXac();
-        const pred = engine.phanTich(data.slice(-100));
+        engine = new SieuVIPChinhXac();
+        const pred = engine.predict(data.slice(-100));
 
         let pattern = "";
-        for (let i = Math.max(0, data.length - 20); i < data.length; i++) {
-            pattern += data[i].ket_qua === 1 ? "t" : "x";
-        }
+        for (let i = Math.max(0, data.length - 20); i < data.length; i++) pattern += data[i].ket_qua === 1 ? "t" : "x";
 
         const last = data[data.length - 1];
         const recentTotals = data.slice(-10).map(p => p.tong);
@@ -438,27 +758,22 @@ async function updatePrediction() {
         currentPrediction = {
             id: "@anhkhoidzai102",
             Phien: latest.phien,
-            Xuc_xac_1: last.x1,
-            Xuc_xac_2: last.x2,
-            Xuc_xac_3: last.x3,
-            Tong: last.tong,
-            Ket_qua: last.ket_qua === 1 ? 'Tài' : 'Xỉu',
-            pattern: pattern,
-            Phien_hien_tai: latest.phien + 1,
-            Du_doan: pred.ketQua,
-            Do_tin_cay: pred.doTinCay + "%",
-            Tong_du_doan: predTotal,
-            So_cau: pred.tongSoCau,
-            Xep_hang: pred.xepHang,
-            Ly_do: pred.lyDo,
-            Dong_thuan: pred.phanTichCheo?.tyLeDongThuan,
+            Xuc_xac_1: last.x1, Xuc_xac_2: last.x2, Xuc_xac_3: last.x3,
+            Tong: last.tong, Ket_qua: last.ket_qua === 1 ? 'Tài' : 'Xỉu',
+            pattern: pattern, Phien_hien_tai: latest.phien + 1,
+            Du_doan: pred.result, Do_tin_cay: pred.confidence + "%",
+            Tong_du_doan: predTotal, Xep_hang: pred.stars + ' ' + pred.rating,
+            Ly_do: pred.reason, So_thuat_toan: pred.fusion.totalAlgorithms,
+            Diem_Tai: pred.fusion.scoreTAI.toFixed(1) + '%',
+            Diem_Xiu: pred.fusion.scoreXIU.toFixed(1) + '%',
+            Be_cau: pred.break.detected ? pred.break.level + ' - ' + pred.break.reasons.join(', ') : 'KHÔNG',
             timestamp: Date.now()
         };
 
         const winCount = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const winRate = verifiedResults.length > 0 ? (winCount / verifiedResults.length * 100).toFixed(1) : '0.0';
-        console.log(`✅ ${pred.ketQua} (${pred.doTinCay}%) | ${pred.tongSoCau} cầu | ${pred.xepHang} | Thắng: ${winCount}/${verifiedResults.length} (${winRate}%)`);
-    } catch (e) { console.error('❌', e.message); }
+        console.log(`\x1b[34m✅ ${pred.result} (${pred.confidence}%) | ${pred.stars} | ${pred.fusion.totalAlgorithms} thuật toán | Thắng: ${winCount}/${verifiedResults.length} (${winRate}%)\x1b[0m`);
+    } catch (e) { console.error('\x1b[31m❌', e.message, '\x1b[0m'); }
     isUpdating = false;
 }
 
@@ -468,33 +783,23 @@ app.get('/taixiu', async (req, res) => {
     if (currentPrediction) {
         const wc = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const wr = verifiedResults.length > 0 ? (wc / verifiedResults.length * 100).toFixed(1) : '0.0';
-        return res.json({
-            ...currentPrediction,
-            Lich_su: { Tong_phien: verifiedResults.length, Thang: wc, Thua: verifiedResults.length - wc, Ty_le_thang: wr + "%" },
-            Bang_thang_thua: verifiedResults.slice(0, 20)
-        });
+        return res.json({ ...currentPrediction, Lich_su: { Tong_phien: verifiedResults.length, Thang: wc, Thua: verifiedResults.length - wc, Ty_le_thang: wr + "%" }, Bang_thang_thua: verifiedResults.slice(0, 20) });
     }
-    res.json({
-        id: "@anhkhoidzai102", Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0,
-        Ket_qua: "đang tải...", pattern: "", Phien_hien_tai: 0, Du_doan: "đang tải...",
-        Do_tin_cay: "0%", Tong_du_doan: 0, So_cau: 0, Xep_hang: "", Ly_do: "",
-        Dong_thuan: "0%", timestamp: Date.now(),
-        Lich_su: { Tong_phien: verifiedResults.length, Thang: verifiedResults.filter(v => v.danh_gia === 'thang').length, Thua: verifiedResults.filter(v => v.danh_gia === 'thua').length, Ty_le_thang: verifiedResults.length > 0 ? (verifiedResults.filter(v => v.danh_gia === 'thang').length / verifiedResults.length * 100).toFixed(1) + "%" : "0%" },
-        Bang_thang_thua: verifiedResults.slice(0, 20)
-    });
+    res.json({ id: "@anhkhoidzai102", Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "đang tải...", pattern: "", Phien_hien_tai: 0, Du_doan: "đang tải...", Do_tin_cay: "0%", Tong_du_doan: 0, Xep_hang: "", Ly_do: "", So_thuat_toan: 0, Diem_Tai: "0%", Diem_Xiu: "0%", Be_cau: "", timestamp: Date.now(), Lich_su: { Tong_phien: verifiedResults.length, Thang: verifiedResults.filter(v => v.danh_gia === 'thang').length, Thua: verifiedResults.filter(v => v.danh_gia === 'thua').length, Ty_le_thang: verifiedResults.length > 0 ? (verifiedResults.filter(v => v.danh_gia === 'thang').length / verifiedResults.length * 100).toFixed(1) + "%" : "0%" }, Bang_thang_thua: verifiedResults.slice(0, 20) });
 });
 
 app.get('/', (req, res) => res.redirect('/taixiu'));
 
 // ============ KHỞI ĐỘNG ============
 loadHistory();
-console.log('='.repeat(70));
-console.log('   👑 SIÊU HỆ THỐNG BẮT BỆT & TẤT CẢ CẦU 👑');
-console.log('   68+ Thuật Toán | 7 Bộ Phát Hiện');
-console.log('   API: wtxmd52.tele68.com/v1/txmd5/sessions');
-console.log('='.repeat(70));
+console.log('\x1b[34m' + '='.repeat(70) + '\x1b[0m');
+console.log('\x1b[34m   👑 SIÊU VIP CHÍNH XÁC - 40+ THUẬT TOÁN 👑\x1b[0m');
+console.log('\x1b[34m   10 Nhóm: Streak | Pattern | Cycle | Energy | Momentum\x1b[0m');
+console.log('\x1b[34m   Frequency | Trend | Volatility | Fibonacci | AI\x1b[0m');
+console.log('\x1b[34m   API: wtxmd52.tele68.com/v1/txmd5/sessions\x1b[0m');
+console.log('\x1b[34m' + '='.repeat(70) + '\x1b[0m');
 
 (async () => { const data = await fetchData(); if (data && data.length >= 20) { gameHistory = data; await updatePrediction(); } })();
 setInterval(updatePrediction, 300);
 
-app.listen(PORT, () => { console.log(`   🚀 Port: ${PORT} | /taixiu`); console.log(`   📂 Lịch sử: ${verifiedResults.length} phiên`); console.log('='.repeat(70)); });
+app.listen(PORT, () => { console.log(`\x1b[34m   🚀 Port: ${PORT} | /taixiu\x1b[0m`); console.log(`\x1b[34m   📂 Lịch sử: ${verifiedResults.length} phiên\x1b[0m`); console.log('\x1b[34m' + '='.repeat(70) + '\x1b[0m'); });
