@@ -49,9 +49,79 @@ const sum = arr => arr.reduce((a, b) => a + b, 0);
 const avg = arr => arr.length ? sum(arr) / arr.length : 0;
 const clamp = (v, min, max) => Math.min(max, Math.max(min, v));
 
-// Màu xanh dương ANSI
-const BLUE = '\x1b[34m';
-const RESET = '\x1b[0m';
+// ============ FETCH DATA - FIX ============
+async function fetchData() {
+    for (let attempt = 1; attempt <= 5; attempt++) {
+        try {
+            console.log(`🔄 Fetch API attempt ${attempt}...`);
+            
+            const res = await axios.get(API_URL, {
+                timeout: 30000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Accept': 'application/json, text/plain, */*',
+                    'Accept-Language': 'vi-VN,vi;q=0.9,en;q=0.8',
+                    'Cache-Control': 'no-cache',
+                    'Pragma': 'no-cache'
+                }
+            });
+            
+            const raw = res.data;
+            console.log(`📥 Response type: ${typeof raw}, isArray: ${Array.isArray(raw)}, keys: ${raw ? Object.keys(raw).join(',') : 'null'}`);
+            
+            let arr = null;
+            
+            // API trả về mảng trực tiếp
+            if (Array.isArray(raw) && raw.length > 0) {
+                arr = raw;
+                console.log(`✅ Format: Array (${arr.length} items)`);
+            }
+            // API trả về object có data
+            else if (raw && typeof raw === 'object' && raw.data && Array.isArray(raw.data) && raw.data.length > 0) {
+                arr = raw.data;
+                console.log(`✅ Format: raw.data (${arr.length} items)`);
+            }
+            // API trả về object, tìm array
+            else if (raw && typeof raw === 'object') {
+                for (const key of Object.keys(raw)) {
+                    if (Array.isArray(raw[key]) && raw[key].length > 5) {
+                        arr = raw[key];
+                        console.log(`✅ Format: raw.${key} (${arr.length} items)`);
+                        break;
+                    }
+                }
+            }
+            
+            if (arr && arr.length >= 20) {
+                const normalized = arr.map(normalize).sort((a, b) => a.phien - b.phien);
+                console.log(`✅ Đã normalize ${normalized.length} phiên, phiên cuối: ${normalized[normalized.length - 1].phien}`);
+                return normalized;
+            }
+            
+            console.log(`⚠️ Attempt ${attempt}: Data không đủ (${arr ? arr.length : 0} items, cần 20+)`);
+            if (arr && arr.length > 0) {
+                console.log(`   Mẫu item đầu: ${JSON.stringify(arr[0]).substring(0, 200)}`);
+            }
+            await new Promise(r => setTimeout(r, 3000));
+            
+        } catch (error) {
+            console.log(`❌ Attempt ${attempt} failed: ${error.message}`);
+            if (error.response) {
+                console.log(`   Status: ${error.response.status}, Data: ${JSON.stringify(error.response.data).substring(0, 200)}`);
+            }
+            if (attempt < 5) await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+    
+    // Fallback: dùng dữ liệu cũ
+    if (gameHistory.length >= 20) {
+        console.log(`♻️ Dùng lại dữ liệu cũ (${gameHistory.length} phiên)`);
+        return gameHistory;
+    }
+    
+    console.log('💀 Không thể fetch dữ liệu mới và không có dữ liệu cũ');
+    return null;
+}
 
 // ============================================================
 // ULTIMATE FINAL - 10 MODULE CHUYÊN SÂU
@@ -61,34 +131,32 @@ class UltimateFinal {
     constructor() {
         this.memory = [];
         this.total = 0;
-        this.correct = 0;
     }
 
     analyze(arr) {
         const n = arr.length;
-        if (n < 20) return { result: 'WAIT', confidence: 0, msg: 'Cần ≥ 20 phiên' };
+        if (n < 20) return { result: 'Tài', confidence: 50, msg: 'Cần ≥ 20 phiên' };
 
         const data = this._prepareData(arr);
         const { binary, values, strength, deviation } = data;
 
         const structure = this._analyzeStructure(binary, strength);
-        const rhythm = this._analyzeRhythm(binary, deviation);
+        const rhythm = this._analyzeRhythm(binary);
         const wave = this._analyzeWave(binary, strength);
         const energy = this._analyzeEnergy(strength, binary);
         const reversal = this._detectReversal(binary, strength, deviation);
         const probability = this._analyzeProbability(binary, strength);
-        const anomaly = this._detectAnomaly(binary, values, deviation);
+        const anomaly = this._detectAnomaly(binary, values);
         const hiddenCycle = this._detectHiddenCycle(binary);
-        const crowdPsychology = this._analyzeCrowdPsychology(binary, strength);
-        const dynamics = this._analyzeDynamics(binary, deviation);
+        const crowd = this._analyzeCrowdPsychology(binary, strength);
+        const dynamics = this._analyzeDynamics(binary);
 
         const finalResult = this._synthesizeAll(
             structure, rhythm, wave, energy, reversal,
-            probability, anomaly, hiddenCycle, crowdPsychology, dynamics
+            probability, anomaly, hiddenCycle, crowd, dynamics
         );
 
         this.total++;
-        this.memory.push({ result: finalResult, time: Date.now() });
         return finalResult;
     }
 
@@ -131,10 +199,10 @@ class UltimateFinal {
         } else if (type === 'ALTERNATING') {
             pred = cur.value === 1 ? 'Xỉu' : 'Tài'; conf = 85;
         } else { pred = cur.value === 1 ? 'Tài' : 'Xỉu'; conf = 62; }
-        return { prediction: pred, confidence: conf, structureType: type, currentStreak: cur.length };
+        return { prediction: pred, confidence: conf, structureType: type };
     }
 
-    _analyzeRhythm(binary, deviation) {
+    _analyzeRhythm(binary) {
         const n = binary.length;
         let rev = 0;
         for (let i = 1; i < n; i++) if (binary[i] !== binary[i - 1]) rev++;
@@ -194,8 +262,8 @@ class UltimateFinal {
         let score = 0;
         const signals = [];
         if (n >= 10) {
-            const pT = binary.slice(-5).reduce((a, b) => a + b, 0) - binary.slice(-10, -5).reduce((a, b) => a + b, 0);
-            const sT = strength.slice(-5).reduce((a, b) => Math.abs(a) + Math.abs(b), 0) - strength.slice(-10, -5).reduce((a, b) => Math.abs(a) + Math.abs(b), 0);
+            const pT = sum(binary.slice(-5)) - sum(binary.slice(-10, -5));
+            const sT = sum(strength.slice(-5).map(Math.abs)) - sum(strength.slice(-10, -5).map(Math.abs));
             if (pT > 0 && sT < 0) { score += 30; signals.push('BEARISH_DIVERGENCE'); }
             if (pT < 0 && sT > 0) { score += 30; signals.push('BULLISH_DIVERGENCE'); }
         }
@@ -222,7 +290,7 @@ class UltimateFinal {
         return { prediction: combined >= 0.5 ? 'Tài' : 'Xỉu', confidence: Math.abs(combined - 0.5) * 180 + 50 };
     }
 
-    _detectAnomaly(binary, values, deviation) {
+    _detectAnomaly(binary, values) {
         const n = values.length;
         let score = 0;
         const anomalies = [];
@@ -271,7 +339,7 @@ class UltimateFinal {
         return { prediction: pred, confidence: conf, psychologyState: state };
     }
 
-    _analyzeDynamics(binary, deviation) {
+    _analyzeDynamics(binary) {
         const n = binary.length;
         const m5 = sum(binary.slice(-5));
         const m10 = sum(binary.slice(-10));
@@ -314,23 +382,6 @@ class UltimateFinal {
     }
 }
 
-// ============ FETCH DATA ============
-async function fetchData() {
-    for (let attempt = 1; attempt <= 5; attempt++) {
-        try {
-            const res = await axios.get(API_URL, { timeout: 20000, headers: { 'User-Agent': 'Mozilla/5.0' } });
-            const raw = res.data;
-            let arr = null;
-            if (Array.isArray(raw)) arr = raw;
-            else if (raw && raw.data && Array.isArray(raw.data)) arr = raw.data;
-            else if (raw && typeof raw === 'object') { for (const key of Object.keys(raw)) { if (Array.isArray(raw[key]) && raw[key].length > 10) { arr = raw[key]; break; } } }
-            if (arr && arr.length >= 20) { const n = arr.map(normalize).sort((a, b) => a.phien - b.phien); return n; }
-            await new Promise(r => setTimeout(r, 3000));
-        } catch (e) { if (attempt < 5) await new Promise(r => setTimeout(r, 5000)); }
-    }
-    return gameHistory.length >= 20 ? gameHistory : null;
-}
-
 // ============ UPDATE ============
 let engine = null;
 async function updatePrediction() {
@@ -339,6 +390,7 @@ async function updatePrediction() {
     try {
         const data = await fetchData();
         if (!data || data.length < 20) { isUpdating = false; return; }
+        
         const latest = data[data.length - 1];
         const latestPhien = latest.phien;
         const oldPhien = gameHistory.length > 0 ? gameHistory[gameHistory.length - 1].phien : 0;
@@ -349,11 +401,11 @@ async function updatePrediction() {
             if (actual) {
                 const actualStr = actual.ket_qua === 1 ? 'Tài' : 'Xỉu';
                 addToHistory(predictedPhien, currentPrediction.Du_doan, actualStr, currentPrediction.Do_tin_cay);
-                console.log(BLUE + `📝 Phiên ${predictedPhien}: ${currentPrediction.Du_doan} vs ${actualStr}` + RESET);
+                console.log(`📝 Phiên ${predictedPhien}: ${currentPrediction.Du_doan} vs ${actualStr}`);
             }
         }
-        if (latestPhien === oldPhien && currentPrediction) { isUpdating = false; return; }
-
+        
+        // Luôn cập nhật prediction khi có data mới
         gameHistory = data;
         engine = new UltimateFinal();
         const pred = engine.analyze(data.slice(-100));
@@ -383,14 +435,17 @@ async function updatePrediction() {
 
         const winCount = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const winRate = verifiedResults.length > 0 ? (winCount / verifiedResults.length * 100).toFixed(1) : '0.0';
-        console.log(BLUE + `✅ ${pred.result} (${pred.confidence}%) | ${pred.stars} | Thắng: ${winCount}/${verifiedResults.length} (${winRate}%)` + RESET);
-    } catch (e) { console.error('\x1b[31m❌', e.message, RESET); }
+        console.log(`✅ ${pred.result} (${pred.confidence}%) | ${pred.stars} | Thắng: ${winCount}/${verifiedResults.length} (${winRate}%)`);
+    } catch (e) { console.error('❌', e.message); }
     isUpdating = false;
 }
 
 // ============ ROUTES ============
 app.get('/taixiu', async (req, res) => {
-    if (!currentPrediction) await updatePrediction();
+    if (!currentPrediction) {
+        console.log('⚠️ Chưa có dự đoán, đang fetch...');
+        await updatePrediction();
+    }
     if (currentPrediction) {
         const wc = verifiedResults.filter(v => v.danh_gia === 'thang').length;
         const wr = verifiedResults.length > 0 ? (wc / verifiedResults.length * 100).toFixed(1) : '0.0';
@@ -403,12 +458,35 @@ app.get('/', (req, res) => res.redirect('/taixiu'));
 
 // ============ KHỞI ĐỘNG ============
 loadHistory();
-console.log(BLUE + '='.repeat(70) + RESET);
-console.log(BLUE + '   💎 ULTIMATE FINAL - 10 MODULE CHUYÊN SÂU 💎' + RESET);
-console.log(BLUE + '   API: wtxmd52.tele68.com/v1/txmd5/sessions' + RESET);
-console.log(BLUE + '='.repeat(70) + RESET);
+console.log('='.repeat(70));
+console.log('   💎 ULTIMATE FINAL - 10 MODULE CHUYÊN SÂU 💎');
+console.log('   API: wtxmd52.tele68.com/v1/txmd5/sessions');
+console.log('='.repeat(70));
 
-(async () => { const data = await fetchData(); if (data && data.length >= 20) { gameHistory = data; await updatePrediction(); } })();
+// Fetch ngay lập tức
+(async () => {
+    console.log('🔄 Đang fetch lần đầu...');
+    const data = await fetchData();
+    if (data && data.length >= 20) {
+        gameHistory = data;
+        console.log(`✅ Fetch thành công: ${data.length} phiên`);
+        await updatePrediction();
+    } else {
+        console.log('⚠️ Fetch lần đầu thất bại, sẽ thử lại sau 5 giây...');
+        setTimeout(async () => {
+            const data2 = await fetchData();
+            if (data2 && data2.length >= 20) {
+                gameHistory = data2;
+                await updatePrediction();
+            }
+        }, 5000);
+    }
+})();
+
 setInterval(updatePrediction, 300);
 
-app.listen(PORT, () => { console.log(BLUE + `   🚀 Port: ${PORT} | /taixiu` + RESET); console.log(BLUE + `   📂 Lịch sử: ${verifiedResults.length} phiên` + RESET); console.log(BLUE + '='.repeat(70) + RESET); });
+app.listen(PORT, () => {
+    console.log(`   🚀 Port: ${PORT} | /taixiu`);
+    console.log(`   📂 Lịch sử: ${verifiedResults.length} phiên`);
+    console.log('='.repeat(70));
+});
