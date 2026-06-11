@@ -807,10 +807,14 @@ async function updatePrediction() {
         if (latest.tong <= 5) predTotal = Math.max(predTotal, 9);
         const totalTrades = wins + losses;
         const winRate = totalTrades > 0 ? (wins / totalTrades * 100).toFixed(1) + '%' : '0%';
+        const wc = verifiedResults.filter(v => v.danh_gia === 'thang').length;
+        const wr = verifiedResults.length > 0 ? (wc / verifiedResults.length * 100).toFixed(1) : '0.0';
         currentPrediction = {
             id: "@anhkhoidzai102",
             Phien: latest.phien,
-            Xuc_xac_1: latest.xuc_xac_1, Xuc_xac_2: latest.xuc_xac_2, Xuc_xac_3: latest.xuc_xac_3,
+            Xuc_xac_1: latest.xuc_xac_1,
+            Xuc_xac_2: latest.xuc_xac_2,
+            Xuc_xac_3: latest.xuc_xac_3,
             Tong: latest.tong,
             Ket_qua: latest.ket_qua,
             pattern: pattern,
@@ -824,10 +828,14 @@ async function updatePrediction() {
             Thua: losses,
             Ti_le_thang: winRate,
             Loai_cau: pred.allPatterns ? pred.allPatterns[0] : 'To hop',
-            timestamp: Date.now()
+            Lich_su: {
+                Tong_phien: verifiedResults.length,
+                Thang: wc,
+                Thua: verifiedResults.length - wc,
+                Ty_le_thang: wr + "%"
+            },
+            Bang_thang_thua: verifiedResults.slice(0, 20)
         };
-        const wc = verifiedResults.filter(v => v.danh_gia === 'thang').length;
-        const wr = verifiedResults.length > 0 ? (wc / verifiedResults.length * 100).toFixed(1) : '0.0';
         console.log(`${pred.prediction} | Tin cay: ${pred.confidence}% | ${pred.factors ? pred.factors.slice(0,3).join(', ') : ''} | Thang: ${winRate} | Lich su: ${wc}/${verifiedResults.length} (${wr}%)`);
     } catch (e) { console.error('Loi:', e.message); }
     isUpdating = false;
@@ -836,22 +844,34 @@ async function updatePrediction() {
 app.get('/taixiu', async (req, res) => {
     if (!currentPrediction) await updatePrediction();
     if (currentPrediction) {
-        const wc = verifiedResults.filter(v => v.danh_gia === 'thang').length;
-        const wr = verifiedResults.length > 0 ? (wc / verifiedResults.length * 100).toFixed(1) : '0.0';
-        return res.json({
-            ...currentPrediction,
-            Lich_su: { Tong_phien: verifiedResults.length, Thang: wc, Thua: verifiedResults.length - wc, Ty_le_thang: wr + "%" },
-            Bang_thang_thua: verifiedResults.slice(0, 20)
-        });
+        return res.json(currentPrediction);
     }
     res.json({
-        id: "@anhkhoidzai102", Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0,
-        Tong: 0, Ket_qua: "dang tai...", pattern: "", Phien_hien_tai: 0,
-        Du_doan: "dang tai...", Do_tin_cay: "0%", Tong_du_doan: 0,
-        Ly_do: "", Trang_thai: "", Thang: wins, Thua: losses, Ti_le_thang: '0%',
-        Loai_cau: '', timestamp: Date.now(),
-        Lich_su: { Tong_phien: verifiedResults.length, Thang: verifiedResults.filter(v => v.danh_gia === 'thang').length, Thua: verifiedResults.filter(v => v.danh_gia === 'thua').length, Ty_le_thang: verifiedResults.length > 0 ? (verifiedResults.filter(v => v.danh_gia === 'thang').length / verifiedResults.length * 100).toFixed(1) + "%" : "0%" },
-        Bang_thang_thua: verifiedResults.slice(0, 20)
+        id: "@anhkhoidzai102",
+        Phien: 0,
+        Xuc_xac_1: 0,
+        Xuc_xac_2: 0,
+        Xuc_xac_3: 0,
+        Tong: 0,
+        Ket_qua: "dang tai...",
+        pattern: "",
+        Phien_hien_tai: 0,
+        Du_doan: "dang tai...",
+        Do_tin_cay: "0%",
+        Tong_du_doan: 0,
+        Ly_do: "",
+        Trang_thai: "",
+        Thang: 0,
+        Thua: 0,
+        Ti_le_thang: "0%",
+        Loai_cau: "",
+        Lich_su: {
+            Tong_phien: 0,
+            Thang: 0,
+            Thua: 0,
+            Ty_le_thang: "0%"
+        },
+        Bang_thang_thua: []
     });
 });
 
