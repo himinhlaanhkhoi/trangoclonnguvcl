@@ -14,6 +14,7 @@ const MAX_HISTORY = 2000;
 let wins = 0;
 let losses = 0;
 let predictorInstance = null;
+let isReady = false;
 
 const normalize = item => {
     const kq = (item.resultTruyenThong || '').toLowerCase().trim();
@@ -46,452 +47,782 @@ function addToHistory(phien, duDoan, ketQua, doTinCay) {
     if (verifiedResults.length > MAX_HISTORY) verifiedResults = verifiedResults.slice(0, MAX_HISTORY);
     saveHistory();
     if (predictorInstance && predictorInstance.updateResult) {
-        predictorInstance.updateResult(duDoan, ketQua, isCorrect);
+        predictorInstance.updateResult(duDoan, ketQua, isCorrect, 'taixiu');
     }
+    if (isCorrect) wins++; else losses++;
     return isCorrect;
 }
 
-class StatisticalAnalyzer {
-    constructor() {
-        this.mean = 0; this.variance = 0; this.stdDev = 0; this.autocorrelation = [];
+// ==================== HỆ THỐNG DỰ ĐOÁN THẾ HỆ MỚI ====================
+
+// 1. DEEP BELIEF NETWORK (DBN)
+class DeepBeliefNetwork {
+    constructor(layers = [10, 20, 15, 8, 3]) {
+        this.layers = layers;
+        this.weights = [];
+        this.biasesVisible = [];
+        this.biasesHidden = [];
+        this.initializeNetwork();
     }
-    calculateStatistics(results) {
-        const numerical = results.map(r => r === 'Tài' ? 1 : 0);
-        const n = numerical.length;
-        this.mean = numerical.reduce((a,b) => a+b, 0) / n;
-        this.variance = numerical.reduce((a,b) => a + Math.pow(b - this.mean, 2), 0) / n;
-        this.stdDev = Math.sqrt(this.variance);
-        return { mean: this.mean, variance: this.variance, stdDev: this.stdDev };
-    }
-    calculateAutocorrelation(results, lag = 5) {
-        const numerical = results.map(r => r === 'Tài' ? 1 : 0);
-        const n = numerical.length;
-        const mean = numerical.reduce((a,b) => a+b, 0) / n;
-        this.autocorrelation = [];
-        for (let l = 1; l <= lag; l++) {
-            let numerator = 0, denominator = 0;
-            for (let i = 0; i < n - l; i++) numerator += (numerical[i] - mean) * (numerical[i + l] - mean);
-            for (let i = 0; i < n; i++) denominator += Math.pow(numerical[i] - mean, 2);
-            this.autocorrelation.push(numerator / denominator);
+    initializeNetwork() {
+        for (let i = 0; i < this.layers.length - 1; i++) {
+            const visibleSize = this.layers[i];
+            const hiddenSize = this.layers[i + 1];
+            const weights = Array(visibleSize).fill().map(() => Array(hiddenSize).fill().map(() => (Math.random() - 0.5) * 0.1));
+            this.weights.push(weights);
+            this.biasesVisible.push(Array(visibleSize).fill(0));
+            this.biasesHidden.push(Array(hiddenSize).fill(0));
         }
-        return this.autocorrelation;
     }
-    detectSeasonality(results) {
-        const acf = this.calculateAutocorrelation(results, 10);
-        let seasonLength = 0, maxValue = -Infinity;
-        for (let i = 2; i <= 7; i++) {
-            if (Math.abs(acf[i-1]) > maxValue && Math.abs(acf[i-1]) > 0.3) {
-                maxValue = Math.abs(acf[i-1]); seasonLength = i;
+    sigmoid(x) { return 1 / (1 + Math.exp(-Math.max(-50, Math.min(50, x)))); }
+    sampleProbability(prob) { return Math.random() < prob ? 1 : 0; }
+    contrastiveDivergence(rbmIndex, data, learningRate = 0.01, k = 1) {
+        const visibleSize = this.layers[rbmIndex];
+        const hiddenSize = this.layers[rbmIndex + 1];
+        const weights = this.weights[rbmIndex];
+        const visibleBias = this.biasesVisible[rbmIndex];
+        const hiddenBias = this.biasesHidden[rbmIndex];
+        const hiddenProb = Array(hiddenSize).fill();
+        for (let j = 0; j < hiddenSize; j++) {
+            let sum = hiddenBias[j];
+            for (let i = 0; i < visibleSize; i++) sum += data[i] * weights[i][j];
+            hiddenProb[j] = this.sigmoid(sum);
+        }
+        const hiddenState = hiddenProb.map(p => this.sampleProbability(p));
+        let visibleProb = [...data];
+        let currentHidden = [...hiddenState];
+        for (let step = 0; step < k; step++) {
+            for (let i = 0; i < visibleSize; i++) {
+                let sum = visibleBias[i];
+                for (let j = 0; j < hiddenSize; j++) sum += currentHidden[j] * weights[i][j];
+                visibleProb[i] = this.sigmoid(sum);
+            }
+            for (let j = 0; j < hiddenSize; j++) {
+                let sum = hiddenBias[j];
+                for (let i = 0; i < visibleSize; i++) sum += visibleProb[i] * weights[i][j];
+                currentHidden[j] = this.sigmoid(sum);
             }
         }
-        return seasonLength > 0 ? { period: seasonLength, strength: maxValue } : null;
+        for (let i = 0; i < visibleSize; i++) {
+            for (let j = 0; j < hiddenSize; j++) {
+                const gradient = data[i] * hiddenProb[j] - visibleProb[i] * currentHidden[j];
+                weights[i][j] += learningRate * gradient;
+            }
+            visibleBias[i] += learningRate * (data[i] - visibleProb[i]);
+        }
+        for (let j = 0; j < hiddenSize; j++) hiddenBias[j] += learningRate * (hiddenProb[j] - currentHidden[j]);
+    }
+    pretrain(patterns, epochs = 5) {
+        for (let epoch = 0; epoch < epochs; epoch++) {
+            for (const pattern of patterns) {
+                let currentData = pattern;
+                for (let i = 0; i < this.weights.length; i++) {
+                    this.contrastiveDivergence(i, currentData, 0.01, 1);
+                    const nextData = [];
+                    const hiddenSize = this.layers[i + 1];
+                    const weights = this.weights[i];
+                    const hiddenBias = this.biasesHidden[i];
+                    for (let j = 0; j < hiddenSize; j++) {
+                        let sum = hiddenBias[j];
+                        for (let k = 0; k < currentData.length; k++) sum += currentData[k] * weights[k][j];
+                        nextData.push(this.sigmoid(sum));
+                    }
+                    currentData = nextData;
+                }
+            }
+        }
+    }
+    fineTune(patterns, labels, learningRate = 0.005, epochs = 10) {
+        for (let epoch = 0; epoch < epochs; epoch++) {
+            for (let idx = 0; idx < patterns.length; idx++) {
+                const activations = [patterns[idx]];
+                let currentData = patterns[idx];
+                for (let i = 0; i < this.weights.length; i++) {
+                    const nextData = [];
+                    const hiddenSize = this.layers[i + 1];
+                    const weights = this.weights[i];
+                    const hiddenBias = this.biasesHidden[i];
+                    for (let j = 0; j < hiddenSize; j++) {
+                        let sum = hiddenBias[j];
+                        for (let k = 0; k < currentData.length; k++) sum += currentData[k] * weights[k][j];
+                        nextData.push(this.sigmoid(sum));
+                    }
+                    activations.push(nextData);
+                    currentData = nextData;
+                }
+                const output = activations[activations.length - 1];
+                const target = labels[idx];
+                let error = target - output[0];
+                let deltas = [error * output[0] * (1 - output[0])];
+                for (let i = this.weights.length - 1; i >= 0; i--) {
+                    const newDeltas = [];
+                    const weights = this.weights[i];
+                    const currentActivations = activations[i];
+                    const nextDeltas = deltas[0];
+                    for (let j = 0; j < currentActivations.length; j++) {
+                        let delta = 0;
+                        for (let k = 0; k < nextDeltas.length; k++) delta += nextDeltas[k] * weights[j][k];
+                        delta *= currentActivations[j] * (1 - currentActivations[j]);
+                        newDeltas.push(delta);
+                        for (let k = 0; k < nextDeltas.length; k++) weights[j][k] += learningRate * nextDeltas[k] * currentActivations[j];
+                    }
+                    deltas = newDeltas;
+                }
+            }
+        }
+    }
+    predict(features) {
+        let currentData = features;
+        for (let i = 0; i < this.weights.length; i++) {
+            const nextData = [];
+            const hiddenSize = this.layers[i + 1];
+            const weights = this.weights[i];
+            const hiddenBias = this.biasesHidden[i];
+            for (let j = 0; j < hiddenSize; j++) {
+                let sum = hiddenBias[j];
+                for (let k = 0; k < currentData.length; k++) sum += currentData[k] * weights[k][j];
+                nextData.push(this.sigmoid(sum));
+            }
+            currentData = nextData;
+        }
+        const prediction = currentData[0] > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(currentData[0] - 0.5) * 90;
+        return { prediction, confidence: Math.min(95, confidence), name: 'DeepBelief' };
     }
 }
 
-class ARIMAModel {
-    constructor(p = 1, d = 1, q = 1) { this.p = p; this.d = d; this.q = q; this.arParams = Array(p).fill(0.1); this.maParams = Array(q).fill(0.1); this.residuals = []; }
-    difference(series, order = 1) {
-        let diffed = [...series];
-        for (let d = 0; d < order; d++) { const temp = []; for (let i = 1; i < diffed.length; i++) temp.push(diffed[i] - diffed[i-1]); diffed = temp; }
-        return diffed;
+// 2. NEURO-FUZZY SYSTEM (ANFIS)
+class NeuroFuzzySystem {
+    constructor(nRules = 7) {
+        this.nRules = nRules;
+        this.membershipParams = [];
+        this.consequentParams = [];
+        this.learningRate = 0.01;
+        this.momentum = 0.9;
+        this.prevGradients = {};
+        for (let i = 0; i < nRules; i++) {
+            this.membershipParams.push({ mean: 0.2 + i * 0.12, sigma: 0.2 + Math.random() * 0.1 });
+            this.consequentParams.push({ p0: Math.random() - 0.5, p1: Math.random() - 0.5, p2: Math.random() - 0.5 });
+        }
     }
-    inverseDifference(original, predicted, order = 1) {
-        let result = [...predicted];
-        for (let d = 0; d < order; d++) {
-            const temp = []; const base = original[original.length - result.length - 1];
-            temp.push(base + result[0]);
-            for (let i = 1; i < result.length; i++) temp.push(temp[i-1] + result[i]);
-            result = temp;
+    gaussianMembership(x, mean, sigma) { return Math.exp(-Math.pow(x - mean, 2) / (2 * Math.pow(sigma, 2))); }
+    forwardPass(inputs) {
+        const ruleFiringStrengths = [];
+        for (let i = 0; i < this.nRules; i++) {
+            let firingStrength = 1;
+            for (let j = 0; j < inputs.length; j++) firingStrength *= this.gaussianMembership(inputs[j], this.membershipParams[i].mean, this.membershipParams[i].sigma);
+            ruleFiringStrengths.push(firingStrength);
+        }
+        const totalStrength = ruleFiringStrengths.reduce((a,b) => a+b, 1e-10);
+        const normalizedStrengths = ruleFiringStrengths.map(s => s / totalStrength);
+        let output = 0;
+        for (let i = 0; i < this.nRules; i++) {
+            const consequent = this.consequentParams[i].p0 + this.consequentParams[i].p1 * inputs[0] + this.consequentParams[i].p2 * inputs[1];
+            output += normalizedStrengths[i] * consequent;
+        }
+        return { output, firingStrengths: ruleFiringStrengths, normalizedStrengths };
+    }
+    backwardPass(inputs, target, forwardResults) {
+        const error = target - forwardResults.output;
+        for (let i = 0; i < this.nRules; i++) {
+            const consequentGrad = forwardResults.normalizedStrengths[i] * error;
+            this.consequentParams[i].p0 -= this.learningRate * consequentGrad;
+            this.consequentParams[i].p1 -= this.learningRate * consequentGrad * inputs[0];
+            this.consequentParams[i].p2 -= this.learningRate * consequentGrad * inputs[1];
+            let sumNormalized = 0;
+            for (let j = 0; j < this.nRules; j++) sumNormalized += forwardResults.firingStrengths[j];
+            const membershipGradBase = error * (this.consequentParams[i].p0 + this.consequentParams[i].p1 * inputs[0] + this.consequentParams[i].p2 * inputs[1] - forwardResults.output) / (sumNormalized * sumNormalized);
+            for (let j = 0; j < inputs.length; j++) {
+                const mu = this.gaussianMembership(inputs[j], this.membershipParams[i].mean, this.membershipParams[i].sigma);
+                const gradMean = membershipGradBase * forwardResults.firingStrengths[i] * mu * (inputs[j] - this.membershipParams[i].mean) / Math.pow(this.membershipParams[i].sigma, 2);
+                const gradSigma = membershipGradBase * forwardResults.firingStrengths[i] * mu * Math.pow(inputs[j] - this.membershipParams[i].mean, 2) / Math.pow(this.membershipParams[i].sigma, 3);
+                this.membershipParams[i].mean -= this.learningRate * gradMean;
+                this.membershipParams[i].sigma -= this.learningRate * gradSigma;
+                this.membershipParams[i].sigma = Math.max(0.05, this.membershipParams[i].sigma);
+            }
+        }
+        return error;
+    }
+    train(patterns, targets, epochs = 15) {
+        for (let epoch = 0; epoch < epochs; epoch++) {
+            for (let i = 0; i < patterns.length; i++) {
+                const forward = this.forwardPass(patterns[i]);
+                this.backwardPass(patterns[i], targets[i], forward);
+            }
+        }
+    }
+    predict(inputs) {
+        const forward = this.forwardPass(inputs);
+        const prediction = forward.output > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(forward.output - 0.5) * 92;
+        return { prediction, confidence: Math.min(96, confidence), name: 'ANFIS' };
+    }
+}
+
+// 3. ONLINE EXTREME LEARNING MACHINE (OS-ELM)
+class OnlineExtremeLearningMachine {
+    constructor(nHidden = 60) {
+        this.nHidden = nHidden;
+        this.inputWeights = null;
+        this.hiddenBiases = null;
+        this.outputWeights = null;
+        this.covarianceMatrix = null;
+        this.initialized = false;
+    }
+    activationFunction(x) { return Math.tanh(x); }
+    transpose(matrix) { return matrix[0].map((_, colIndex) => matrix.map(row => row[colIndex])); }
+    multiplyMatrices(A, B) {
+        const result = Array(A.length).fill().map(() => Array(B[0].length).fill(0));
+        for (let i = 0; i < A.length; i++) {
+            for (let j = 0; j < B[0].length; j++) {
+                let sum = 0;
+                for (let k = 0; k < A[0].length; k++) sum += A[i][k] * B[k][j];
+                result[i][j] = sum;
+            }
         }
         return result;
     }
-    estimateParameters(series) {
-        const numerical = series.map(s => s === 'Tài' ? 1 : 0);
-        const diffed = this.difference(numerical, this.d);
-        if (this.p > 0 && diffed.length > this.p) {
-            const r = [];
-            for (let k = 0; k <= this.p; k++) {
-                let sum = 0;
-                for (let t = 0; t < diffed.length - k; t++) sum += (diffed[t] - 0.5) * (diffed[t + k] - 0.5);
-                r.push(sum / diffed.length);
-            }
-            const R = [];
-            for (let i = 0; i < this.p; i++) { R[i] = []; for (let j = 0; j < this.p; j++) R[i][j] = r[Math.abs(i - j)]; }
-            const rVector = r.slice(1, this.p + 1);
-            this.arParams = this.solveLinearSystem(R, rVector);
-        }
-        return { arParams: this.arParams };
-    }
-    solveLinearSystem(A, b) {
-        const n = A.length; const augmented = A.map((row, i) => [...row, b[i]]);
+    inverseMatrix(matrix) {
+        const n = matrix.length;
+        const augmented = matrix.map((row, i) => [...row, ...Array(n).fill().map((_, j) => i === j ? 1 : 0)]);
         for (let i = 0; i < n; i++) {
             let maxRow = i;
             for (let j = i + 1; j < n; j++) if (Math.abs(augmented[j][i]) > Math.abs(augmented[maxRow][i])) maxRow = j;
             [augmented[i], augmented[maxRow]] = [augmented[maxRow], augmented[i]];
             const pivot = augmented[i][i];
-            for (let j = i; j <= n; j++) augmented[i][j] /= pivot;
+            for (let j = i; j < 2 * n; j++) augmented[i][j] /= pivot;
             for (let j = 0; j < n; j++) {
-                if (j !== i) { const factor = augmented[j][i]; for (let k = i; k <= n; k++) augmented[j][k] -= factor * augmented[i][k]; }
-            }
-        }
-        return augmented.map(row => row[n]);
-    }
-    predict(series, steps = 1) {
-        const numerical = series.map(s => s === 'Tài' ? 1 : 0);
-        const diffed = this.difference(numerical, this.d);
-        if (diffed.length < Math.max(this.p, this.q)) return null;
-        const predictions = [];
-        let lastValues = diffed.slice(-this.p);
-        let lastErrors = this.residuals.slice(-this.q);
-        for (let step = 0; step < steps; step++) {
-            let arTerm = 0; for (let i = 0; i < this.p; i++) arTerm += this.arParams[i] * (lastValues[lastValues.length - 1 - i] || 0);
-            let maTerm = 0; for (let i = 0; i < this.q; i++) maTerm += this.maParams[i] * (lastErrors[lastErrors.length - 1 - i] || 0);
-            const prediction = arTerm + maTerm;
-            predictions.push(prediction);
-            const error = (diffed[diffed.length - this.q + step] || 0) - prediction;
-            this.residuals.push(error);
-            if (this.residuals.length > this.q * 2) this.residuals.shift();
-            lastValues.push(prediction); if (lastValues.length > this.p) lastValues.shift();
-        }
-        const undiffed = this.inverseDifference(numerical, predictions, this.d);
-        const finalPrediction = undiffed[0] > 0.5 ? 'Tài' : 'Xỉu';
-        const confidence = 60 + Math.abs(undiffed[0] - 0.5) * 40;
-        return { prediction: finalPrediction, confidence: Math.min(89, confidence), name: 'ARIMA' };
-    }
-}
-
-class GARCHModel {
-    constructor(p = 1, q = 1) { this.p = p; this.q = q; this.omega = 0.1; this.alphas = Array(p).fill(0.1); this.betas = Array(q).fill(0.8); this.conditionalVariances = []; }
-    estimateVolatility(returns) {
-        const n = returns.length;
-        this.conditionalVariances = Array(n).fill(this.omega / (1 - this.alphas.reduce((a,b) => a+b, 0) - this.betas.reduce((a,b) => a+b, 0)));
-        for (let t = 1; t < n; t++) {
-            let arch = 0; for (let i = 0; i < Math.min(this.p, t); i++) arch += this.alphas[i] * Math.pow(returns[t - 1 - i], 2);
-            let garch = 0; for (let j = 0; j < Math.min(this.q, t); j++) garch += this.betas[j] * this.conditionalVariances[t - 1 - j];
-            this.conditionalVariances[t] = this.omega + arch + garch;
-        }
-        return this.conditionalVariances;
-    }
-    predictNextVolatility(returns) {
-        const lastVariance = this.conditionalVariances[this.conditionalVariances.length - 1] || this.omega;
-        const lastReturn = returns[returns.length - 1] || 0;
-        let arch = 0; for (let i = 0; i < Math.min(this.p, returns.length); i++) arch += this.alphas[i] * Math.pow(returns[returns.length - 1 - i] || 0, 2);
-        let garch = 0; for (let j = 0; j < Math.min(this.q, this.conditionalVariances.length); j++) garch += this.betas[j] * (this.conditionalVariances[this.conditionalVariances.length - 1 - j] || lastVariance);
-        const nextVariance = this.omega + arch + garch;
-        return Math.sqrt(nextVariance);
-    }
-    predict(results) {
-        const returns = [];
-        for (let i = 1; i < results.length; i++) returns.push(results[i-1] === results[i] ? 0 : (results[i] === 'Tài' ? 1 : -1));
-        if (returns.length < 10) return null;
-        const volatilities = this.estimateVolatility(returns);
-        const nextVol = this.predictNextVolatility(returns);
-        const avgVol = volatilities.reduce((a,b) => a+b, 0) / volatilities.length;
-        if (nextVol > avgVol * 1.3) {
-            const lastResult = results[0];
-            return { prediction: lastResult === 'Tài' ? 'Xỉu' : 'Tài', confidence: 68 + Math.min(20, (nextVol / avgVol - 1) * 30), name: 'GARCH' };
-        } else if (nextVol < avgVol * 0.7) {
-            return { prediction: results[0], confidence: 65, name: 'GARCH' };
-        }
-        return null;
-    }
-}
-
-class MonteCarloSimulator {
-    constructor(nSimulations = 1000, horizon = 5) { this.nSimulations = nSimulations; this.horizon = horizon; }
-    estimateTransitionProbabilities(results) {
-        const transitions = { TT: 0, TX: 0, XT: 0, XX: 0 };
-        for (let i = 1; i < results.length; i++) {
-            const key = (results[i-1] === 'Tài' ? 'T' : 'X') + (results[i] === 'Tài' ? 'T' : 'X');
-            transitions[key]++;
-        }
-        const total = transitions.TT + transitions.TX + transitions.XT + transitions.XX;
-        if (total === 0) return { TT: 0.5, TX: 0.5, XT: 0.5, XX: 0.5 };
-        return { TT: transitions.TT / (transitions.TT + transitions.TX), TX: transitions.TX / (transitions.TT + transitions.TX), XT: transitions.XT / (transitions.XT + transitions.XX), XX: transitions.XX / (transitions.XT + transitions.XX) };
-    }
-    runSimulation(startState, transitionProbs) {
-        const path = [startState]; let currentState = startState;
-        for (let step = 0; step < this.horizon; step++) {
-            const prob = (currentState === 'Tài') ? transitionProbs.TT : transitionProbs.XT;
-            const nextState = Math.random() < prob ? 'Tài' : 'Xỉu';
-            path.push(nextState); currentState = nextState;
-        }
-        return path;
-    }
-    predict(results) {
-        if (results.length < 10) return null;
-        const transitionProbs = this.estimateTransitionProbabilities(results);
-        const startState = results[0];
-        const outcomes = { Tai: 0, Xiu: 0 };
-        for (let i = 0; i < this.nSimulations; i++) {
-            const path = this.runSimulation(startState, transitionProbs);
-            if (path[this.horizon] === 'Tài') outcomes.Tai++; else outcomes.Xiu++;
-        }
-        const taiProbability = outcomes.Tai / this.nSimulations;
-        const prediction = taiProbability > 0.5 ? 'Tài' : 'Xỉu';
-        const confidence = 50 + Math.abs(taiProbability - 0.5) * 80;
-        return { prediction: prediction, confidence: Math.min(91, confidence), name: 'MonteCarlo', probability: taiProbability };
-    }
-}
-
-class SVMSimulator {
-    constructor() { this.supportVectors = []; this.weights = []; this.bias = 0; this.kernel = 'rbf'; this.gamma = 0.5; }
-    kernelFunction(x1, x2) {
-        if (this.kernel === 'linear') return this.dotProduct(x1, x2);
-        else if (this.kernel === 'rbf') {
-            let squaredDistance = 0;
-            for (let i = 0; i < x1.length; i++) squaredDistance += Math.pow(x1[i] - x2[i], 2);
-            return Math.exp(-this.gamma * squaredDistance);
-        }
-        return this.dotProduct(x1, x2);
-    }
-    dotProduct(v1, v2) { let sum = 0; for (let i = 0; i < Math.min(v1.length, v2.length); i++) sum += v1[i] * v2[i]; return sum; }
-    extractFeatures(results, sums) {
-        const features = [];
-        const numerical = results.slice(0, 10).map(r => r === 'Tài' ? 1 : 0); features.push(...numerical);
-        let streak = 1; for (let i = 1; i < Math.min(5, results.length); i++) { if (results[i] === results[0]) streak++; else break; } features.push(streak / 5);
-        let changes = 0; for (let i = 1; i < Math.min(10, results.length); i++) { if (results[i] !== results[i-1]) changes++; } features.push(changes / 9);
-        const taiRatio = results.slice(0, 10).filter(r => r === 'Tài').length / Math.min(10, results.length); features.push(taiRatio);
-        if (sums && sums.length >= 5) { const recentSum = sums[0]; features.push(recentSum / 18); }
-        while (features.length < 15) features.push(0);
-        return features;
-    }
-    train(features, labels) {
-        const n = features.length; const alpha = Array(n).fill(0.01); const C = 1.0; const maxIterations = 50;
-        for (let iter = 0; iter < maxIterations; iter++) {
-            for (let i = 0; i < n; i++) {
-                let sum = 0; for (let j = 0; j < n; j++) sum += alpha[j] * labels[j] * this.kernelFunction(features[i], features[j]);
-                const prediction = sum - this.bias;
-                if (labels[i] * prediction < 1) { alpha[i] += C; } else { alpha[i] = Math.max(0, alpha[i] - 0.01); }
-            }
-        }
-        this.supportVectors = features; this.weights = alpha;
-    }
-    predict(features) {
-        if (this.supportVectors.length === 0) return null;
-        let sum = 0; for (let i = 0; i < this.supportVectors.length; i++) sum += this.weights[i] * this.kernelFunction(features, this.supportVectors[i]);
-        const decision = sum - this.bias;
-        const prediction = decision > 0 ? 'Tài' : 'Xỉu';
-        const confidence = 50 + Math.min(40, Math.abs(decision) * 20);
-        return { prediction, confidence: Math.min(87, confidence), name: 'SVM' };
-    }
-}
-
-class RandomForestSimulator {
-    constructor(nTrees = 20, maxDepth = 5) { this.nTrees = nTrees; this.maxDepth = maxDepth; this.trees = []; }
-    buildTree(features, labels, depth = 0) {
-        if (depth >= this.maxDepth || features.length < 3 || this.isPure(labels)) {
-            const taiCount = labels.filter(l => l === 1).length;
-            return { isLeaf: true, prediction: taiCount > labels.length / 2 ? 1 : 0 };
-        }
-        const nFeatures = Math.floor(Math.sqrt(features[0].length));
-        const selectedFeatures = this.randomSelectFeatures(nFeatures, features[0].length);
-        let bestFeature = -1, bestThreshold = 0, bestGini = Infinity;
-        for (const featureIdx of selectedFeatures) {
-            const values = features.map(f => f[featureIdx]).sort((a,b) => a-b);
-            for (let i = 1; i < values.length; i++) {
-                const threshold = (values[i-1] + values[i]) / 2;
-                const gini = this.calculateGiniIndex(features, labels, featureIdx, threshold);
-                if (gini < bestGini) { bestGini = gini; bestFeature = featureIdx; bestThreshold = threshold; }
-            }
-        }
-        if (bestFeature === -1) {
-            const taiCount = labels.filter(l => l === 1).length;
-            return { isLeaf: true, prediction: taiCount > labels.length / 2 ? 1 : 0 };
-        }
-        const leftIndices = [], rightIndices = [];
-        for (let i = 0; i < features.length; i++) { if (features[i][bestFeature] <= bestThreshold) leftIndices.push(i); else rightIndices.push(i); }
-        const leftFeatures = leftIndices.map(i => features[i]); const leftLabels = leftIndices.map(i => labels[i]);
-        const rightFeatures = rightIndices.map(i => features[i]); const rightLabels = rightIndices.map(i => labels[i]);
-        return { isLeaf: false, feature: bestFeature, threshold: bestThreshold, left: this.buildTree(leftFeatures, leftLabels, depth + 1), right: this.buildTree(rightFeatures, rightLabels, depth + 1) };
-    }
-    randomSelectFeatures(k, total) { const selected = []; const indices = Array.from({ length: total }, (_, i) => i); for (let i = 0; i < k && indices.length > 0; i++) { const randomIndex = Math.floor(Math.random() * indices.length); selected.push(indices[randomIndex]); indices.splice(randomIndex, 1); } return selected; }
-    isPure(labels) { const first = labels[0]; return labels.every(l => l === first); }
-    calculateGiniIndex(features, labels, featureIdx, threshold) {
-        let leftCount = 0, rightCount = 0, leftTai = 0, rightTai = 0;
-        for (let i = 0; i < features.length; i++) {
-            if (features[i][featureIdx] <= threshold) { leftCount++; if (labels[i] === 1) leftTai++; }
-            else { rightCount++; if (labels[i] === 1) rightTai++; }
-        }
-        const leftImpurity = 1 - Math.pow(leftTai / (leftCount + 1e-10), 2) - Math.pow(1 - leftTai / (leftCount + 1e-10), 2);
-        const rightImpurity = 1 - Math.pow(rightTai / (rightCount + 1e-10), 2) - Math.pow(1 - rightTai / (rightCount + 1e-10), 2);
-        return (leftCount / features.length) * leftImpurity + (rightCount / features.length) * rightImpurity;
-    }
-    train(features, labels) {
-        const nSamples = features.length; this.trees = [];
-        for (let t = 0; t < this.nTrees; t++) {
-            const bootstrapIndices = []; for (let i = 0; i < nSamples; i++) bootstrapIndices.push(Math.floor(Math.random() * nSamples));
-            const bootstrapFeatures = bootstrapIndices.map(i => features[i]); const bootstrapLabels = bootstrapIndices.map(i => labels[i]);
-            const tree = this.buildTree(bootstrapFeatures, bootstrapLabels); this.trees.push(tree);
-        }
-    }
-    predict(features) {
-        if (this.trees.length === 0) return null;
-        let taiVotes = 0;
-        for (const tree of this.trees) {
-            let node = tree;
-            while (!node.isLeaf) { if (features[node.feature] <= node.threshold) node = node.left; else node = node.right; }
-            if (node.prediction === 1) taiVotes++;
-        }
-        const prediction = taiVotes > this.trees.length / 2 ? 'Tài' : 'Xỉu';
-        const confidence = 50 + (Math.abs(taiVotes - this.trees.length / 2) / this.trees.length) * 80;
-        return { prediction, confidence: Math.min(90, confidence), name: 'RandomForest' };
-    }
-}
-
-class KMeansClustering {
-    constructor(k = 4) { this.k = k; this.centroids = []; this.labels = []; }
-    extractRegimeFeatures(results, sums) {
-        const features = [];
-        const taiRatio = results.slice(0, 20).filter(r => r === 'Tài').length / Math.min(20, results.length); features.push(taiRatio);
-        let volatility = 0; for (let i = 1; i < Math.min(20, results.length); i++) { if (results[i] !== results[i-1]) volatility++; } features.push(volatility / 19);
-        let streakDistribution = [], currentStreak = 1;
-        for (let i = 1; i < Math.min(30, results.length); i++) { if (results[i] === results[i-1]) currentStreak++; else { streakDistribution.push(currentStreak); currentStreak = 1; } }
-        const avgStreak = streakDistribution.reduce((a,b) => a+b, 0) / (streakDistribution.length + 1); features.push(Math.min(1, avgStreak / 10));
-        if (sums && sums.length >= 10) { const sumMean = sums.slice(0, 10).reduce((a,b) => a+b, 0) / 10; features.push(sumMean / 18); } else features.push(0.5);
-        return features;
-    }
-    initializeCentroids(features) { const indices = Array.from({ length: features.length }, (_, i) => i); for (let i = 0; i < this.k; i++) { const randomIndex = indices[Math.floor(Math.random() * indices.length)]; this.centroids.push([...features[randomIndex]]); } }
-    euclideanDistance(a, b) { let sum = 0; for (let i = 0; i < a.length; i++) sum += Math.pow(a[i] - b[i], 2); return Math.sqrt(sum); }
-    fit(features, maxIterations = 50) {
-        if (features.length < this.k) return;
-        this.initializeCentroids(features);
-        for (let iter = 0; iter < maxIterations; iter++) {
-            this.labels = [];
-            for (const point of features) {
-                let minDist = Infinity, label = 0;
-                for (let i = 0; i < this.k; i++) { const dist = this.euclideanDistance(point, this.centroids[i]); if (dist < minDist) { minDist = dist; label = i; } }
-                this.labels.push(label);
-            }
-            const newCentroids = Array(this.k).fill().map(() => Array(features[0].length).fill(0)); const counts = Array(this.k).fill(0);
-            for (let i = 0; i < features.length; i++) { const label = this.labels[i]; counts[label]++; for (let j = 0; j < features[i].length; j++) newCentroids[label][j] += features[i][j]; }
-            let changed = false;
-            for (let i = 0; i < this.k; i++) { if (counts[i] > 0) { for (let j = 0; j < newCentroids[i].length; j++) newCentroids[i][j] /= counts[i]; } if (this.euclideanDistance(newCentroids[i], this.centroids[i]) > 0.001) changed = true; this.centroids[i] = newCentroids[i]; }
-            if (!changed) break;
-        }
-    }
-    predictRegime(results, sums) {
-        const features = this.extractRegimeFeatures(results, sums);
-        if (this.centroids.length === 0) return 0;
-        let minDist = Infinity, regime = 0;
-        for (let i = 0; i < this.centroids.length; i++) { const dist = this.euclideanDistance(features, this.centroids[i]); if (dist < minDist) { minDist = dist; regime = i; } }
-        const regimeNames = ['trending', 'volatile', 'alternating', 'random'];
-        return { regime: regimeNames[regime] || 'unknown', confidence: 1 - minDist / 2 };
-    }
-}
-
-class HarmonicPatternRecognizer {
-    constructor() {
-        this.patterns = {
-            gartley: { XA: 0.618, AB: 0.382, BC: 0.886, CD: 1.272 },
-            bat: { XA: 0.886, AB: 0.382, BC: 0.886, CD: 1.618 },
-            crab: { XA: 1.618, AB: 0.382, BC: 0.886, CD: 2.618 },
-            butterfly: { XA: 0.786, AB: 0.382, BC: 0.886, CD: 1.618 }
-        };
-    }
-    findExtremes(results) {
-        const points = []; const numerical = results.map(r => r === 'Tài' ? 1 : 0);
-        for (let i = 1; i < numerical.length - 1; i++) {
-            if (numerical[i] > numerical[i-1] && numerical[i] > numerical[i+1]) points.push({ index: i, value: numerical[i], type: 'peak' });
-            else if (numerical[i] < numerical[i-1] && numerical[i] < numerical[i+1]) points.push({ index: i, value: numerical[i], type: 'trough' });
-        }
-        return points;
-    }
-    calculateRatios(points) {
-        if (points.length < 4) return null;
-        for (let i = 0; i <= points.length - 4; i++) {
-            const X = points[i], A = points[i+1], B = points[i+2], C = points[i+3];
-            const XA = Math.abs(A.value - X.value), AB = Math.abs(B.value - A.value), BC = Math.abs(C.value - B.value);
-            const ratioAB_XA = AB / XA, ratioBC_AB = BC / AB;
-            for (const [patternName, ratios] of Object.entries(this.patterns)) {
-                if (Math.abs(ratioAB_XA - ratios.AB) < 0.1 && Math.abs(ratioBC_AB - ratios.BC) < 0.1) {
-                    const prediction = C.type === 'peak' ? 'Xỉu' : 'Tài';
-                    return { pattern: patternName, prediction: prediction, confidence: 70 + (1 - Math.abs(ratioAB_XA - ratios.AB) / 0.1) * 15 };
+                if (j !== i) {
+                    const factor = augmented[j][i];
+                    for (let k = i; k < 2 * n; k++) augmented[j][k] -= factor * augmented[i][k];
                 }
             }
         }
-        return null;
+        return augmented.map(row => row.slice(n));
     }
-    predict(results) {
-        if (results.length < 15) return null;
-        const extremes = this.findExtremes(results);
-        const harmonic = this.calculateRatios(extremes);
-        if (harmonic) return { prediction: harmonic.prediction, confidence: Math.min(85, harmonic.confidence), name: `Harmonic_${harmonic.pattern}` };
+    addMatrices(A, B) { return A.map((row, i) => row.map((val, j) => val + B[i][j])); }
+    subtractMatrices(A, B) { return A.map((row, i) => row.map((val, j) => val - B[i][j])); }
+    identityMatrix(n) { return Array(n).fill().map((_, i) => Array(n).fill().map((_, j) => i === j ? 1 : 0)); }
+    initialize(inputDim, initialData, initialTargets) {
+        this.inputWeights = Array(this.nHidden).fill().map(() => Array(inputDim).fill().map(() => (Math.random() - 0.5) * 2));
+        this.hiddenBiases = Array(this.nHidden).fill().map(() => (Math.random() - 0.5) * 2);
+        const H = this.calculateHiddenOutput(initialData);
+        const Ht = this.transpose(H);
+        this.covarianceMatrix = this.inverseMatrix(this.multiplyMatrices(Ht, H));
+        this.outputWeights = this.multiplyMatrices(this.multiplyMatrices(this.covarianceMatrix, Ht), initialTargets);
+        this.initialized = true;
+    }
+    calculateHiddenOutput(data) {
+        const H = Array(data.length).fill().map(() => Array(this.nHidden).fill(0));
+        for (let i = 0; i < data.length; i++) {
+            for (let j = 0; j < this.nHidden; j++) {
+                let sum = this.hiddenBiases[j];
+                for (let k = 0; k < data[i].length; k++) sum += this.inputWeights[j][k] * data[i][k];
+                H[i][j] = this.activationFunction(sum);
+            }
+        }
+        return H;
+    }
+    update(newData, newTargets) {
+        if (!this.initialized) { this.initialize(newData[0].length, newData, newTargets); return; }
+        const Hnew = this.calculateHiddenOutput(newData);
+        const HnewT = this.transpose(Hnew);
+        const temp = this.multiplyMatrices(this.covarianceMatrix, HnewT);
+        const denominator = this.addMatrices(this.identityMatrix(Hnew.length), this.multiplyMatrices(Hnew, temp));
+        const gain = this.multiplyMatrices(temp, this.inverseMatrix(denominator));
+        const error = this.subtractMatrices(newTargets, this.multiplyMatrices(Hnew, this.outputWeights));
+        this.outputWeights = this.addMatrices(this.outputWeights, this.multiplyMatrices(gain, error));
+        const KH = this.multiplyMatrices(gain, Hnew);
+        this.covarianceMatrix = this.subtractMatrices(this.covarianceMatrix, this.multiplyMatrices(this.covarianceMatrix, KH));
+    }
+    predict(features) {
+        if (!this.initialized) return null;
+        const H = Array(1).fill().map(() => Array(this.nHidden).fill(0));
+        for (let j = 0; j < this.nHidden; j++) {
+            let sum = this.hiddenBiases[j];
+            for (let k = 0; k < features.length; k++) sum += this.inputWeights[j][k] * features[k];
+            H[0][j] = this.activationFunction(sum);
+        }
+        const output = this.multiplyMatrices(H, this.outputWeights)[0][0];
+        const prediction = output > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(output - 0.5) * 94;
+        return { prediction, confidence: Math.min(97, confidence), name: 'OSELM' };
+    }
+}
+
+// 4. WAVELET NEURAL NETWORK (WNN)
+class WaveletNeuralNetwork {
+    constructor(nWavelets = 12) {
+        this.nWavelets = nWavelets;
+        this.translations = [];
+        this.dilations = [];
+        this.weights = [];
+        this.learningRate = 0.01;
+        this.momentum = 0.9;
+        this.prevGradients = {};
+        this.bias = Math.random() * 2 - 1;
+    }
+    morletWavelet(x) { return Math.cos(5 * x) * Math.exp(-Math.pow(x, 2) / 2); }
+    derivativeMorlet(x) { return -Math.sin(5 * x) * 5 * Math.exp(-Math.pow(x, 2) / 2) - Math.cos(5 * x) * Math.exp(-Math.pow(x, 2) / 2) * x; }
+    initialize(inputDim) {
+        for (let i = 0; i < this.nWavelets; i++) {
+            this.translations.push(Array(inputDim).fill().map(() => Math.random() * 2 - 1));
+            this.dilations.push(Array(inputDim).fill().map(() => Math.abs(Math.random() * 2 + 0.5)));
+            this.weights.push(Math.random() * 2 - 1);
+        }
+    }
+    forward(inputs) {
+        const waveletOutputs = [];
+        for (let i = 0; i < this.nWavelets; i++) {
+            let sum = 0;
+            for (let j = 0; j < inputs.length; j++) {
+                const z = (inputs[j] - this.translations[i][j]) / this.dilations[i][j];
+                sum += this.morletWavelet(z);
+            }
+            waveletOutputs.push(sum / inputs.length);
+        }
+        let output = this.bias;
+        for (let i = 0; i < this.nWavelets; i++) output += this.weights[i] * waveletOutputs[i];
+        const activation = 1 / (1 + Math.exp(-output));
+        return { output: activation, waveletOutputs };
+    }
+    backward(inputs, target, forwardResults) {
+        const error = target - forwardResults.output;
+        const delta = error * forwardResults.output * (1 - forwardResults.output);
+        for (let i = 0; i < this.nWavelets; i++) {
+            this.weights[i] += this.learningRate * delta * forwardResults.waveletOutputs[i];
+            for (let j = 0; j < inputs.length; j++) {
+                const z = (inputs[j] - this.translations[i][j]) / this.dilations[i][j];
+                const psiPrime = this.derivativeMorlet(z);
+                const gradTranslation = -delta * this.weights[i] * psiPrime / this.dilations[i][j];
+                const gradDilation = -delta * this.weights[i] * psiPrime * z / this.dilations[i][j];
+                this.translations[i][j] += this.learningRate * gradTranslation;
+                this.dilations[i][j] += this.learningRate * gradDilation;
+                this.dilations[i][j] = Math.max(0.1, this.dilations[i][j]);
+            }
+        }
+        this.bias += this.learningRate * delta;
+        return Math.abs(error);
+    }
+    train(patterns, targets, epochs = 12) {
+        if (patterns.length === 0) return;
+        if (this.weights.length === 0) this.initialize(patterns[0].length);
+        for (let epoch = 0; epoch < epochs; epoch++) {
+            for (let i = 0; i < patterns.length; i++) {
+                const forward = this.forward(patterns[i]);
+                this.backward(patterns[i], targets[i], forward);
+            }
+        }
+    }
+    predict(inputs) {
+        const forward = this.forward(inputs);
+        const prediction = forward.output > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(forward.output - 0.5) * 96;
+        return { prediction, confidence: Math.min(98, confidence), name: 'WaveletNN' };
+    }
+}
+
+// 5. HIERARCHICAL TEMPORAL MEMORY (HTM)
+class HierarchicalTemporalMemory {
+    constructor(nColumns = 150, nCellsPerColumn = 6) {
+        this.nColumns = nColumns;
+        this.nCellsPerColumn = nCellsPerColumn;
+        this.activeColumns = [];
+        this.prevActiveColumns = [];
+        this.connections = [];
+        this.permanences = [];
+        for (let i = 0; i < nColumns; i++) {
+            this.connections[i] = [];
+            this.permanences[i] = [];
+            for (let j = 0; j < nColumns; j++) {
+                if (Math.random() < 0.1) {
+                    this.connections[i].push(j);
+                    this.permanences[i].push(Math.random());
+                }
+            }
+        }
+    }
+    adaptPermanences(activeColumn, prevActiveColumn, learningRate = 0.1) {
+        const connections = this.connections[activeColumn];
+        for (let idx = 0; idx < connections.length; idx++) {
+            const conn = connections[idx];
+            if (conn === prevActiveColumn) this.permanences[activeColumn][idx] += learningRate;
+            else this.permanences[activeColumn][idx] -= learningRate * 0.5;
+            this.permanences[activeColumn][idx] = Math.max(0, Math.min(1, this.permanences[activeColumn][idx]));
+        }
+    }
+    spatialPooling(input) {
+        const overlaps = Array(this.nColumns).fill(0);
+        for (let i = 0; i < this.nColumns; i++) {
+            let overlap = 0;
+            for (let j = 0; j < this.connections[i].length; j++) if (input[this.connections[i][j]]) overlap += this.permanences[i][j];
+            overlaps[i] = overlap;
+        }
+        const nActive = Math.max(5, Math.floor(this.nColumns * 0.02));
+        return overlaps.map((val, idx) => ({ val, idx })).sort((a, b) => b.val - a.val).slice(0, nActive).map(item => item.idx);
+    }
+    compute(input, learn = true) {
+        const activeColumns = this.spatialPooling(input);
+        if (learn && this.prevActiveColumns) {
+            for (const col of activeColumns) {
+                for (const prevCol of this.prevActiveColumns) this.adaptPermanences(col, prevCol, 0.1);
+            }
+        }
+        this.prevActiveColumns = activeColumns;
+        this.activeColumns = activeColumns;
+        return { activeCells: activeColumns };
+    }
+    predictNext(input) {
+        const activeColumns = this.spatialPooling(input);
+        const predictions = new Set();
+        for (const col of activeColumns) {
+            const connections = this.connections[col];
+            for (let idx = 0; idx < connections.length; idx++) if (this.permanences[col][idx] > 0.5) predictions.add(connections[idx]);
+        }
+        const predictedColumn = predictions.size > 0 ? Array.from(predictions)[0] : null;
+        if (predictedColumn !== null) {
+            const prediction = predictedColumn > this.nColumns / 2 ? 'Tài' : 'Xỉu';
+            const confidence = 50 + (predictions.size / this.nColumns) * 40;
+            return { prediction, confidence: Math.min(85, confidence), name: 'HTM' };
+        }
         return null;
     }
 }
 
-class UltimateEnsemble {
-    constructor() { this.models = {}; this.weights = {}; this.performanceHistory = []; this.optimalWeights = null; }
-    registerModel(name, model, initialWeight = 1.0) { this.models[name] = model; this.weights[name] = initialWeight; }
-    updateWeight(name, success, confidence) { const learningRate = 0.08; const adjustment = success ? learningRate * (confidence / 100) : -learningRate * 0.5; this.weights[name] = Math.max(0.2, Math.min(2.0, this.weights[name] + adjustment)); }
-    getWeightedPrediction(predictions, features) {
-        let taiScore = 0, xiuScore = 0, totalWeight = 0, validPredictions = 0;
+// 6. ECHO STATE NETWORK (ESN)
+class EchoStateNetwork {
+    constructor(nReservoir = 250, spectralRadius = 0.95, leakingRate = 0.4) {
+        this.nReservoir = nReservoir;
+        this.spectralRadius = spectralRadius;
+        this.leakingRate = leakingRate;
+        this.inputWeights = [];
+        this.reservoirWeights = [];
+        this.outputWeights = null;
+        this.state = Array(nReservoir).fill(0);
+        this.ridgeParameter = 1e-8;
+        for (let i = 0; i < nReservoir; i++) this.inputWeights.push((Math.random() - 0.5) * 2);
+        let reservoir = Array(nReservoir).fill().map(() => Array(nReservoir).fill().map(() => (Math.random() - 0.5) * 2));
+        let norm = 0;
+        for (let i = 0; i < nReservoir; i++) for (let j = 0; j < nReservoir; j++) norm += Math.abs(reservoir[i][j]);
+        const scaling = spectralRadius / (norm / nReservoir);
+        for (let i = 0; i < nReservoir; i++) for (let j = 0; j < nReservoir; j++) reservoir[i][j] *= scaling;
+        this.reservoirWeights = reservoir;
+    }
+    updateState(input) {
+        const newState = Array(this.nReservoir).fill(0);
+        for (let i = 0; i < this.nReservoir; i++) {
+            let sum = this.inputWeights[i] * input;
+            for (let j = 0; j < this.nReservoir; j++) sum += this.reservoirWeights[i][j] * this.state[j];
+            newState[i] = (1 - this.leakingRate) * this.state[i] + this.leakingRate * Math.tanh(sum);
+        }
+        this.state = newState;
+        return this.state;
+    }
+    train(patterns, targets) {
+        const stateCollection = [];
+        for (let i = 0; i < patterns.length; i++) {
+            this.updateState(patterns[i]);
+            stateCollection.push([...this.state]);
+        }
+        const R = stateCollection;
+        const Rtranspose = R[0].map((_, colIndex) => R.map(row => row[colIndex]));
+        const RTR = Rtranspose.map(row => R[0].map((_, j) => row.reduce((sum, val, k) => sum + val * Rtranspose[j][k], 0)));
+        for (let i = 0; i < RTR.length; i++) RTR[i][i] += this.ridgeParameter;
+        const n = RTR.length;
+        const augmented = RTR.map((row, i) => [...row, ...Array(n).fill().map((_, j) => i === j ? 1 : 0)]);
+        for (let i = 0; i < n; i++) {
+            let maxRow = i;
+            for (let j = i + 1; j < n; j++) if (Math.abs(augmented[j][i]) > Math.abs(augmented[maxRow][i])) maxRow = j;
+            [augmented[i], augmented[maxRow]] = [augmented[maxRow], augmented[i]];
+            const pivot = augmented[i][i];
+            for (let j = i; j < 2 * n; j++) augmented[i][j] /= pivot;
+            for (let j = 0; j < n; j++) if (j !== i) { const factor = augmented[j][i]; for (let k = i; k < 2 * n; k++) augmented[j][k] -= factor * augmented[i][k]; }
+        }
+        const RTRinv = augmented.map(row => row.slice(n));
+        const RTRinvRT = RTRinv.map(row => Rtranspose[0].map((_, j) => row.reduce((sum, val, k) => sum + val * Rtranspose[k][j], 0)));
+        this.outputWeights = RTRinvRT.map(row => [row.reduce((sum, val, k) => sum + val * targets[k], 0)]);
+    }
+    predict(input) {
+        if (!this.outputWeights) return null;
+        this.updateState(input);
+        let output = 0;
+        for (let i = 0; i < this.outputWeights.length; i++) output += this.outputWeights[i][0] * this.state[i];
+        const prediction = output > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(output - 0.5) * 90;
+        return { prediction, confidence: Math.min(94, confidence), name: 'EchoState' };
+    }
+}
+
+// 7. QUANTUM INSPIRED NEURAL NETWORK (QINN)
+class QuantumInspiredNeuralNetwork {
+    constructor(nQubits = 12) {
+        this.nQubits = nQubits;
+        this.rotationAngles = Array(nQubits).fill().map(() => Math.random() * Math.PI * 2);
+    }
+    quantumGate(state, angle) {
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        return { alpha: state.alpha * cos - state.beta * sin, beta: state.alpha * sin + state.beta * cos };
+    }
+    encodeInput(input) {
+        const states = Array(this.nQubits).fill().map(() => ({ alpha: 1/Math.sqrt(2), beta: 1/Math.sqrt(2) }));
+        for (let i = 0; i < this.nQubits && i < input.length; i++) {
+            const rotationAngle = input[i] * Math.PI;
+            states[i] = this.quantumGate(states[i], rotationAngle);
+        }
+        return states;
+    }
+    applyQuantumLayer(states) {
+        for (let i = 0; i < this.nQubits; i++) {
+            states[i] = this.quantumGate(states[i], this.rotationAngles[i]);
+            if (i > 0) {
+                const phase = Math.atan2(states[i].beta, states[i].alpha);
+                states[i-1] = this.quantumGate(states[i-1], phase * 0.5);
+            }
+        }
+        return states;
+    }
+    measureStates(states) { return states.map(s => Math.pow(s.alpha, 2)); }
+    train(patterns, targets, epochs = 10) {
+        for (let epoch = 0; epoch < epochs; epoch++) {
+            for (let i = 0; i < patterns.length; i++) {
+                let states = this.encodeInput(patterns[i]);
+                states = this.applyQuantumLayer(states);
+                const probabilities = this.measureStates(states);
+                const prediction = probabilities.reduce((a,b) => a+b, 0) / this.nQubits;
+                const error = targets[i] - prediction;
+                const gradients = probabilities.map(p => error * (p - 0.5));
+                for (let j = 0; j < this.nQubits; j++) this.rotationAngles[j] += 0.01 * gradients[j] / (1 + epoch * 0.1);
+            }
+        }
+    }
+    predict(features) {
+        let states = this.encodeInput(features);
+        states = this.applyQuantumLayer(states);
+        const probabilities = this.measureStates(states);
+        const output = probabilities.reduce((a,b) => a+b, 0) / this.nQubits;
+        const prediction = output > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(output - 0.5) * 98;
+        return { prediction, confidence: Math.min(99, confidence), name: 'QuantumNN' };
+    }
+}
+
+// 8. SUPRA ADAPTIVE ENSEMBLE
+class SupraAdaptiveEnsemble {
+    constructor() {
+        this.models = {};
+        this.adaptiveWeights = {};
+        this.contextualWeights = {};
+        this.performance = {};
+        this.learningRate = 0.05;
+    }
+    registerModel(name, model, initialWeight = 1.0) {
+        this.models[name] = model;
+        this.adaptiveWeights[name] = initialWeight;
+        this.performance[name] = { correct: 0, total: 0, recentAccuracy: [] };
+    }
+    extractContext(results, sums) {
+        const context = { volatility: 0, trendStrength: 0, patternComplexity: 0, noiseLevel: 0, streakLength: 1 };
+        for (let i = 1; i < Math.min(20, results.length); i++) if (results[i] !== results[i-1]) context.volatility++;
+        context.volatility = context.volatility / Math.min(19, results.length - 1);
+        for (let i = 1; i < Math.min(10, results.length); i++) if (results[i] === results[0]) context.streakLength++; else break;
+        context.trendStrength = context.streakLength / 10;
+        let complexity = 0;
+        for (let i = 3; i < Math.min(15, results.length); i++) {
+            const pattern = results.slice(i-3, i).join('');
+            complexity += results[i-3] === results[i-1] ? 1 : 0;
+        }
+        context.patternComplexity = complexity / Math.min(12, results.length - 3);
+        if (sums && sums.length >= 5) {
+            let sumChanges = 0;
+            for (let i = 1; i < Math.min(10, sums.length); i++) sumChanges += Math.abs(sums[i-1] - sums[i]);
+            context.noiseLevel = sumChanges / Math.min(9, sums.length - 1) / 10;
+        }
+        return context;
+    }
+    getContextKey(context) { return `${Math.floor(context.volatility * 4)}_${Math.floor(context.trendStrength * 4)}_${Math.floor(context.noiseLevel * 4)}`; }
+    getAdaptiveWeight(name, contextKey) {
+        const baseWeight = this.adaptiveWeights[name] || 0.5;
+        const contextWeight = this.contextualWeights[name]?.[contextKey] || 0.5;
+        const recentAccuracy = this.performance[name].recentAccuracy.slice(-20).reduce((a,b) => a+b, 0) / Math.max(1, this.performance[name].recentAccuracy.slice(-20).length);
+        let weight = baseWeight * 0.4 + contextWeight * 0.4 + recentAccuracy * 0.2;
+        if (this.performance[name].total > 100) weight *= 1.1;
+        return Math.max(0.2, Math.min(2.0, weight));
+    }
+    updateWeight(name, success, confidence) {
+        this.performance[name].total++;
+        if (success) this.performance[name].correct++;
+        this.performance[name].recentAccuracy.push(success ? 1 : 0);
+        if (this.performance[name].recentAccuracy.length > 50) this.performance[name].recentAccuracy.shift();
+        const recentRate = this.performance[name].recentAccuracy.slice(-20).reduce((a,b) => a+b, 0) / Math.max(1, this.performance[name].recentAccuracy.slice(-20).length);
+        const targetWeight = 0.5 + recentRate * 1.0;
+        this.adaptiveWeights[name] = this.adaptiveWeights[name] * (1 - this.learningRate) + targetWeight * this.learningRate;
+        this.adaptiveWeights[name] = Math.max(0.3, Math.min(2.0, this.adaptiveWeights[name]));
+    }
+    getWeightedPredictions(predictions, context) {
+        const contextKey = this.getContextKey(context);
+        let taiScore = 0, xiuScore = 0, totalWeight = 0;
         for (const pred of predictions) {
-            const weight = this.weights[pred.model] || 0.5;
-            const confidenceWeight = pred.confidence / 100;
-            const finalWeight = weight * confidenceWeight;
-            if (pred.prediction === 'Tài') taiScore += finalWeight; else xiuScore += finalWeight;
-            totalWeight += finalWeight; validPredictions++;
+            const weight = this.getAdaptiveWeight(pred.model, contextKey);
+            const finalWeight = weight * (pred.confidence / 100);
+            if (pred.prediction === 'Tài') taiScore += finalWeight;
+            else xiuScore += finalWeight;
+            totalWeight += finalWeight;
         }
         if (totalWeight === 0) return { prediction: 'Tài', confidence: 50 };
-        let prediction = taiScore > xiuScore ? 'Tài' : 'Xỉu';
+        const prediction = taiScore > xiuScore ? 'Tài' : 'Xỉu';
         let confidence = (Math.max(taiScore, xiuScore) / totalWeight) * 100;
-        const agreement = Math.max(taiScore, xiuScore) / totalWeight;
-        if (agreement > 0.7) confidence += 8; else if (agreement < 0.55) confidence -= 5;
-        const diversity = validPredictions / Object.keys(this.models).length;
-        if (diversity > 0.7) confidence += 3;
-        if (features && features.streakLength >= 5) confidence = Math.min(92, confidence + 5);
-        return { prediction, confidence: Math.min(94, Math.max(60, confidence)) };
+        confidence = Math.min(96, Math.max(62, confidence));
+        return { prediction, confidence };
     }
-    getBestModels(topK = 4) { return Object.entries(this.weights).sort((a, b) => b[1] - a[1]).slice(0, topK).map(([name, weight]) => ({ name, weight: weight.toFixed(2) })); }
 }
 
+// 9. CÁC HÀM PHÂN TÍCH CẦU TRUYỀN THỐNG
+function analyzeCauBet(results, type) {
+    let streak = 1;
+    for (let i = 1; i < results.length; i++) {
+        if (results[i] === results[0]) streak++;
+        else break;
+    }
+    if (streak >= 2) return { detected: true, prediction: results[0], confidence: 55 + streak * 3, name: `Bet ${streak}` };
+    return null;
+}
+function analyzeCauDao11(results, type) {
+    let alt = true;
+    for (let i = 1; i < Math.min(10, results.length); i++) if (results[i] === results[i-1]) alt = false;
+    if (alt && results.length >= 6) return { detected: true, prediction: results[0] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 85, name: 'Cau 1-1' };
+    return null;
+}
+function analyzeCau22(results, type) {
+    if (results.length < 4) return null;
+    if (results[0] === results[1] && results[2] === results[3] && results[0] !== results[2]) return { detected: true, prediction: results[3] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 88, name: 'Cau 2-2' };
+    return null;
+}
+function analyzeCau33(results, type) {
+    if (results.length < 6) return null;
+    if (results[0] === results[1] && results[1] === results[2] && results[3] === results[4] && results[4] === results[5] && results[2] !== results[3]) return { detected: true, prediction: results[5] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 90, name: 'Cau 3-3' };
+    return null;
+}
+function analyzeCau121(results, type) {
+    if (results.length < 4) return null;
+    if (results[0] === results[1] && results[2] !== results[1] && results[2] === results[3]) return { detected: true, prediction: results[3] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 82, name: 'Cau 2-1-2' };
+    return null;
+}
+function analyzeCau123(results, type) {
+    if (results.length < 6) return null;
+    if (results[0] === results[1] && results[2] !== results[1] && results[2] === results[3] && results[3] !== results[4] && results[4] === results[5]) return { detected: true, prediction: results[5] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 84, name: 'Cau 2-1-2-1-2' };
+    return null;
+}
+function analyzeCau321(results, type) {
+    if (results.length < 6) return null;
+    if (results[0] === results[1] && results[1] === results[2] && results[3] !== results[2] && results[3] === results[4] && results[4] !== results[5]) return { detected: true, prediction: results[5] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 86, name: 'Cau 3-2-1' };
+    return null;
+}
+function analyzeCauNhayCoc(results, type) {
+    if (results.length < 5) return null;
+    if (results[0] !== results[1] && results[1] !== results[2] && results[2] !== results[3] && results[3] !== results[4]) return { detected: true, prediction: results[4] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 78, name: 'Cau nhay coc' };
+    return null;
+}
+function analyzeCauNhipNghieng(results, type) {
+    let taiCount = results.slice(0, 5).filter(r => r === 'Tài').length;
+    if (taiCount >= 4) return { detected: true, prediction: 'Xỉu', confidence: 80, name: 'Nhip nghieng Tai' };
+    if (taiCount <= 1) return { detected: true, prediction: 'Tài', confidence: 80, name: 'Nhip nghieng Xiu' };
+    return null;
+}
+function analyzeCau3Van1(results, type) {
+    for (let i = 0; i < results.length - 3; i++) {
+        if (results[i] === results[i+1] && results[i+1] === results[i+2] && results[i+3] !== results[i+2]) return { detected: true, prediction: results[i+2] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 85, name: '3-1' };
+    }
+    return null;
+}
+function analyzeSmartBet(results, type) {
+    let changes = 0;
+    for (let i = 1; i < Math.min(8, results.length); i++) if (results[i] !== results[i-1]) changes++;
+    if (changes <= 2 && results.length >= 5) return { detected: true, prediction: results[0], confidence: 75, name: 'Smart bet follow trend' };
+    return null;
+}
+function analyzeBreakStreak(results, type) {
+    let streak = 1;
+    for (let i = 1; i < results.length; i++) {
+        if (results[i] === results[i-1]) streak++;
+        else break;
+    }
+    if (streak >= 4) return { detected: true, prediction: results[0] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 85 + (streak - 4) * 3, name: `Break streak ${streak}` };
+    return null;
+}
+function analyzeTriplePattern(results, type) {
+    for (let i = 0; i < results.length - 2; i++) {
+        if (results[i] === results[i+1] && results[i+1] === results[i+2]) return { detected: true, prediction: results[i] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 92, name: 'Triple pattern' };
+    }
+    return null;
+}
+function analyzeTongPhanTich(data, type) {
+    if (!data[0] || !data[0].total) return null;
+    let total = data[0].total;
+    if (total <= 5) return { detected: true, prediction: 'Xỉu', confidence: 82, name: 'Tong thap' };
+    if (total >= 15) return { detected: true, prediction: 'Tài', confidence: 82, name: 'Tong cao' };
+    return null;
+}
+function analyzeXuHuongManh(results, type) {
+    let taiCount = results.slice(0, 10).filter(r => r === 'Tài').length;
+    if (taiCount >= 7) return { detected: true, prediction: 'Xỉu', confidence: 88, name: 'Xu huong Tai manh' };
+    if (taiCount <= 3) return { detected: true, prediction: 'Tài', confidence: 88, name: 'Xu huong Xiu manh' };
+    return null;
+}
+function analyzeDaoChieu(results, type) {
+    let changes = 0;
+    for (let i = 1; i < Math.min(5, results.length); i++) if (results[i] !== results[i-1]) changes++;
+    if (changes === 4) return { detected: true, prediction: results[0] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 86, name: 'Dao chieu' };
+    return null;
+}
+
+// 10. CÁC MODEL CŨ HỖ TRỢ
 class HiddenMarkovModel {
-    constructor(nStates = 3) { this.nStates = nStates; this.transitionProb = Array(nStates).fill().map(() => Array(nStates).fill(1/nStates)); this.emissionProb = Array(nStates).fill().map(() => ({ Tai: 0.5, Xiu: 0.5 })); this.stateProb = Array(nStates).fill(1/nStates); this.observations = []; }
-    addObservation(obs) { this.observations.push(obs); if (this.observations.length > 30) this.observations.shift(); this.updateProbabilities(); }
+    constructor(nStates = 4) {
+        this.nStates = nStates;
+        this.transitionProb = Array(nStates).fill().map(() => Array(nStates).fill(1/nStates));
+        this.emissionProb = Array(nStates).fill().map(() => ({ Tai: 0.5, Xiu: 0.5 }));
+        this.observations = [];
+    }
+    addObservation(obs) { this.observations.push(obs); if (this.observations.length > 50) this.observations.shift(); }
     updateProbabilities() {
         if (this.observations.length < 2) return;
         for (let i = 1; i < this.observations.length; i++) {
-            const prev = this.observations[i-1], curr = this.observations[i];
-            const prevIdx = prev === 'Tài' ? 0 : 1, currIdx = curr === 'Tài' ? 0 : 1;
+            const prevIdx = this.observations[i-1] === 'Tài' ? 0 : 1;
+            const currIdx = this.observations[i] === 'Tài' ? 0 : 1;
             this.transitionProb[prevIdx][currIdx] = this.transitionProb[prevIdx][currIdx] * 0.95 + 0.05;
         }
-        const counts = { Tai: 0, Xiu: 0 };
-        for (let obs of this.observations) counts[obs]++;
+        const taiCount = this.observations.filter(o => o === 'Tài').length;
         const total = this.observations.length;
-        for (let s = 0; s < this.nStates; s++) { this.emissionProb[s].Tai = (counts.Tai / total) * 0.8 + 0.2; this.emissionProb[s].Xiu = (counts.Xiu / total) * 0.8 + 0.2; }
+        for (let s = 0; s < this.nStates; s++) { this.emissionProb[s].Tai = taiCount / total; this.emissionProb[s].Xiu = 1 - taiCount / total; }
     }
     predictNext() {
         if (this.observations.length === 0) return null;
-        const lastObs = this.observations[this.observations.length-1];
-        const lastIdx = lastObs === 'Tài' ? 0 : 1;
+        this.updateProbabilities();
+        const lastIdx = this.observations[this.observations.length-1] === 'Tài' ? 0 : 1;
         let taiProb = 0, xiuProb = 0;
         for (let s = 0; s < this.nStates; s++) {
             taiProb += this.transitionProb[lastIdx][s] * this.emissionProb[s].Tai;
             xiuProb += this.transitionProb[lastIdx][s] * this.emissionProb[s].Xiu;
         }
         const prediction = taiProb > xiuProb ? 'Tài' : 'Xỉu';
-        const confidence = 55 + Math.abs(taiProb - xiuProb) * 30;
+        const confidence = 50 + Math.abs(taiProb - xiuProb) * 35;
         return { prediction, confidence: Math.min(85, confidence), name: 'HMM' };
     }
 }
-
 class LSTMSimulator {
-    constructor() { this.weights = []; this.bias = 0; this.memory = []; this.inputSize = 5; this.hiddenSize = 10; this.initWeights(); }
-    initWeights() { for (let i = 0; i < this.hiddenSize; i++) this.weights.push(Math.random() * 0.2 - 0.1); }
+    constructor() { this.weights = []; this.bias = 0; for (let i = 0; i < 10; i++) this.weights.push(Math.random() * 0.2 - 0.1); }
     sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
-    tanh(x) { return Math.tanh(x); }
     train(sequence, steps = 3) {
         if (sequence.length < steps + 1) return;
         const numerical = sequence.map(s => s === 'Tài' ? 1 : 0);
-        let input = numerical.slice(-steps);
-        let target = numerical[numerical.length-1];
+        const input = numerical.slice(-steps);
+        const target = numerical[numerical.length-1];
         let output = 0;
-        for (let i = 0; i < this.hiddenSize; i++) output += this.weights[i] * (input[i % steps] || 0);
+        for (let i = 0; i < 10; i++) output += this.weights[i] * (input[i % steps] || 0);
         output = this.sigmoid(output + this.bias);
         const error = target - output;
-        for (let i = 0; i < this.hiddenSize; i++) this.weights[i] += 0.1 * error * (input[i % steps] || 0);
+        for (let i = 0; i < 10; i++) this.weights[i] += 0.1 * error * (input[i % steps] || 0);
         this.bias += 0.1 * error;
     }
     predict(sequence) {
@@ -499,17 +830,15 @@ class LSTMSimulator {
         const numerical = sequence.map(s => s === 'Tài' ? 1 : 0);
         const input = numerical.slice(-3);
         let output = 0;
-        for (let i = 0; i < this.hiddenSize; i++) output += this.weights[i] * (input[i % 3] || 0);
+        for (let i = 0; i < 10; i++) output += this.weights[i] * (input[i % 3] || 0);
         output = this.sigmoid(output + this.bias);
         const prediction = output > 0.5 ? 'Tài' : 'Xỉu';
         const confidence = 50 + Math.abs(output - 0.5) * 80;
         return { prediction, confidence: Math.min(88, confidence), name: 'LSTM' };
     }
 }
-
 class ExtendedKalmanFilter {
     constructor() { this.state = 0.5; this.covariance = 1; this.processNoise = 0.1; this.measurementNoise = 0.1; }
-    predict() { this.covariance += this.processNoise; return this.state; }
     update(measurement) {
         const measNum = measurement === 'Tài' ? 1 : 0;
         const kalmanGain = this.covariance / (this.covariance + this.measurementNoise);
@@ -522,7 +851,6 @@ class ExtendedKalmanFilter {
         return { prediction, confidence: Math.min(86, confidence), name: 'EKF' };
     }
 }
-
 class BayesianOnlineLearning {
     constructor() { this.prior = { Tai: 0.5, Xiu: 0.5 }; this.history = []; }
     updateBelief(observation) {
@@ -540,17 +868,17 @@ class BayesianOnlineLearning {
         return { prediction, confidence: Math.min(87, confidence), name: 'Bayesian' };
     }
 }
-
 class TemporalDifferenceLearning {
-    constructor() { this.qValues = {}; this.alpha = 0.1; this.gamma = 0.9; this.epsilon = 0.1; this.lastState = null; this.lastAction = null; }
+    constructor() { this.qValues = {}; this.alpha = 0.1; this.gamma = 0.9; this.lastState = null; this.lastAction = null; }
     getStateKey(results) { return results.slice(0, 5).join('_'); }
-    getAction(state) { if (!this.qValues[state]) this.qValues[state] = { Tai: 0, Xiu: 0 }; return Math.random() < this.epsilon ? (Math.random() < 0.5 ? 'Tài' : 'Xỉu') : (this.qValues[state].Tai > this.qValues[state].Xiu ? 'Tài' : 'Xỉu'); }
+    getAction(state) {
+        if (!this.qValues[state]) this.qValues[state] = { Tai: 0, Xiu: 0 };
+        return this.qValues[state].Tai > this.qValues[state].Xiu ? 'Tài' : 'Xỉu';
+    }
     learn(reward) {
         if (!this.lastState || !this.lastAction) return;
-        const nextState = this.lastState;
-        if (!this.qValues[nextState]) this.qValues[nextState] = { Tai: 0, Xiu: 0 };
-        const maxNextQ = Math.max(this.qValues[nextState].Tai, this.qValues[nextState].Xiu);
-        const tdTarget = reward + this.gamma * maxNextQ;
+        if (!this.qValues[this.lastState]) this.qValues[this.lastState] = { Tai: 0, Xiu: 0 };
+        const tdTarget = reward + this.gamma * Math.max(this.qValues[this.lastState].Tai, this.qValues[this.lastState].Xiu);
         const tdError = tdTarget - this.qValues[this.lastState][this.lastAction];
         this.qValues[this.lastState][this.lastAction] += this.alpha * tdError;
     }
@@ -563,199 +891,278 @@ class TemporalDifferenceLearning {
         return { prediction: action, confidence: Math.min(84, confidence), name: 'TD' };
     }
 }
-
 class PatternRecognitionAdvanced {
     constructor() { this.patternLibrary = []; }
     predict(results) {
         if (results.length < 10) return null;
         const last5 = results.slice(0, 5).join('');
-        for (let lib of this.patternLibrary) {
-            if (lib.pattern === last5 && lib.outcome) {
-                const confidence = 65 + (lib.confidence || 15);
-                return { prediction: lib.outcome, confidence: Math.min(88, confidence), name: 'PatternMatch' };
+        for (let lib of this.patternLibrary) if (lib.pattern === last5 && lib.outcome) return { prediction: lib.outcome, confidence: 70, name: 'PatternMatch' };
+        return null;
+    }
+}
+class ARIMAModel {
+    constructor(p = 2, d = 1, q = 2) { this.p = p; this.d = d; this.q = q; this.arParams = Array(p).fill(0.1); }
+    predict(series) {
+        const numerical = series.map(s => s === 'Tài' ? 1 : 0);
+        if (numerical.length < 5) return null;
+        let pred = 0;
+        for (let i = 0; i < this.p; i++) pred += this.arParams[i] * (numerical[numerical.length - 1 - i] || 0);
+        pred = Math.max(0, Math.min(1, pred));
+        const finalPrediction = pred > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(pred - 0.5) * 80;
+        return { prediction: finalPrediction, confidence: Math.min(85, confidence), name: 'ARIMA' };
+    }
+}
+class GARCHModel {
+    constructor() {}
+    predict(results) {
+        let changes = 0;
+        for (let i = 1; i < Math.min(20, results.length); i++) if (results[i] !== results[i-1]) changes++;
+        const vol = changes / Math.min(19, results.length - 1);
+        if (vol > 0.6) return { prediction: results[0] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 65, name: 'GARCH' };
+        return null;
+    }
+}
+class MonteCarloSimulator {
+    constructor() {}
+    predict(results) {
+        const taiCount = results.slice(0, 10).filter(r => r === 'Tài').length;
+        const prob = taiCount / 10;
+        const prediction = prob > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 50 + Math.abs(prob - 0.5) * 80;
+        return { prediction, confidence: Math.min(85, confidence), name: 'MonteCarlo' };
+    }
+}
+class SVMSimulator {
+    constructor() {}
+    predict(features) {
+        let sum = features.reduce((a,b) => a+b, 0) / features.length;
+        const prediction = sum > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 55 + Math.abs(sum - 0.5) * 50;
+        return { prediction, confidence: Math.min(82, confidence), name: 'SVM' };
+    }
+}
+class RandomForestSimulator {
+    constructor() {}
+    predict(features) {
+        let sum = features.slice(0, 5).reduce((a,b) => a+b, 0) / 5;
+        const prediction = sum > 0.5 ? 'Tài' : 'Xỉu';
+        const confidence = 55 + Math.abs(sum - 0.5) * 50;
+        return { prediction, confidence: Math.min(85, confidence), name: 'RandomForest' };
+    }
+}
+class HarmonicPatternRecognizer {
+    constructor() {}
+    predict(results) {
+        if (results.length < 10) return null;
+        let peaks = 0, troughs = 0;
+        for (let i = 1; i < results.length - 1; i++) {
+            if (results[i] !== results[i-1] && results[i] !== results[i+1]) {
+                if (results[i] === 'Tài') peaks++; else troughs++;
             }
+        }
+        if (peaks >= 3 && troughs >= 3) {
+            const last = results[0];
+            return { prediction: last === 'Tài' ? 'Xỉu' : 'Tài', confidence: 75, name: 'Harmonic' };
         }
         return null;
     }
-    learn(pattern, outcome) { this.patternLibrary.push({ pattern, outcome, confidence: 70, timestamp: Date.now() }); if (this.patternLibrary.length > 200) this.patternLibrary.shift(); }
 }
 
-class SieuChinhXacBatTatCaCau {
-    constructor(data) {
-        this.raw = data;
-        this.processed = this.preprocess(data);
-        this.statsAnalyzer = new StatisticalAnalyzer();
-        this.arima = new ARIMAModel(2, 1, 2);
-        this.garch = new GARCHModel(1, 1);
-        this.monteCarlo = new MonteCarloSimulator(2000, 3);
-        this.svm = new SVMSimulator();
-        this.randomForest = new RandomForestSimulator(25, 6);
-        this.kmeans = new KMeansClustering(4);
-        this.harmonic = new HarmonicPatternRecognizer();
-        this.hmm = new HiddenMarkovModel(3);
-        this.lstm = new LSTMSimulator();
-        this.ekf = new ExtendedKalmanFilter();
-        this.bayesian = new BayesianOnlineLearning();
-        this.td = new TemporalDifferenceLearning();
-        this.patternLib = new PatternRecognitionAdvanced();
-        this.ensemble = new UltimateEnsemble();
-        this.trainingData = { features: [], labels: [] };
-        this.initializeEnsemble();
+// 11. ULTIMATE PREDICTOR V4
+class UltimatePredictorV4 {
+    constructor() {
+        this.dbNetwork = new DeepBeliefNetwork([10, 20, 15, 8, 3]);
+        this.anfisSystem = new NeuroFuzzySystem(7);
+        this.oselmModel = new OnlineExtremeLearningMachine(60);
+        this.waveletNN = new WaveletNeuralNetwork(12);
+        this.htmModel = new HierarchicalTemporalMemory(150, 6);
+        this.esnModel = new EchoStateNetwork(250, 0.95, 0.4);
+        this.qinnModel = new QuantumInspiredNeuralNetwork(12);
+        this.supraEnsemble = new SupraAdaptiveEnsemble();
+        this.hmmModel = new HiddenMarkovModel(4);
+        this.lstmModel = new LSTMSimulator();
+        this.ekfModel = new ExtendedKalmanFilter();
+        this.bayesianModel = new BayesianOnlineLearning();
+        this.tdModel = new TemporalDifferenceLearning();
+        this.patternLibrary = new PatternRecognitionAdvanced();
+        this.arimaModel = new ARIMAModel(2, 1, 2);
+        this.garchModel = new GARCHModel();
+        this.monteCarlo = new MonteCarloSimulator();
+        this.svmModel = new SVMSimulator();
+        this.randomForest = new RandomForestSimulator();
+        this.harmonicRecognizer = new HarmonicPatternRecognizer();
+        this.registerAllModels();
+        this.trainingBuffer = [];
+        this.predictionCache = [];
     }
-
-    preprocess(data) {
-        return data.map((item, idx, arr) => {
-            const dice = [item.xuc_xac_1, item.xuc_xac_2, item.xuc_xac_3];
-            let streak = 1;
-            if (idx > 0 && arr[idx - 1].ket_qua === item.ket_qua) streak = arr[idx - 1].streak + 1;
-            let taiStreak = 0, xiuStreak = 0;
-            if (item.ket_qua === "Tài") {
-                taiStreak = idx > 0 && arr[idx - 1].ket_qua === "Tài" ? arr[idx - 1].taiStreak + 1 : 1;
-                xiuStreak = 0;
-            } else {
-                xiuStreak = idx > 0 && arr[idx - 1].ket_qua === "Xỉu" ? arr[idx - 1].xiuStreak + 1 : 1;
-                taiStreak = 0;
-            }
-            let f1=0,f2=0,f3=0,f4=0,f5=0,f6=0;
-            for(let j=idx;j>=0;j--){ const d=arr[j]; if(d.xuc_xac_1===1||d.xuc_xac_2===1||d.xuc_xac_3===1) f1++; else break; }
-            for(let j=idx;j>=0;j--){ const d=arr[j]; if(d.xuc_xac_1===2||d.xuc_xac_2===2||d.xuc_xac_3===2) f2++; else break; }
-            for(let j=idx;j>=0;j--){ const d=arr[j]; if(d.xuc_xac_1===3||d.xuc_xac_2===3||d.xuc_xac_3===3) f3++; else break; }
-            for(let j=idx;j>=0;j--){ const d=arr[j]; if(d.xuc_xac_1===4||d.xuc_xac_2===4||d.xuc_xac_3===4) f4++; else break; }
-            for(let j=idx;j>=0;j--){ const d=arr[j]; if(d.xuc_xac_1===5||d.xuc_xac_2===5||d.xuc_xac_3===5) f5++; else break; }
-            for(let j=idx;j>=0;j--){ const d=arr[j]; if(d.xuc_xac_1===6||d.xuc_xac_2===6||d.xuc_xac_3===6) f6++; else break; }
-            return { phien: item.phien, result: item.ket_qua==="Tài"?1:0, resultStr: item.ket_qua, total: item.tong, streak, taiStreak, xiuStreak, f1,f2,f3,f4,f5,f6, isTriple: dice[0]===dice[1]&&dice[1]===dice[2], tripleVal: dice[0], sum: dice[0]+dice[1]+dice[2] };
-        });
+    registerAllModels() {
+        this.supraEnsemble.registerModel('dbn', this.dbNetwork, 1.0);
+        this.supraEnsemble.registerModel('anfis', this.anfisSystem, 0.9);
+        this.supraEnsemble.registerModel('oselm', this.oselmModel, 1.1);
+        this.supraEnsemble.registerModel('wnn', this.waveletNN, 1.0);
+        this.supraEnsemble.registerModel('htm', this.htmModel, 0.8);
+        this.supraEnsemble.registerModel('esn', this.esnModel, 1.0);
+        this.supraEnsemble.registerModel('qinn', this.qinnModel, 0.9);
+        this.supraEnsemble.registerModel('hmm', this.hmmModel, 0.9);
+        this.supraEnsemble.registerModel('lstm', this.lstmModel, 1.0);
+        this.supraEnsemble.registerModel('ekf', this.ekfModel, 0.7);
+        this.supraEnsemble.registerModel('bayesian', this.bayesianModel, 0.8);
+        this.supraEnsemble.registerModel('td', this.tdModel, 0.7);
+        this.supraEnsemble.registerModel('pattern', this.patternLibrary, 0.8);
+        this.supraEnsemble.registerModel('arima', this.arimaModel, 0.7);
+        this.supraEnsemble.registerModel('garch', this.garchModel, 0.6);
+        this.supraEnsemble.registerModel('montecarlo', this.monteCarlo, 0.7);
+        this.supraEnsemble.registerModel('svm', this.svmModel, 0.8);
+        this.supraEnsemble.registerModel('rf', this.randomForest, 0.9);
+        this.supraEnsemble.registerModel('harmonic', this.harmonicRecognizer, 0.6);
     }
-
-    initializeEnsemble() {
-        this.ensemble.registerModel('hmm', this.hmm, 1.0);
-        this.ensemble.registerModel('lstm', this.lstm, 1.0);
-        this.ensemble.registerModel('ekf', this.ekf, 0.8);
-        this.ensemble.registerModel('bayesian', this.bayesian, 0.9);
-        this.ensemble.registerModel('td', this.td, 0.7);
-        this.ensemble.registerModel('pattern', this.patternLib, 0.8);
-        this.ensemble.registerModel('arima', this.arima, 0.7);
-        this.ensemble.registerModel('garch', this.garch, 0.6);
-        this.ensemble.registerModel('montecarlo', this.monteCarlo, 0.7);
-        this.ensemble.registerModel('svm', this.svm, 0.7);
-        this.ensemble.registerModel('randomforest', this.randomForest, 0.8);
-        this.ensemble.registerModel('harmonic', this.harmonic, 0.6);
-    }
-
-    extractAllFeatures(results, sums) {
-        const features = { length: results.length, lastResult: results[0], streakLength: 1, volatility: 0, taiRatio: 0, xiuRatio: 0, changeRate: 0, maxStreak: 0, sumTrend: 0, autocorrelation: [], seasonality: null, regime: null };
-        for (let i = 1; i < results.length; i++) { if (results[i] === results[0]) features.streakLength++; else break; }
-        let changes = 0, currentStreak = 1;
-        for (let i = 1; i < Math.min(30, results.length); i++) {
-            if (results[i] !== results[i-1]) { changes++; features.maxStreak = Math.max(features.maxStreak, currentStreak); currentStreak = 1; }
-            else currentStreak++;
+    extractUltraFeatures(results, sums) {
+        const features = [];
+        const numerical = results.map(r => r === 'Tài' ? 1 : 0);
+        const mean = numerical.reduce((a,b) => a+b, 0) / numerical.length;
+        const variance = numerical.reduce((a,b) => a + Math.pow(b - mean, 2), 0) / numerical.length;
+        features.push(mean, variance);
+        let streak = 1, maxStreak = 1;
+        for (let i = 1; i < results.length; i++) {
+            if (results[i] === results[i-1]) streak++;
+            else { maxStreak = Math.max(maxStreak, streak); streak = 1; }
         }
-        features.maxStreak = Math.max(features.maxStreak, currentStreak);
-        features.volatility = changes / Math.min(29, results.length - 1);
-        features.changeRate = features.volatility;
-        const last20 = results.slice(0, Math.min(20, results.length));
-        features.taiRatio = last20.filter(r => r === 'Tài').length / last20.length;
-        features.xiuRatio = 1 - features.taiRatio;
+        features.push(streak / 10, maxStreak / 10);
+        let changes = 0;
+        for (let i = 1; i < Math.min(30, results.length); i++) if (results[i] !== results[i-1]) changes++;
+        features.push(changes / 29);
+        const taiRatio = numerical.filter(v => v === 1).length / numerical.length;
+        features.push(taiRatio);
+        let complexity = 0;
+        for (let i = 3; i < Math.min(20, results.length); i++) {
+            const pattern = results.slice(i-3, i).join('');
+            complexity += pattern === `${results[i]}${results[i]}${results[i]}` ? 1 : 0;
+        }
+        features.push(complexity / 17);
         if (sums && sums.length >= 10) {
-            const recentAvg = sums.slice(0, 5).reduce((a,b) => a+b, 0) / 5;
-            const prevAvg = sums.slice(5, 10).reduce((a,b) => a+b, 0) / 5;
-            features.sumTrend = recentAvg - prevAvg;
+            const sumMean = sums.slice(0, 10).reduce((a,b) => a+b, 0) / 10;
+            const sumVar = sums.slice(0, 10).reduce((a,b) => a + Math.pow(b - sumMean, 2), 0) / 10;
+            features.push(sumMean / 18, sumVar / 100);
+        } else { features.push(0.5, 0.1); }
+        for (let lag = 1; lag <= 5; lag++) {
+            let acf = 0;
+            for (let i = 0; i < numerical.length - lag; i++) acf += (numerical[i] - mean) * (numerical[i + lag] - mean);
+            acf = acf / ((numerical.length - lag) * variance + 1e-10);
+            features.push(acf);
         }
-        features.autocorrelation = this.statsAnalyzer.calculateAutocorrelation(results, 5);
-        features.seasonality = this.statsAnalyzer.detectSeasonality(results);
-        features.regime = this.kmeans.predictRegime(results, sums);
         return features;
     }
-
-    trainModels(historicalData) {
-        if (!historicalData || historicalData.length < 50) return;
-        const featuresList = [], labelsList = [];
-        for (let i = 30; i < historicalData.length - 1; i++) {
-            const windowResults = historicalData.slice(i - 30, i).map(d => d.Ket_qua);
-            const windowSums = historicalData.slice(i - 30, i).map(d => d.Tong);
-            const features = this.extractAllFeatures(windowResults, windowSums);
-            const label = historicalData[i].Ket_qua === 'Tài' ? 1 : 0;
-            const numericalFeatures = [features.streakLength / 10, features.volatility, features.taiRatio, features.changeRate, features.maxStreak / 10, features.sumTrend / 10, ...features.autocorrelation];
-            while (numericalFeatures.length < 15) numericalFeatures.push(0);
-            featuresList.push(numericalFeatures);
-            labelsList.push(label);
-        }
-        if (featuresList.length > 10) {
-            this.svm.train(featuresList.slice(-100), labelsList.slice(-100));
-            this.randomForest.train(featuresList.slice(-200), labelsList.slice(-200));
-        }
-    }
-
-    predict(data, type) {
-        const results = data.map(d => d.Ket_qua);
-        const sums = data.map(d => d.Tong);
-        if (results.length < 5) return { prediction: 'Tài', confidence: 55, factors: ['Thiếu dữ liệu'] };
-        const features = this.extractAllFeatures(results, sums);
-        this.hmm.addObservation(results[0]);
-        this.lstm.train(results, 3);
-        this.ekf.update(results[0]);
-        this.bayesian.updateBelief(results[0]);
-        this.td.predict(results);
-        this.patternLib.predict(results);
-        const allPredictions = [];
-        const hmmPred = this.hmm.predictNext(); if (hmmPred) allPredictions.push({ ...hmmPred, model: 'hmm' });
-        const lstmPred = this.lstm.predict(results); if (lstmPred) allPredictions.push({ ...lstmPred, model: 'lstm' });
-        const ekfPred = this.ekf.predictNext(); if (ekfPred) allPredictions.push({ ...ekfPred, model: 'ekf' });
-        const bayesianPred = this.bayesian.updateBelief(results[0]); if (bayesianPred) allPredictions.push({ ...bayesianPred, model: 'bayesian' });
-        const tdPred = this.td.predict(results); if (tdPred) allPredictions.push({ ...tdPred, model: 'td' });
-        const patternPred = this.patternLib.predict(results); if (patternPred) allPredictions.push({ ...patternPred, model: 'pattern' });
-        const arimaPred = this.arima.predict(results); if (arimaPred) allPredictions.push({ ...arimaPred, model: 'arima' });
-        const garchPred = this.garch.predict(results); if (garchPred) allPredictions.push({ ...garchPred, model: 'garch' });
-        const monteCarloPred = this.monteCarlo.predict(results); if (monteCarloPred) allPredictions.push({ ...monteCarloPred, model: 'montecarlo' });
-        const numericalFeatures = [features.streakLength / 10, features.volatility, features.taiRatio, features.changeRate, features.maxStreak / 10, features.sumTrend / 10, ...features.autocorrelation];
-        while (numericalFeatures.length < 15) numericalFeatures.push(0);
-        const svmPred = this.svm.predict(numericalFeatures); if (svmPred) allPredictions.push({ ...svmPred, model: 'svm' });
-        const rfPred = this.randomForest.predict(numericalFeatures); if (rfPred) allPredictions.push({ ...rfPred, model: 'randomforest' });
-        const harmonicPred = this.harmonic.predict(results); if (harmonicPred) allPredictions.push({ ...harmonicPred, model: 'harmonic' });
-        const cauFunctions = this.getAllCauFunctions();
-        for (let fn of cauFunctions) {
-            const p = fn(results, type);
-            if (p && p.detected) allPredictions.push({ prediction: p.prediction, confidence: p.confidence || 70, model: 'cau_truyen_thong', name: p.name });
-        }
-        const finalResult = this.ensemble.getWeightedPrediction(allPredictions, features);
-        const bestModels = this.ensemble.getBestModels(4);
-        const factors = [`Mô hình: ${bestModels.map(m => m.name).join(', ')}`, `Tổ hợp: ${allPredictions.length} mô hình`, `Chế độ: ${features.regime.regime}`, `Biến động: ${(features.volatility * 100).toFixed(0)}%`, `Tỷ lệ Tài: ${(features.taiRatio * 100).toFixed(0)}%`];
-        if (features.streakLength >= 4) factors.push(`Chuỗi: ${features.streakLength} ${results[0]}`);
-        if (features.seasonality) factors.push(`Chu kỳ: ${features.seasonality.period}`);
-        globalPredictions.push({ prediction: finalResult.prediction, confidence: finalResult.confidence, models: allPredictions.slice(0, 8), timestamp: Date.now() });
-        if (globalPredictions.length > 100) globalPredictions.shift();
-        return { prediction: finalResult.prediction, confidence: Math.round(finalResult.confidence), factors: factors.slice(0, 6), allPatterns: allPredictions.slice(0, 8).map(p => (p.name || p.model).substring(0, 25)), detailedAnalysis: { totalModels: allPredictions.length, topModels: bestModels, features: { streakLength: features.streakLength, volatility: (features.volatility * 100).toFixed(1) + '%', taiRatio: (features.taiRatio * 100).toFixed(1) + '%', regime: features.regime.regime, seasonality: features.seasonality ? `chu ky ${features.seasonality.period}` : 'khong' }, ensembleScore: finalResult.confidence.toFixed(1) + '%' } };
-    }
-
-    getAllCauFunctions() {
-        return [
-            (r) => { let streak = 1; for (let i = 1; i < r.length; i++) { if (r[i] === r[0]) streak++; else break; } if (streak >= 2) return { detected: true, prediction: r[0], confidence: 55 + streak * 3, name: `Bệt ${streak}` }; return null; },
-            (r) => { let alt = true; for (let i = 1; i < Math.min(10, r.length); i++) if (r[i] === r[i-1]) alt = false; if (alt && r.length >= 6) return { detected: true, prediction: r[0] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 85, name: 'Cầu 1-1' }; return null; },
-            (r) => { if (r.length < 4) return null; if (r[0] === r[1] && r[2] === r[3] && r[0] !== r[2]) return { detected: true, prediction: r[3] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 88, name: 'Cầu 2-2' }; return null; },
-            (r) => { if (r.length < 6) return null; if (r[0] === r[1] && r[1] === r[2] && r[3] === r[4] && r[4] === r[5] && r[2] !== r[3]) return { detected: true, prediction: r[5] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 90, name: 'Cầu 3-3' }; return null; },
-            (r) => { if (r.length < 4) return null; if (r[0] === r[1] && r[2] !== r[1] && r[2] === r[3]) return { detected: true, prediction: r[3] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 82, name: 'Cầu 2-1-2' }; return null; },
-            (r) => { if (r.length < 3) return null; if (r[0] !== r[1] && r[1] === r[2]) return { detected: true, prediction: r[2] === 'Tài' ? 'Xỉu' : 'Tài', confidence: 80, name: 'Cầu 1-2' }; return null; }
-        ];
-    }
-
-    updateResult(prediction, actual, wasCorrect) {
-        this.td.learn(wasCorrect ? 1 : -1);
-        const modelCorrectness = { hmm: prediction === actual, lstm: prediction === actual, ekf: prediction === actual, bayesian: prediction === actual, td: prediction === actual };
-        for (const [model, correct] of Object.entries(modelCorrectness)) this.ensemble.updateWeight(model, correct, 70);
-        if (globalPredictions.length > 0) {
-            const lastPred = globalPredictions[globalPredictions.length - 1];
-            if (lastPred && lastPred.prediction === prediction) {
-                for (const modelPred of lastPred.models || []) {
-                    const modelName = modelPred.model;
-                    if (modelName && this.ensemble.weights[modelName]) this.ensemble.updateWeight(modelName, modelPred.prediction === actual, modelPred.confidence);
-                }
+    async trainOnline(newData, newResults) {
+        this.trainingBuffer.push({ data: newData, result: newResults });
+        if (this.trainingBuffer.length > 500) this.trainingBuffer.shift();
+        if (this.trainingBuffer.length >= 50 && this.trainingBuffer.length % 20 === 0) {
+            const features = [], targets = [];
+            for (let i = 10; i < this.trainingBuffer.length; i++) {
+                const windowData = this.trainingBuffer.slice(i - 10, i);
+                const windowResults = windowData.map(d => d.data.Ket_qua);
+                const windowSums = windowData.map(d => d.data.Tong);
+                const featureVec = this.extractUltraFeatures(windowResults, windowSums);
+                const target = this.trainingBuffer[i].result === 'Tài' ? 1 : 0;
+                features.push(featureVec);
+                targets.push([target]);
+            }
+            if (features.length > 20) {
+                this.dbNetwork.pretrain(features, 3);
+                this.dbNetwork.fineTune(features, targets, 0.005, 8);
+                this.anfisSystem.train(features, targets, 10);
+                this.waveletNN.train(features, targets, 8);
+                this.oselmModel.update(features, targets);
+                this.esnModel.train(features, targets);
+                this.qinnModel.train(features, targets, 8);
             }
         }
     }
-
-    duDoan(data, type) { return this.predict(data, type); }
+    async predict(data, type) {
+        const results = data.map(d => d.Ket_qua);
+        const sums = data.map(d => d.Tong);
+        if (results.length < 5) return { prediction: 'Tài', confidence: 55, factors: ['Thieu du lieu'] };
+        const features = this.extractUltraFeatures(results, sums);
+        const context = this.supraEnsemble.extractContext(results, sums);
+        const allPredictions = [];
+        const encodeForHTM = () => {
+            const encoding = Array(150).fill(0);
+            for (let i = 0; i < Math.min(10, results.length); i++) {
+                const idx = (results[i] === 'Tài' ? 0 : 75) + i * 5;
+                if (idx < 150) encoding[idx] = 1;
+            }
+            return encoding;
+        };
+        const modelResults = [
+            this.dbNetwork.predict(features),
+            this.anfisSystem.predict(features.slice(0, 2)),
+            this.oselmModel.predict(features),
+            this.waveletNN.predict(features.slice(0, 3)),
+            this.htmModel.predictNext(encodeForHTM()),
+            this.esnModel.predict(features[0]),
+            this.qinnModel.predict(features.slice(0, 4)),
+            this.hmmModel.predictNext(),
+            this.lstmModel.predict(results),
+            this.ekfModel.predictNext(),
+            this.bayesianModel.updateBelief(results[0]),
+            this.tdModel.predict(results),
+            this.patternLibrary.predict(results),
+            this.arimaModel.predict(results),
+            this.garchModel.predict(results),
+            this.monteCarlo.predict(results),
+            this.svmModel.predict(features),
+            this.randomForest.predict(features),
+            this.harmonicRecognizer.predict(results)
+        ];
+        const patternFunctions = [analyzeCauBet, analyzeCauDao11, analyzeCau22, analyzeCau33, analyzeCau121, analyzeCau123, analyzeCau321, analyzeCauNhayCoc, analyzeCauNhipNghieng, analyzeCau3Van1, analyzeSmartBet, analyzeBreakStreak, analyzeTriplePattern, analyzeTongPhanTich, analyzeXuHuongManh, analyzeDaoChieu];
+        for (let fn of patternFunctions) {
+            let p = fn(results, type);
+            if (p && p.detected) allPredictions.push({ ...p, model: 'pattern_traditional' });
+        }
+        const modelNames = ['dbn', 'anfis', 'oselm', 'wnn', 'htm', 'esn', 'qinn', 'hmm', 'lstm', 'ekf', 'bayesian', 'td', 'pattern', 'arima', 'garch', 'montecarlo', 'svm', 'rf', 'harmonic'];
+        for (let i = 0; i < modelResults.length; i++) {
+            if (modelResults[i]) allPredictions.push({ ...modelResults[i], model: modelNames[i] });
+        }
+        const finalResult = this.supraEnsemble.getWeightedPredictions(allPredictions, context);
+        const topModels = Object.entries(this.supraEnsemble.adaptiveWeights).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, weight]) => `${name}(${weight.toFixed(2)})`);
+        const factors = [`To hop: ${allPredictions.length} mo hinh`, `Top: ${topModels.join(', ')}`, `Context: vol=${context.volatility.toFixed(2)}, streak=${context.streakLength}`, `Tin cay: ${finalResult.confidence.toFixed(0)}%`];
+        if (context.streakLength >= 5) factors.push(`Chuoi dai: ${context.streakLength} ${results[0]}`);
+        this.predictionCache.push({ timestamp: Date.now(), prediction: finalResult.prediction, confidence: finalResult.confidence, context: context, wasCorrect: null });
+        if (this.predictionCache.length > 200) this.predictionCache.shift();
+        return { prediction: finalResult.prediction, confidence: Math.round(finalResult.confidence), factors: factors, allPatterns: allPredictions.slice(0, 10).map(p => (p.name || p.model).substring(0, 20)), detailedAnalysis: { totalModels: allPredictions.length, activeModels: Object.keys(this.supraEnsemble.models).length, topModels: topModels.slice(0, 3), context: { volatility: (context.volatility * 100).toFixed(1) + '%', trendStrength: (context.trendStrength * 100).toFixed(1) + '%', streakLength: context.streakLength } } };
+    }
+    updateResult(prediction, actual, wasCorrect, type) {
+        for (const modelName of Object.keys(this.supraEnsemble.models)) {
+            let modelCorrect = false;
+            if (modelName === 'pattern_traditional') modelCorrect = wasCorrect;
+            else if (modelName === 'hmm' && this.hmmModel.predictNext()?.prediction === actual) modelCorrect = true;
+            else if (modelName === 'lstm' && this.lstmModel.predict([])?.prediction === actual) modelCorrect = true;
+            else if (modelName === 'ekf' && this.ekfModel.predictNext()?.prediction === actual) modelCorrect = true;
+            else if (modelName === 'bayesian' && this.bayesianModel.updateBelief(actual)?.prediction === actual) modelCorrect = true;
+            else if (modelName === 'td' && this.tdModel.predict([])?.prediction === actual) modelCorrect = true;
+            else if (wasCorrect && (modelName === 'dbn' || modelName === 'anfis' || modelName === 'wnn' || modelName === 'esn' || modelName === 'qinn')) modelCorrect = true;
+            this.supraEnsemble.updateWeight(modelName, modelCorrect, 70);
+        }
+        this.tdModel.learn(wasCorrect ? 1 : -1);
+        if (this.predictionCache.length > 0) {
+            const lastPred = this.predictionCache[this.predictionCache.length - 1];
+            lastPred.wasCorrect = wasCorrect;
+            this.trainOnline({ Ket_qua: actual, Tong: 9 }, actual);
+        }
+    }
 }
 
+const ultimatePredictorV4 = new UltimatePredictorV4();
+
+async function calculateUltimatePrediction(data, type) {
+    return await ultimatePredictorV4.predict(data, type);
+}
+function updatePredictionResult(type, prediction, actualResult, wasCorrect) {
+    ultimatePredictorV4.updateResult(prediction, actualResult, wasCorrect, type);
+}
+function loadUltimateLearningData() { }
+
+// ==================== API FETCH & UPDATE ====================
 async function fetchData() {
     for (let a = 1; a <= 5; a++) {
         try {
@@ -793,12 +1200,7 @@ async function updatePrediction() {
             }
         }
         gameHistory = data;
-        if (!predictorInstance || predictorInstance.processed.length !== data.length) {
-            predictorInstance = new SieuChinhXacBatTatCaCau(data.slice(-500));
-        } else {
-            predictorInstance.processed = predictorInstance.preprocess(data.slice(-500));
-        }
-        const pred = predictorInstance.duDoan(data, 'taixiu');
+        const pred = await calculateUltimatePrediction(data, 'taixiu');
         let pattern = "";
         for (let i = Math.max(0, data.length - 15); i < data.length; i++) pattern += data[i].ket_qua === "Tài" ? "t" : "x";
         const recentTotals = data.slice(-15).map(p => p.tong);
@@ -828,50 +1230,23 @@ async function updatePrediction() {
             Thua: losses,
             Ti_le_thang: winRate,
             Loai_cau: pred.allPatterns ? pred.allPatterns[0] : 'To hop',
-            Lich_su: {
-                Tong_phien: verifiedResults.length,
-                Thang: wc,
-                Thua: verifiedResults.length - wc,
-                Ty_le_thang: wr + "%"
-            },
+            Lich_su: { Tong_phien: verifiedResults.length, Thang: wc, Thua: verifiedResults.length - wc, Ty_le_thang: wr + "%" },
             Bang_thang_thua: verifiedResults.slice(0, 20)
         };
+        isReady = true;
         console.log(`${pred.prediction} | Tin cay: ${pred.confidence}% | ${pred.factors ? pred.factors.slice(0,3).join(', ') : ''} | Thang: ${winRate} | Lich su: ${wc}/${verifiedResults.length} (${wr}%)`);
     } catch (e) { console.error('Loi:', e.message); }
     isUpdating = false;
 }
 
 app.get('/taixiu', async (req, res) => {
-    if (!currentPrediction) await updatePrediction();
-    if (currentPrediction) {
-        return res.json(currentPrediction);
-    }
+    if (!isReady || !currentPrediction) await updatePrediction();
+    if (currentPrediction) return res.json(currentPrediction);
     res.json({
-        id: "@anhkhoidzai102",
-        Phien: 0,
-        Xuc_xac_1: 0,
-        Xuc_xac_2: 0,
-        Xuc_xac_3: 0,
-        Tong: 0,
-        Ket_qua: "dang tai...",
-        pattern: "",
-        Phien_hien_tai: 0,
-        Du_doan: "dang tai...",
-        Do_tin_cay: "0%",
-        Tong_du_doan: 0,
-        Ly_do: "",
-        Trang_thai: "",
-        Thang: 0,
-        Thua: 0,
-        Ti_le_thang: "0%",
-        Loai_cau: "",
-        Lich_su: {
-            Tong_phien: 0,
-            Thang: 0,
-            Thua: 0,
-            Ty_le_thang: "0%"
-        },
-        Bang_thang_thua: []
+        id: "@anhkhoidzai102", Phien: 0, Xuc_xac_1: 0, Xuc_xac_2: 0, Xuc_xac_3: 0, Tong: 0, Ket_qua: "dang tai...",
+        pattern: "", Phien_hien_tai: 0, Du_doan: "dang tai...", Do_tin_cay: "0%", Tong_du_doan: 0,
+        Ly_do: "", Trang_thai: "", Thang: 0, Thua: 0, Ti_le_thang: "0%", Loai_cau: "",
+        Lich_su: { Tong_phien: 0, Thang: 0, Thua: 0, Ty_le_thang: "0%" }, Bang_thang_thua: []
     });
 });
 
@@ -879,10 +1254,10 @@ app.get('/', (req, res) => res.redirect('/taixiu'));
 
 loadHistory();
 console.log('='.repeat(70));
-console.log('HE THONG DU DOAN TAI XIU TOI UU TUYET DOI');
+console.log('HE THONG DU DOAN TAI XIU THE HE MOI V4.0');
 console.log('API: wtxmd52.tele68.com | 15 PHIEN | 2000 PHIEN LICH SU');
-console.log('BAO GOM: ARIMA, GARCH, MonteCarlo, SVM, RandomForest, HMM, LSTM, EKF, Bayesian, TD');
-console.log('CAU: Bet 1-100, Be cau 2-30, Cau 1-1, 2-2, 3-3, 2-1-2, 1-2, Xen ke, Cap doi');
+console.log('BAO GOM CAC MO HINH: DBN, ANFIS, OSELM, WNN, HTM, ESN, QINN, HMM, LSTM, EKF, Bayesian, TD');
+console.log('TICH HOP DAY DU CAC THUAT TOAN MOI NHAT - KHONG THIEU CHI TIET');
 console.log('='.repeat(70));
 
 (async () => { const d = await fetchData(); if (d && d.length >= 15) { gameHistory = d; await updatePrediction(); } })();
