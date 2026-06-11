@@ -14,9 +14,10 @@ const MAX_HISTORY = 2000;
 let wins = 0;
 let losses = 0;
 let predictorInstance = null;
-let isReady = false;
-let firstUpdateDone = false;
+let isDataReady = false;
+let pendingRequests = [];
 
+// Hàm normalize dữ liệu từ API
 const normalize = item => {
     const kq = (item.resultTruyenThong || '').toLowerCase().trim();
     return {
@@ -625,42 +626,31 @@ async function updatePrediction() {
             Lich_su: { Tong_phien: verifiedResults.length, Thang: wc, Thua: verifiedResults.length - wc, Ty_le_thang: wr + "%" },
             Bang_thang_thua: verifiedResults.slice(0, 20)
         };
-        isReady = true;
-        firstUpdateDone = true;
+        isDataReady = true;
+        // Giải quyết các request đang chờ
+        if (pendingRequests.length > 0) {
+            for (const res of pendingRequests) {
+                res.json(currentPrediction);
+            }
+            pendingRequests = [];
+        }
         console.log(`${pred.prediction} | Tin cay: ${pred.confidence}% | ${pred.factors ? pred.factors.slice(0,3).join(', ') : ''} | Thang: ${winRate} | Lich su: ${wc}/${verifiedResults.length} (${wr}%)`);
     } catch (e) { console.error('Loi:', e.message); }
     isUpdating = false;
 }
 
+// API endpoint với cơ chế chờ dữ liệu
 app.get('/taixiu', async (req, res) => {
-    if (!firstUpdateDone || !currentPrediction) {
-        await updatePrediction();
+    // Nếu chưa có dữ liệu, thêm request vào hàng đợi chờ
+    if (!isDataReady || !currentPrediction) {
+        pendingRequests.push(res);
+        // Nếu chưa có bản cập nhật nào, kích hoạt update
+        if (!isUpdating && !currentPrediction) {
+            updatePrediction();
+        }
+        return;
     }
-    if (currentPrediction) {
-        return res.json(currentPrediction);
-    }
-    res.json({
-        id: "@anhkhoidzai102",
-        Phien: 0,
-        Xuc_xac_1: 0,
-        Xuc_xac_2: 0,
-        Xuc_xac_3: 0,
-        Tong: 0,
-        Ket_qua: "dang tai...",
-        pattern: "",
-        Phien_hien_tai: 0,
-        Du_doan: "dang tai...",
-        Do_tin_cay: "0%",
-        Tong_du_doan: 0,
-        Ly_do: "",
-        Trang_thai: "",
-        Thang: 0,
-        Thua: 0,
-        Ti_le_thang: "0%",
-        Loai_cau: "",
-        Lich_su: { Tong_phien: 0, Thang: 0, Thua: 0, Ty_le_thang: "0%" },
-        Bang_thang_thua: []
-    });
+    res.json(currentPrediction);
 });
 
 app.get('/', (req, res) => res.redirect('/taixiu'));
@@ -673,6 +663,7 @@ console.log('BAO GOM CAC MO HINH: HMM, LSTM, EKF, Bayesian, TD, ARIMA, GARCH, Mo
 console.log('TICH HOP DAY DU CAC THUAT TOAN VA CAU TRUYEN THONG');
 console.log('='.repeat(70));
 
+// Khởi tạo dữ liệu ngay khi server start
 (async () => { 
     const d = await fetchData(); 
     if (d && d.length >= 15) { 
