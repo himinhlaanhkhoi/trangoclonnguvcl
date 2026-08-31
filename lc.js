@@ -11,310 +11,250 @@ const LEARNING_FILE = 'phamkhoi.json';
 const HISTORY_FILE = 'phamkhoi1.json';
 
 let predictionHistory = { hu: [], md5: [] };
-const MAX_HISTORY = 160;
-const AUTO_INTERVAL = 16000;
+const MAX_HISTORY = 180;
+const AUTO_INTERVAL = 15000;
 let lastProcessed = { hu: null, md5: null };
+let learningData = { hu: emptyL(), md5: emptyL() };
 
-let learningData = { hu: emptyLearn(), md5: emptyLearn() };
-
-function emptyLearn() {
+function emptyL() {
   return {
     predictions: [],
     totalPredictions: 0,
     correctPredictions: 0,
     streakAnalysis: { wins: 0, losses: 0, currentStreak: 0, bestStreak: 0, worstStreak: 0 },
     recentAccuracy: [],
-    recentWrongStreak: 0,
-    modelWeights: { momentum: 1.20, meanRev: 1.05, attention: 1.15, regime: 1.00, dice: 1.25, seq: 1.10 }
+    recentWrongStreak: 0
   };
 }
 
-// ==================== SIÊU BẮT CẦU ULTRA VIP v3 ====================
-class SieuBatCau {
-  constructor(type) {
-    this.type = type;
-    this.history = [];      // 1 = Tài, 0 = Xỉu
-    this.diceHistory = [];  // {d1,d2,d3,sum}
-    this.lastPred = null;
-    this.reverseMode = false;
-    this.wrongStreak = 0;
-    this.recentCorrect = [];
-    this.weights = { ...(learningData[type]?.modelWeights || {
-      momentum: 1.20, meanRev: 1.05, attention: 1.15, regime: 1.00, dice: 1.25, seq: 1.10
-    }) };
+// ==================== THUẬT TOÁN TẬP TRUNG ĐỘ CHÍNH XÁC ====================
+/*
+  Nguyên tắc từ data thật:
+  1. Cầu bệt ngắn (2-5) → THEO
+  2. Cầu bệt dài (>=7) → mới cân nhắc BẺ
+  3. Cầu đảo rõ (4+ nhịp) → theo đảo
+  4. Khi đang thua nhiều → chuyển sang chế độ AN TOÀN (theo gần nhất)
+  5. Conf chỉ cao khi nhiều tín hiệu đồng thuận mạnh
+*/
+
+function toBin(kq) { return kq === 'Tài' ? 1 : 0; }
+function toLabel(b) { return b === 1 ? 'Tài' : 'Xỉu'; }
+
+function getStreak(arr) {
+  // arr newest first, value 1/0
+  if (!arr.length) return { v: 0, len: 0 };
+  let len = 1;
+  for (let i = 1; i < arr.length; i++) {
+    if (arr[i] === arr[0]) len++; else break;
   }
-
-  // 1. Momentum ngắn hạn (rất quan trọng)
-  momentum() {
-    if (this.history.length < 5) return { pred: 1, conf: 0.54 };
-    const s3 = this.history.slice(-3);
-    const s5 = this.history.slice(-5);
-    const t3 = s3.filter(x => x === 1).length;
-    const t5 = s5.filter(x => x === 1).length;
-
-    if (t3 === 3) return { pred: 1, conf: 0.74 };
-    if (t3 === 0) return { pred: 0, conf: 0.74 };
-    if (t5 >= 4) return { pred: 1, conf: 0.67 };
-    if (t5 <= 1) return { pred: 0, conf: 0.67 };
-    return { pred: s3[s3.length - 1], conf: 0.57 };
-  }
-
-  // 2. Mean Reversion thông minh (chỉ đảo khi đủ dài)
-  meanRev() {
-    if (this.history.length < 6) return { pred: 1, conf: 0.53 };
-    const last = this.history[this.history.length - 1];
-    let streak = 1;
-    for (let i = this.history.length - 2; i >= 0; i--) {
-      if (this.history[i] === last) streak++;
-      else break;
-    }
-    // Chỉ đảo khi streak thật sự dài → giảm lỗi bẻ sớm
-    if (streak >= 7) return { pred: 1 - last, conf: 0.78 };
-    if (streak === 6) return { pred: 1 - last, conf: 0.72 };
-    if (streak === 5) return { pred: 1 - last, conf: 0.64 };
-    // streak ngắn → theo
-    return { pred: last, conf: 0.58 + Math.min(streak, 3) * 0.02 };
-  }
-
-  // 3. Attention Recency (quên nhanh)
-  attention() {
-    if (this.history.length < 6) return { pred: 1, conf: 0.53 };
-    let score = 0, tw = 0;
-    const n = Math.min(14, this.history.length);
-    for (let i = 0; i < n; i++) {
-      const w = Math.pow(0.82, i);
-      score += this.history[this.history.length - 1 - i] * w;
-      tw += w;
-    }
-    const p = score / tw;
-    const pred = p >= 0.5 ? 1 : 0;
-    const conf = 0.54 + Math.abs(p - 0.5) * 1.65;
-    return { pred, conf: Math.min(conf, 0.80) };
-  }
-
-  // 4. Regime + Markov ngắn
-  regimeMarkov() {
-    if (this.history.length < 9) return { pred: 1, conf: 0.53 };
-    const recent = this.history.slice(-12);
-    let changes = 0;
-    for (let i = 1; i < recent.length; i++) if (recent[i] !== recent[i - 1]) changes++;
-
-    const last3 = this.history.slice(-3).join('');
-    const last = this.history[this.history.length - 1];
-    let follow = 0, total = 0;
-    for (let i = 0; i < this.history.length - 3; i++) {
-      if (this.history.slice(i, i + 3).join('') === last3) {
-        total++;
-        if (this.history[i + 3] === last) follow++;
-      }
-    }
-
-    if (total >= 3) {
-      const rate = follow / total;
-      const pred = rate >= 0.5 ? last : 1 - last;
-      return { pred, conf: Math.min(0.76, 0.56 + Math.abs(rate - 0.5) * 0.85) };
-    }
-    // Regime
-    if (changes <= 3) return { pred: last, conf: 0.66 };          // đang bệt
-    if (changes >= 8) return { pred: 1 - last, conf: 0.64 };       // loạn → đảo
-    return { pred: last, conf: 0.57 };
-  }
-
-  // 5. Dice + Sum (mới thêm – rất quan trọng)
-  dice() {
-    if (this.diceHistory.length < 10) return { pred: 1, conf: 0.52 };
-    const recent = this.diceHistory.slice(-20);
-    let high = 0, low = 0, sum = 0;
-    recent.forEach(d => {
-      [d.d1, d.d2, d.d3].forEach(f => f >= 4 ? high++ : low++);
-      sum += d.sum;
-    });
-    const avg = sum / recent.length;
-    const bias = (high - low) / (high + low || 1);
-
-    if (avg > 12.3 || bias > 0.18) return { pred: 0, conf: 0.71 }; // Xỉu
-    if (avg < 8.7 || bias < -0.18) return { pred: 1, conf: 0.71 }; // Tài
-    if (avg > 11.5) return { pred: 0, conf: 0.62 };
-    if (avg < 9.5) return { pred: 1, conf: 0.62 };
-    return { pred: this.history[this.history.length - 1] || 1, conf: 0.54 };
-  }
-
-  // 6. Sequence match
-  seq() {
-    if (this.history.length < 12) return { pred: 1, conf: 0.52 };
-    const key = this.history.slice(-3).join('');
-    let t = 0, x = 0;
-    for (let i = 0; i < this.history.length - 3; i++) {
-      if (this.history.slice(i, i + 3).join('') === key) {
-        if (this.history[i + 3] === 1) t++; else x++;
-      }
-    }
-    const tot = t + x;
-    if (tot < 2) return { pred: this.history[this.history.length - 1], conf: 0.54 };
-    const pred = t >= x ? 1 : 0;
-    return { pred, conf: Math.min(0.77, 0.58 + tot * 0.03) };
-  }
-
-  // ====================== ENSEMBLE ======================
-  predict() {
-    const m1 = this.momentum();
-    const m2 = this.meanRev();
-    const m3 = this.attention();
-    const m4 = this.regimeMarkov();
-    const m5 = this.dice();
-    const m6 = this.seq();
-
-    const models = [
-      { name: 'momentum', ...m1, w: this.weights.momentum },
-      { name: 'meanRev', ...m2, w: this.weights.meanRev },
-      { name: 'attention', ...m3, w: this.weights.attention },
-      { name: 'regime', ...m4, w: this.weights.regime },
-      { name: 'dice', ...m5, w: this.weights.dice },
-      { name: 'seq', ...m6, w: this.weights.seq }
-    ];
-
-    // Weighted vote
-    let sum = 0, totalW = 0;
-    models.forEach(m => {
-      const weight = m.w * m.conf;
-      sum += m.pred * weight;
-      totalW += weight;
-    });
-    let finalPred = totalW > 0 ? (sum / totalW >= 0.5 ? 1 : 0) : 1;
-
-    // Disagreement penalty
-    const preds = models.map(m => m.pred);
-    const agree = preds.filter(p => p === finalPred).length;
-    let mult = 1.0;
-    if (agree >= 5) mult = 1.18;
-    else if (agree === 4) mult = 1.08;
-    else if (agree === 3) mult = 0.92;
-    else mult = 0.72;
-
-    let finalConf = (models.reduce((a, m) => a + m.conf, 0) / models.length) * mult;
-
-    // Calibrate theo performance gần
-    if (this.recentCorrect.length >= 10) {
-      const recentAcc = this.recentCorrect.slice(-16).filter(Boolean).length / Math.min(16, this.recentCorrect.length);
-      finalConf = finalConf * 0.60 + recentAcc * 0.40;
-    }
-
-    // Reverse mode
-    if (this.reverseMode) {
-      finalPred = 1 - finalPred;
-      finalConf *= 0.82;
-    }
-
-    finalConf = Math.max(0.54, Math.min(0.88, finalConf));
-    this.lastPred = finalPred;
-
-    return {
-      prediction: finalPred === 1 ? 'Tài' : 'Xỉu',
-      confidence: Math.round(finalConf * 100),
-      agree: agree + '/6',
-      reverseMode: this.reverseMode,
-      factors: models
-        .filter(m => m.conf > 0.58)
-        .sort((a, b) => b.conf - a.conf)
-        .slice(0, 4)
-        .map(m => m.name + ':' + (m.pred === 1 ? 'T' : 'X') + '(' + Math.round(m.conf * 100) + '%)')
-    };
-  }
-
-  addResult(actual /* 1 or 0 */) {
-    if (this.lastPred !== null) {
-      const correct = this.lastPred === actual;
-      this.recentCorrect.push(correct);
-      if (this.recentCorrect.length > 45) this.recentCorrect.shift();
-
-      // Update weights nhanh
-      const list = [
-        { name: 'momentum', res: this.momentum() },
-        { name: 'meanRev', res: this.meanRev() },
-        { name: 'attention', res: this.attention() },
-        { name: 'regime', res: this.regimeMarkov() },
-        { name: 'dice', res: this.dice() },
-        { name: 'seq', res: this.seq() }
-      ];
-      list.forEach(item => {
-        const hit = item.res.pred === actual;
-        const delta = hit ? 0.048 : -0.065;
-        this.weights[item.name] = Math.max(0.30, Math.min(1.75, this.weights[item.name] + delta));
-      });
-
-      if (correct) {
-        this.wrongStreak = 0;
-        this.reverseMode = false;
-      } else {
-        this.wrongStreak++;
-        if (this.wrongStreak >= 3) {
-          this.reverseMode = true;
-          this.wrongStreak = 0;
-        }
-      }
-    }
-    this.history.push(actual);
-    if (this.history.length > 220) this.history.shift();
-  }
-
-  addDice(d1, d2, d3, sum) {
-    this.diceHistory.push({ d1, d2, d3, sum });
-    if (this.diceHistory.length > 80) this.diceHistory.shift();
-  }
-
-  loadFromData(data) {
-    // data: array of {Ket_qua, Xuc_xac_1...} newest first
-    const reversed = [...data].reverse();
-    reversed.forEach(d => {
-      const v = d.Ket_qua === 'Tài' ? 1 : 0;
-      this.history.push(v);
-      this.addDice(d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3, d.Tong);
-    });
-    if (this.history.length > 220) this.history = this.history.slice(-220);
-  }
+  return { v: arr[0], len };
 }
 
-// Cache model theo type
-const models = { hu: null, md5: null };
-
-function getModel(type, data) {
-  if (!models[type]) {
-    models[type] = new SieuBatCau(type);
-    if (data?.length) models[type].loadFromData(data);
-  } else if (data?.length) {
-    // sync latest
-    const lastKnown = models[type].history.length;
-    if (data.length > lastKnown) {
-      // add missing (newest first → reverse add)
-      const need = data.slice(0, data.length - lastKnown).reverse();
-      need.forEach(d => {
-        models[type].history.push(d.Ket_qua === 'Tài' ? 1 : 0);
-        models[type].addDice(d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3, d.Tong);
-      });
-    }
+function getAlt(arr) {
+  let n = 1;
+  for (let i = 1; i < Math.min(arr.length, 16); i++) {
+    if (arr[i] !== arr[i - 1]) n++; else break;
   }
-  return models[type];
+  return n;
 }
 
-// ==================== LOAD / SAVE ====================
-function loadLearning() {
+function calcTransition(arr, order = 2) {
+  // đếm P(next | last order)
+  if (arr.length < order + 5) return null;
+  const key = arr.slice(0, order).join('');
+  let follow = 0, total = 0;
+  for (let i = 0; i < arr.length - order; i++) {
+    if (arr.slice(i, i + order).join('') === key) {
+      total++;
+      if (arr[i + order] === arr[0]) follow++; // same as current first?
+      // actually next after the pattern
+    }
+  }
+  // better recount
+  follow = 0; total = 0;
+  for (let i = order; i < arr.length; i++) {
+    if (arr.slice(i - order, i).join('') === key) {
+      total++;
+      if (arr[i - order - 1] !== undefined && arr[i - order - 1] === arr[0]) { /* skip */ }
+      // next is arr[i-order-1] when scanning reverse? 
+      // arr is newest-first. Pattern at start = most recent.
+      // We want what usually comes AFTER this pattern in history.
+    }
+  }
+  // Rewrite cleanly: convert to oldest-first for counting
+  const oldFirst = [...arr].reverse();
+  const pat = oldFirst.slice(-order).join('');
+  follow = 0; total = 0;
+  for (let i = 0; i < oldFirst.length - order; i++) {
+    if (oldFirst.slice(i, i + order).join('') === pat) {
+      total++;
+      if (oldFirst[i + order] === oldFirst[oldFirst.length - 1]) follow++;
+    }
+  }
+  if (total < 3) return null;
+  return { rate: follow / total, total, nextSame: follow / total >= 0.5 };
+}
+
+function analyze(data, type) {
+  // data newest first
+  const results = data.map(d => toBin(d.Ket_qua)); // 1 Tài, 0 Xỉu
+  const n = results.length;
+  if (n < 8) {
+    return { prediction: 'Xỉu', confidence: 55, factors: ['Ít dữ liệu'], agree: '0' };
+  }
+
+  const st = getStreak(results);
+  const alt = getAlt(results);
+  const last10 = results.slice(0, 10);
+  const tai10 = last10.filter(x => x === 1).length;
+  const last20 = results.slice(0, 20);
+  const tai20 = last20.filter(x => x === 1).length;
+
+  // Dice stats
+  let high = 0, low = 0, sumAll = 0;
+  data.slice(0, 18).forEach(d => {
+    [d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3].forEach(f => f >= 4 ? high++ : low++);
+    sumAll += d.Tong;
+  });
+  const avgSum = sumAll / Math.min(18, data.length);
+  const faceBias = (high - low) / (high + low || 1);
+
+  // --- SIGNAL COLLECTION ---
+  const signals = []; // {pred: 0|1, conf: 0-1, name, power}
+
+  // 1. STREAK LOGIC (quan trọng nhất)
+  if (st.len >= 2 && st.len <= 4) {
+    // THEO bệt ngắn - đây là tín hiệu mạnh nhất từ data
+    signals.push({ pred: st.v, conf: 0.68 + st.len * 0.03, name: 'Theo bệt ' + st.len, power: 3 });
+  } else if (st.len === 5 || st.len === 6) {
+    // Vẫn nghiêng theo, chưa bẻ vội
+    signals.push({ pred: st.v, conf: 0.64, name: 'Theo bệt ' + st.len, power: 2 });
+  } else if (st.len >= 7) {
+    // Bẻ
+    signals.push({ pred: 1 - st.v, conf: 0.70 + Math.min(0.1, (st.len - 7) * 0.02), name: 'Bẻ rồng ' + st.len, power: 3 });
+  }
+
+  // 2. ĐẢO 1-1
+  if (alt >= 5) {
+    signals.push({ pred: 1 - results[0], conf: 0.66 + Math.min(0.1, (alt - 5) * 0.02), name: 'Đảo ' + alt, power: 2.5 });
+  } else if (alt === 4) {
+    signals.push({ pred: 1 - results[0], conf: 0.61, name: 'Đảo 4', power: 1.5 });
+  }
+
+  // 3. LỆCH CỬA gần
+  if (tai10 >= 8) signals.push({ pred: 0, conf: 0.69, name: 'Lệch 10T', power: 2 });
+  else if (tai10 <= 2) signals.push({ pred: 1, conf: 0.69, name: 'Lệch 10X', power: 2 });
+  else if (tai20 >= 15) signals.push({ pred: 0, conf: 0.65, name: 'Lệch 20T', power: 1.5 });
+  else if (tai20 <= 5) signals.push({ pred: 1, conf: 0.65, name: 'Lệch 20X', power: 1.5 });
+
+  // 4. DICE / SUM
+  if (avgSum > 12.5 || faceBias > 0.20) {
+    signals.push({ pred: 0, conf: 0.66, name: 'Dice cao', power: 1.8 });
+  } else if (avgSum < 8.5 || faceBias < -0.20) {
+    signals.push({ pred: 1, conf: 0.66, name: 'Dice thấp', power: 1.8 });
+  }
+
+  // 5. TRANSITION (Markov đơn giản)
+  const oldFirst = [...results].reverse();
+  if (oldFirst.length >= 15) {
+    const last2 = oldFirst.slice(-2).join('');
+    let cnt0 = 0, cnt1 = 0;
+    for (let i = 0; i < oldFirst.length - 2; i++) {
+      if (oldFirst.slice(i, i + 2).join('') === last2) {
+        if (oldFirst[i + 2] === 0) cnt0++;
+        else cnt1++;
+      }
+    }
+    const tot = cnt0 + cnt1;
+    if (tot >= 4) {
+      const pred = cnt1 >= cnt0 ? 1 : 0;
+      const rate = Math.max(cnt0, cnt1) / tot;
+      signals.push({ pred, conf: 0.55 + rate * 0.25, name: 'Markov2', power: 1.5 + rate });
+    }
+  }
+
+  // 6. FOLLOW gần nhất (luôn có làm nền)
+  signals.push({ pred: results[0], conf: 0.56, name: 'Theo gần', power: 1 });
+
+  // --- ANTI-LOSS ---
+  const wrongStreak = learningData[type].recentWrongStreak || 0;
+  const recentAcc = learningData[type].recentAccuracy || [];
+  const acc = recentAcc.length >= 6
+    ? recentAcc.slice(-12).reduce((a, b) => a + b, 0) / Math.min(12, recentAcc.length)
+    : 0.5;
+
+  // Nếu đang thua nhiều → ép theo gần nhất (safe mode)
+  if (wrongStreak >= 3 || acc < 0.35) {
+    signals.length = 0;
+    signals.push({ pred: results[0], conf: 0.62, name: 'SAFE theo gần', power: 4 });
+    if (st.len >= 2 && st.len <= 5) {
+      signals.push({ pred: st.v, conf: 0.67, name: 'SAFE theo bệt', power: 3 });
+    }
+  }
+
+  // --- VOTE ---
+  let scT = 0, scX = 0;
+  signals.forEach(s => {
+    const pts = s.conf * s.power;
+    if (s.pred === 1) scT += pts;
+    else scX += pts;
+  });
+
+  let finalPred = scT >= scX ? 1 : 0;
+  const agreeT = signals.filter(s => s.pred === 1).length;
+  const agreeX = signals.filter(s => s.pred === 0).length;
+  const totalSig = signals.length;
+  const agreeRatio = Math.max(agreeT, agreeX) / totalSig;
+
+  // Confidence
+  let conf = 58;
+  conf += agreeRatio * 16;
+  conf += Math.min(10, Math.abs(scT - scX) * 3);
+
+  // Boost nếu có tín hiệu mạnh đồng thuận
+  const strong = signals.filter(s => s.power >= 2.5 && s.pred === finalPred);
+  if (strong.length >= 2) conf += 6;
+  if (strong.length >= 1 && agreeRatio >= 0.7) conf += 4;
+
+  // Penalty khi đang thua
+  if (wrongStreak >= 2) conf -= 6;
+  if (acc < 0.4 && recentAcc.length >= 8) conf -= 5;
+
+  conf = Math.max(52, Math.min(86, Math.round(conf)));
+
+  // Final safety: nếu conf thấp và có bệt ngắn → theo bệt
+  if (conf < 62 && st.len >= 2 && st.len <= 4) {
+    finalPred = st.v;
+    conf = Math.max(conf, 63);
+  }
+
+  const factors = signals
+    .filter(s => s.power >= 1.5)
+    .sort((a, b) => b.conf * b.power - a.conf * a.power)
+    .slice(0, 4)
+    .map(s => s.name);
+
+  return {
+    prediction: toLabel(finalPred),
+    confidence: conf,
+    factors,
+    agree: Math.max(agreeT, agreeX) + '/' + totalSig
+  };
+}
+
+// ==================== INFRA ====================
+function loadL() {
   try {
     if (fs.existsSync(LEARNING_FILE)) {
-      const p = JSON.parse(fs.readFileSync(LEARNING_FILE, 'utf8'));
-      learningData = { ...learningData, ...p };
-      console.log('✅ Loaded learning');
+      learningData = { ...learningData, ...JSON.parse(fs.readFileSync(LEARNING_FILE, 'utf8')) };
+      console.log('✅ Learning loaded');
     }
   } catch (e) {}
 }
-function saveLearning() {
-  try {
-    // sync weights
-    if (models.hu) learningData.hu.modelWeights = models.hu.weights;
-    if (models.md5) learningData.md5.modelWeights = models.md5.weights;
-    fs.writeFileSync(LEARNING_FILE, JSON.stringify(learningData, null, 2));
-  } catch (e) {}
+function saveL() {
+  try { fs.writeFileSync(LEARNING_FILE, JSON.stringify(learningData, null, 2)); } catch (e) {}
 }
-function loadHistory() {
+function loadH() {
   try {
     if (fs.existsSync(HISTORY_FILE)) {
       const p = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
@@ -332,7 +272,7 @@ function loadHistory() {
     }
   } catch (e) {}
 }
-function saveHistory() {
+function saveH() {
   try {
     fs.writeFileSync(HISTORY_FILE, JSON.stringify({
       history: predictionHistory,
@@ -368,27 +308,13 @@ async function fetchMd5() {
 }
 
 function hasPred(type, phien) {
-  const p = String(phien);
-  return predictionHistory[type].some(r => r.Phien_hien_tai === p);
+  return predictionHistory[type].some(r => r.Phien_hien_tai === String(phien));
 }
 function getExist(type, phien) {
   return predictionHistory[type].find(r => r.Phien_hien_tai === String(phien)) || null;
 }
 
-// ==================== CORE PREDICT ====================
-function doPredict(type, data) {
-  const model = getModel(type, data);
-  const result = model.predict();
-
-  // sync wrong streak from learning
-  if (learningData[type].recentWrongStreak >= 3 && !model.reverseMode) {
-    model.reverseMode = true;
-  }
-
-  return result;
-}
-
-function recordPred(type, phien, pred, conf, factors) {
+function record(type, phien, pred, conf, factors) {
   const p = String(phien);
   if (learningData[type].predictions.some(r => r.phien === p)) return;
   learningData[type].predictions.unshift({
@@ -396,15 +322,14 @@ function recordPred(type, phien, pred, conf, factors) {
     timestamp: new Date().toISOString(), verified: false
   });
   learningData[type].totalPredictions++;
-  if (learningData[type].predictions.length > 600) {
-    learningData[type].predictions = learningData[type].predictions.slice(0, 600);
+  if (learningData[type].predictions.length > 500) {
+    learningData[type].predictions = learningData[type].predictions.slice(0, 500);
   }
-  saveLearning();
+  saveL();
 }
 
 async function verify(type, data) {
-  let updated = false;
-  const model = getModel(type, data);
+  let up = false;
   for (const pred of learningData[type].predictions) {
     if (pred.verified) continue;
     const act = data.find(d => String(d.Phien) === pred.phien);
@@ -412,9 +337,6 @@ async function verify(type, data) {
     pred.verified = true;
     pred.actual = act.Ket_qua;
     pred.isCorrect = pred.prediction === act.Ket_qua;
-
-    const val = act.Ket_qua === 'Tài' ? 1 : 0;
-    model.addResult(val);
 
     if (pred.isCorrect) {
       learningData[type].correctPredictions++;
@@ -437,16 +359,13 @@ async function verify(type, data) {
       learningData[type].recentWrongStreak = (learningData[type].recentWrongStreak || 0) + 1;
     }
     learningData[type].recentAccuracy.push(pred.isCorrect ? 1 : 0);
-    if (learningData[type].recentAccuracy.length > 50) learningData[type].recentAccuracy.shift();
-    updated = true;
+    if (learningData[type].recentAccuracy.length > 40) learningData[type].recentAccuracy.shift();
+    up = true;
   }
-  if (updated) {
-    learningData[type].modelWeights = model.weights;
-    saveLearning();
-  }
+  if (up) saveL();
 }
 
-function saveToHistory(type, phien, pred, conf, latest) {
+function saveToHist(type, phien, pred, conf, latest) {
   const p = String(phien);
   if (predictionHistory[type].some(r => r.Phien_hien_tai === p)) {
     return predictionHistory[type].find(r => r.Phien_hien_tai === p);
@@ -485,7 +404,7 @@ async function updateStatus(type) {
         up = true;
       }
     }
-    if (up) saveHistory();
+    if (up) saveH();
   } catch (e) {}
 }
 
@@ -497,13 +416,13 @@ async function autoRun() {
       const next = data[0].Phien + 1;
       if (lastProcessed[type] !== next && !hasPred(type, next)) {
         await verify(type, data);
-        const r = doPredict(type, data);
-        saveToHistory(type, next, r.prediction, r.confidence, data[0]);
-        recordPred(type, next, r.prediction, r.confidence, r.factors);
+        const r = analyze(data, type);
+        saveToHist(type, next, r.prediction, r.confidence, data[0]);
+        record(type, next, r.prediction, r.confidence, r.factors);
         lastProcessed[type] = next;
-        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ': ' + r.prediction + ' (' + r.confidence + '%) agree:' + r.agree);
-        saveHistory();
-        saveLearning();
+        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ': ' + r.prediction + ' (' + r.confidence + '%)');
+        saveH();
+        saveL();
       }
     }
     await updateStatus('hu');
@@ -511,7 +430,6 @@ async function autoRun() {
   } catch (e) { console.error('[Auto]', e.message); }
 }
 
-// ==================== API ====================
 async function handle(type, fn, req, res) {
   try {
     const data = await fn();
@@ -529,12 +447,12 @@ async function handle(type, fn, req, res) {
       });
     }
 
-    const r = doPredict(type, data);
-    const rec = saveToHistory(type, next, r.prediction, r.confidence, data[0]);
-    recordPred(type, next, r.prediction, r.confidence, r.factors);
+    const r = analyze(data, type);
+    const rec = saveToHist(type, next, r.prediction, r.confidence, data[0]);
+    record(type, next, r.prediction, r.confidence, r.factors);
     lastProcessed[type] = next;
-    saveHistory();
-    setTimeout(() => updateStatus(type), 2500);
+    saveH();
+    setTimeout(() => updateStatus(type), 2000);
     res.json({
       Phien: rec.Phien, Xuc_xac_1: rec.Xuc_xac_1, Xuc_xac_2: rec.Xuc_xac_2, Xuc_xac_3: rec.Xuc_xac_3,
       Tong: rec.Tong, Ket_qua: rec.Ket_qua, Do_tin_cay: rec.Do_tin_cay,
@@ -548,7 +466,6 @@ async function handle(type, fn, req, res) {
 
 app.get('/api/hu', (req, res) => handle('hu', fetchHu, req, res));
 app.get('/api/md5', (req, res) => handle('md5', fetchMd5, req, res));
-
 app.get('/api/hu/lichsu', async (req, res) => {
   await updateStatus('hu');
   res.json({ type: 'Hũ', history: predictionHistory.hu, total: predictionHistory.hu.length });
@@ -557,15 +474,12 @@ app.get('/api/md5/lichsu', async (req, res) => {
   await updateStatus('md5');
   res.json({ type: 'MD5', history: predictionHistory.md5, total: predictionHistory.md5.length });
 });
-
 app.get('/api/hu/learning', (req, res) => {
   const s = learningData.hu;
   const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
   res.json({
     type: 'Hũ', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
-    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis,
-    recentWrongStreak: s.recentWrongStreak || 0,
-    weights: models.hu ? models.hu.weights : s.modelWeights
+    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0
   });
 });
 app.get('/api/md5/learning', (req, res) => {
@@ -573,21 +487,15 @@ app.get('/api/md5/learning', (req, res) => {
   const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
   res.json({
     type: 'MD5', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
-    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis,
-    recentWrongStreak: s.recentWrongStreak || 0,
-    weights: models.md5 ? models.md5.weights : s.modelWeights
+    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0
   });
 });
-
 app.get('/api/reset-learning', (req, res) => {
-  learningData = { hu: emptyLearn(), md5: emptyLearn() };
-  models.hu = null;
-  models.md5 = null;
-  saveLearning();
+  learningData = { hu: emptyL(), md5: emptyL() };
+  saveL();
   res.json({ message: 'Reset OK' });
 });
 
-// ==================== UI GỌN ĐẸP ====================
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>
@@ -617,7 +525,7 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
     <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-xs font-black text-black">PK</div>
     <div>
       <div class="font-bold text-sm leading-none">Phạm Khôi</div>
-      <div class="text-[9px] text-white/25 mt-0.5">SieuBatCau Ultra VIP</div>
+      <div class="text-[9px] text-white/25 mt-0.5">Accuracy First</div>
     </div>
   </div>
   <div class="flex items-center gap-2">
@@ -692,7 +600,7 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
   </div>
 </div>
 
-<div class="text-center text-[9px] text-white/10 pb-3">Phạm Khôi • SieuBatCau Ultra VIP</div>
+<div class="text-center text-[9px] text-white/10 pb-3">Phạm Khôi • Accuracy First</div>
 
 <script>
 const $=id=>document.getElementById(id);
@@ -737,21 +645,21 @@ async function learn(s){
   }catch(e){}
 }
 async function go(){await Promise.all([side('hu'),side('md5'),hist('hu'),hist('md5'),learn('hu'),learn('md5')])}
-go();setInterval(go,13000);
+go();setInterval(go,12000);
 </script>
 </body>
 </html>`);
 });
 
-loadLearning();
-loadHistory();
+loadL();
+loadH();
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('══════════════════════════════════════');
-  console.log('  PHẠM KHÔI • SieuBatCau Ultra VIP v3');
+  console.log('  PHẠM KHÔI • Accuracy First');
   console.log('  http://0.0.0.0:' + PORT);
-  console.log('  Momentum · MeanRev · Attention · Dice · Seq');
+  console.log('  Theo bệt ngắn · Bẻ muộn · Safe mode');
   console.log('══════════════════════════════════════');
   setTimeout(autoRun, 2000);
   setInterval(autoRun, AUTO_INTERVAL);
