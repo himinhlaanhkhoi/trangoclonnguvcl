@@ -1,25 +1,16 @@
 {
-  "name": "lc79-prediction-server",
-  "version": "1.0.0",
-  "description": "Lau Cua 79 - Tai Xiu Prediction with Session Accumulator",
-  "main": "lc79b.js",
+  "name": "phamkhoi-taixiu-pro",
+  "version": "7.0.0",
+  "description": "Lẩu Cua 79 - Advanced Tài Xỉu Prediction by Phạm Khôi - Markov + Dice AI + Modern UI",
+  "main": "lc.js",
   "scripts": {
-    "start": "node lc79b.js",
-    "dev": "nodemon lc79b.js"
+    "start": "node lc.js",
+    "dev": "node lc.js"
   },
-  "keywords": [
-    "tai-xiu",
-    "prediction",
-    "express",
-    "axios"
-  ],
-  "author": "@anhlakhoi",
-  "license": "ISC",
   "dependencies": {
-    "axios": "^1.7.9",
-    "express": "^4.21.2"
+    "express": "^4.19.2",
+    "axios": "^1.7.2"
   },
-  "devDependencies": {
-    "nodemon": "^3.1.9"
-  }
+  "author": "@phamkhoi",
+  "license": "MIT"
 }
