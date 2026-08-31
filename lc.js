@@ -11,16 +11,13 @@ const LEARNING_FILE = 'phamkhoi.json';
 const HISTORY_FILE = 'phamkhoi1.json';
 
 let predictionHistory = { hu: [], md5: [] };
-const MAX_HISTORY = 150;
-const AUTO_SAVE_INTERVAL = 20000;
+const MAX_HISTORY = 160;
+const AUTO_SAVE_INTERVAL = 18000;
 let lastProcessedPhien = { hu: null, md5: null };
 
-let learningData = {
-  hu: createEmptyLearning(),
-  md5: createEmptyLearning()
-};
+let learningData = { hu: createEmpty(), md5: createEmpty() };
 
-function createEmptyLearning() {
+function createEmpty() {
   return {
     predictions: [],
     patternStats: {},
@@ -31,23 +28,21 @@ function createEmptyLearning() {
     streakAnalysis: { wins: 0, losses: 0, currentStreak: 0, bestStreak: 0, worstStreak: 0 },
     recentAccuracy: [],
     recentWrongStreak: 0,
-    markov: { order1: {}, order2: {}, order3: {} },
-    diceStats: { faces: [0,0,0,0,0,0,0] }
+    markov: {}
   };
 }
 
-const DEFAULT_PATTERN_WEIGHTS = {
-  markov: 1.7, dice_bias: 1.4, entropy: 1.3, sum_trend: 1.4,
-  seq_mine: 1.45, cau_bet: 1.5, cau_dao: 1.4, cau_rong: 1.6,
-  break_safe: 1.55, xu_huong: 1.4, cau_22: 1.25, cau_33: 1.3,
-  follow: 1.2, mean_rev: 1.1, consensus: 1.8
+const DEFAULT_W = {
+  markov: 1.85, cau_bet: 1.6, cau_dao: 1.45, cau_rong: 1.7,
+  dice: 1.5, trend: 1.4, seq: 1.55, pair: 1.3, follow: 1.15,
+  decay: 1.5, consensus: 1.9, anti_loss: 2.0
 };
 
 function loadLearningData() {
   try {
     if (fs.existsSync(LEARNING_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(LEARNING_FILE, 'utf8'));
-      learningData = { ...learningData, ...parsed };
+      const p = JSON.parse(fs.readFileSync(LEARNING_FILE, 'utf8'));
+      learningData = { ...learningData, ...p };
       console.log('✅ Loaded phamkhoi.json');
     }
   } catch (e) { console.error('Load learning:', e.message); }
@@ -55,15 +50,15 @@ function loadLearningData() {
 
 function saveLearningData() {
   try { fs.writeFileSync(LEARNING_FILE, JSON.stringify(learningData, null, 2)); }
-  catch (e) { console.error('Save learning:', e.message); }
+  catch (e) {}
 }
 
 function loadPredictionHistory() {
   try {
     if (fs.existsSync(HISTORY_FILE)) {
-      const parsed = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
-      predictionHistory = parsed.history || { hu: [], md5: [] };
-      lastProcessedPhien = parsed.lastProcessedPhien || { hu: null, md5: null };
+      const p = JSON.parse(fs.readFileSync(HISTORY_FILE, 'utf8'));
+      predictionHistory = p.history || { hu: [], md5: [] };
+      lastProcessedPhien = p.lastProcessedPhien || { hu: null, md5: null };
       ['hu', 'md5'].forEach(t => {
         const seen = new Set();
         predictionHistory[t] = (predictionHistory[t] || []).filter(r => {
@@ -74,7 +69,7 @@ function loadPredictionHistory() {
       });
       console.log('✅ History HU:' + predictionHistory.hu.length + ' MD5:' + predictionHistory.md5.length);
     }
-  } catch (e) { console.error('Load history:', e.message); }
+  } catch (e) {}
 }
 
 function savePredictionHistory() {
@@ -84,840 +79,787 @@ function savePredictionHistory() {
       lastProcessedPhien,
       lastSaved: new Date().toISOString()
     }, null, 2));
-  } catch (e) { console.error('Save history:', e.message); }
+  } catch (e) {}
 }
 
-function transformApiData(apiData) {
-  if (!apiData || !apiData.list || !apiData.list.length) return null;
-  return apiData.list.map(item => ({
-    Phien: item.id,
-    Ket_qua: item.resultTruyenThong === 'TAI' ? 'Tài' : 'Xỉu',
-    Xuc_xac_1: item.dices[0],
-    Xuc_xac_2: item.dices[1],
-    Xuc_xac_3: item.dices[2],
-    Tong: item.point
+function transform(apiData) {
+  if (!apiData?.list?.length) return null;
+  return apiData.list.map(i => ({
+    Phien: i.id,
+    Ket_qua: i.resultTruyenThong === 'TAI' ? 'Tài' : 'Xỉu',
+    Xuc_xac_1: i.dices[0],
+    Xuc_xac_2: i.dices[1],
+    Xuc_xac_3: i.dices[2],
+    Tong: i.point
   }));
 }
 
-async function fetchDataHu() {
+async function fetchHu() {
   try {
-    const res = await axios.get(API_URL_HU, { timeout: 12000 });
-    return transformApiData(res.data);
-  } catch (e) {
-    console.error('HU fetch:', e.message);
-    return null;
-  }
+    const r = await axios.get(API_URL_HU, { timeout: 12000 });
+    return transform(r.data);
+  } catch (e) { console.error('HU:', e.message); return null; }
 }
 
-async function fetchDataMd5() {
+async function fetchMd5() {
   try {
-    const res = await axios.get(API_URL_MD5, { timeout: 12000 });
-    return transformApiData(res.data);
-  } catch (e) {
-    console.error('MD5 fetch:', e.message);
-    return null;
-  }
+    const r = await axios.get(API_URL_MD5, { timeout: 12000 });
+    return transform(r.data);
+  } catch (e) { console.error('MD5:', e.message); return null; }
 }
 
-function hasPredictionForPhien(type, phien) {
-  const p = phien.toString();
+function hasPred(type, phien) {
+  const p = String(phien);
   return predictionHistory[type].some(r => r.Phien_hien_tai === p) ||
          learningData[type].predictions.some(r => r.phien === p);
 }
 
-function getExistingPrediction(type, phien) {
-  return predictionHistory[type].find(r => r.Phien_hien_tai === phien.toString()) || null;
+function getExist(type, phien) {
+  return predictionHistory[type].find(r => r.Phien_hien_tai === String(phien)) || null;
 }
 
-function initializePatternStats(type) {
+function initW(type) {
   if (!learningData[type].patternWeights || !Object.keys(learningData[type].patternWeights).length) {
-    learningData[type].patternWeights = { ...DEFAULT_PATTERN_WEIGHTS };
+    learningData[type].patternWeights = { ...DEFAULT_W };
   }
-  Object.keys(DEFAULT_PATTERN_WEIGHTS).forEach(p => {
-    if (!learningData[type].patternStats[p]) {
-      learningData[type].patternStats[p] = { total: 0, correct: 0, accuracy: 0.5, recentResults: [] };
+  Object.keys(DEFAULT_W).forEach(k => {
+    if (!learningData[type].patternStats[k]) {
+      learningData[type].patternStats[k] = { total: 0, correct: 0, recent: [] };
     }
   });
 }
 
-function getW(type, id) {
-  initializePatternStats(type);
-  return learningData[type].patternWeights[id] || 1.0;
+function W(type, id) {
+  initW(type);
+  return learningData[type].patternWeights[id] || 1;
 }
 
-function updatePatternPerf(type, id, isCorrect) {
-  initializePatternStats(type);
+function updateW(type, id, ok) {
+  initW(type);
   const s = learningData[type].patternStats[id];
   if (!s) return;
   s.total++;
-  if (isCorrect) s.correct++;
-  s.recentResults.push(isCorrect ? 1 : 0);
-  if (s.recentResults.length > 25) s.recentResults.shift();
-  s.accuracy = s.total > 0 ? s.correct / s.total : 0.5;
-  const ra = s.recentResults.reduce((a,b)=>a+b,0) / s.recentResults.length;
-  let w = learningData[type].patternWeights[id];
-  if (s.recentResults.length >= 6) {
-    if (ra > 0.68) w = Math.min(3.2, w * 1.12);
-    else if (ra < 0.32) w = Math.max(0.15, w * 0.87);
+  if (ok) s.correct++;
+  s.recent.push(ok ? 1 : 0);
+  if (s.recent.length > 28) s.recent.shift();
+  if (s.recent.length >= 7) {
+    const ra = s.recent.reduce((a, b) => a + b, 0) / s.recent.length;
+    let w = learningData[type].patternWeights[id];
+    if (ra > 0.70) w = Math.min(3.4, w * 1.13);
+    else if (ra < 0.30) w = Math.max(0.12, w * 0.86);
+    learningData[type].patternWeights[id] = +w.toFixed(3);
   }
-  learningData[type].patternWeights[id] = +w.toFixed(3);
 }
 
-function getStreak(results) {
+// ==================== ANALYZERS ====================
+
+function streakInfo(results) {
   if (!results.length) return { type: null, len: 0 };
   let len = 1;
   for (let i = 1; i < results.length; i++) {
-    if (results[i] === results[0]) len++;
-    else break;
+    if (results[i] === results[0]) len++; else break;
   }
   return { type: results[0], len };
 }
 
-function getAltLen(results) {
-  let len = 1;
-  for (let i = 1; i < Math.min(results.length, 15); i++) {
-    if (results[i] !== results[i-1]) len++;
-    else break;
+function altLen(results) {
+  let n = 1;
+  for (let i = 1; i < Math.min(results.length, 16); i++) {
+    if (results[i] !== results[i - 1]) n++; else break;
   }
-  return len;
+  return n;
 }
 
-function analyzeMarkov(results, type) {
-  if (results.length < 6) return null;
+// 1. Markov 1-2-3 + Laplace
+function aMarkov(results, type) {
+  if (results.length < 7) return null;
+  const d = results.slice(0, 75);
   const m1 = {}, m2 = {}, m3 = {};
-  const data = results.slice(0, 70);
-  for (let i = 0; i < data.length - 1; i++) {
-    const a = data[i], b = data[i+1];
+  for (let i = 0; i < d.length - 1; i++) {
+    const a = d[i], b = d[i + 1];
     if (!m1[a]) m1[a] = { Tài: 1, Xỉu: 1 };
     m1[a][b]++;
   }
-  for (let i = 0; i < data.length - 2; i++) {
-    const k = data[i] + '|' + data[i+1];
+  for (let i = 0; i < d.length - 2; i++) {
+    const k = d[i] + '|' + d[i + 1];
     if (!m2[k]) m2[k] = { Tài: 1, Xỉu: 1 };
-    m2[k][data[i+2]]++;
+    m2[k][d[i + 2]]++;
   }
-  for (let i = 0; i < data.length - 3; i++) {
-    const k = data[i] + '|' + data[i+1] + '|' + data[i+2];
+  for (let i = 0; i < d.length - 3; i++) {
+    const k = d[i] + '|' + d[i + 1] + '|' + d[i + 2];
     if (!m3[k]) m3[k] = { Tài: 1, Xỉu: 1 };
-    m3[k][data[i+3]]++;
+    m3[k][d[i + 3]]++;
   }
-  learningData[type].markov = { order1: m1, order2: m2, order3: m3 };
-
-  const l1 = results[0];
-  const l2 = results[1] + '|' + results[0];
-  const l3 = results[2] + '|' + results[1] + '|' + results[0];
-  let sT = 0, sX = 0, conf = 60, tags = [];
-
+  const l1 = results[0], l2 = results[1] + '|' + results[0], l3 = results[2] + '|' + results[1] + '|' + results[0];
+  let sT = 0, sX = 0, c = 58, tag = [];
   if (m3[l3]) {
-    const t = m3[l3]; const tot = t.Tài + t.Xỉu;
-    sT += (t.Tài / tot) * 3.2; sX += (t.Xỉu / tot) * 3.2; conf += 12; tags.push('M3');
+    const t = m3[l3], tot = t.Tài + t.Xỉu;
+    sT += (t.Tài / tot) * 3.4; sX += (t.Xỉu / tot) * 3.4; c += 13; tag.push('3');
   }
   if (m2[l2]) {
-    const t = m2[l2]; const tot = t.Tài + t.Xỉu;
-    sT += (t.Tài / tot) * 2.3; sX += (t.Xỉu / tot) * 2.3; conf += 8; tags.push('M2');
+    const t = m2[l2], tot = t.Tài + t.Xỉu;
+    sT += (t.Tài / tot) * 2.4; sX += (t.Xỉu / tot) * 2.4; c += 9; tag.push('2');
   }
   if (m1[l1]) {
-    const t = m1[l1]; const tot = t.Tài + t.Xỉu;
-    sT += (t.Tài / tot) * 1.5; sX += (t.Xỉu / tot) * 1.5; conf += 5; tags.push('M1');
+    const t = m1[l1], tot = t.Tài + t.Xỉu;
+    sT += (t.Tài / tot) * 1.5; sX += (t.Xỉu / tot) * 1.5; c += 5; tag.push('1');
   }
   if (sT === 0 && sX === 0) return null;
-  const pred = sT >= sX ? 'Tài' : 'Xỉu';
   return {
-    prediction: pred,
-    confidence: Math.min(90, Math.round(conf * getW(type, 'markov'))),
-    name: 'Markov ' + tags.join('+'),
+    pred: sT >= sX ? 'Tài' : 'Xỉu',
+    conf: Math.min(91, Math.round(c * W(type, 'markov'))),
+    name: 'Markov' + (tag.length ? '-' + tag.join('') : ''),
     id: 'markov',
-    score: Math.abs(sT - sX)
+    power: Math.abs(sT - sX)
   };
 }
 
-function analyzeCauBetSmart(results, type) {
-  const st = getStreak(results);
+// 2. Smart Bệt (ưu tiên theo, bẻ có xác nhận)
+function aBet(results, type) {
+  const st = streakInfo(results);
   if (st.len < 2) return null;
-  const w = getW(type, 'cau_bet');
-  let pred, conf, name;
-  if (st.len <= 3) {
+  const w = W(type, 'cau_bet');
+  let pred, conf, name, id = 'cau_bet';
+  if (st.len <= 4) {
     pred = st.type;
-    conf = 68 + st.len * 3;
+    conf = 70 + st.len * 2.5;
     name = 'Theo bệt ' + st.len;
-  } else if (st.len === 4) {
-    pred = st.type;
-    conf = 72;
-    name = 'Theo bệt 4';
-  } else if (st.len === 5 || st.len === 6) {
-    const recentOpp = results.slice(st.len, st.len + 3).filter(r => r !== st.type).length;
-    if (recentOpp >= 2) {
+  } else if (st.len <= 6) {
+    // cần tín hiệu yếu mới bẻ
+    const opp = results.slice(st.len, st.len + 4).filter(r => r !== st.type).length;
+    if (opp >= 2) {
       pred = st.type === 'Tài' ? 'Xỉu' : 'Tài';
-      conf = 76;
-      name = 'Bẻ bệt ' + st.len + ' (xác nhận)';
+      conf = 77;
+      name = 'Bẻ ' + st.len + ' (xác nhận)';
     } else {
       pred = st.type;
-      conf = 70;
+      conf = 71;
       name = 'Theo bệt ' + st.len;
     }
   } else {
     pred = st.type === 'Tài' ? 'Xỉu' : 'Tài';
-    conf = 82 + Math.min(st.len - 7, 5);
+    conf = 84 + Math.min(6, st.len - 7);
     name = 'Bẻ rồng ' + st.len;
+    id = 'cau_rong';
   }
-  return {
-    prediction: pred,
-    confidence: Math.round(conf * w),
-    name,
-    id: st.len >= 7 ? 'cau_rong' : 'cau_bet',
-    score: st.len
-  };
+  return { pred, conf: Math.round(conf * w), name, id, power: st.len };
 }
 
-function analyzeCauDao(results, type) {
-  const alt = getAltLen(results);
-  if (alt < 4) return null;
-  const w = getW(type, 'cau_dao');
+// 3. Đảo 1-1
+function aDao(results, type) {
+  const n = altLen(results);
+  if (n < 4) return null;
   return {
-    prediction: results[0] === 'Tài' ? 'Xỉu' : 'Tài',
-    confidence: Math.min(86, Math.round((66 + alt * 2.2) * w)),
-    name: 'Đảo 1-1 (' + alt + ')',
+    pred: results[0] === 'Tài' ? 'Xỉu' : 'Tài',
+    conf: Math.min(87, Math.round((67 + n * 2.1) * W(type, 'cau_dao'))),
+    name: 'Đảo ' + n,
     id: 'cau_dao',
-    score: alt
+    power: n
   };
 }
 
-function analyzeDice(data, type) {
-  if (data.length < 12) return null;
-  const recent = data.slice(0, 30);
-  let high = 0, low = 0, sumAll = 0;
+// 4. Dice + Sum (mean reversion nhẹ)
+function aDice(data, type) {
+  if (data.length < 14) return null;
+  const recent = data.slice(0, 28);
+  let high = 0, low = 0, sum = 0;
   recent.forEach(d => {
-    [d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3].forEach(f => {
-      if (f >= 4) high++; else low++;
-    });
-    sumAll += d.Tong;
+    [d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3].forEach(f => f >= 4 ? high++ : low++);
+    sum += d.Tong;
   });
-  const avg = sumAll / recent.length;
+  const avg = sum / recent.length;
   const bias = (high - low) / (high + low || 1);
-  const w = getW(type, 'dice_bias');
-  if (Math.abs(bias) > 0.12 || Math.abs(avg - 10.5) > 1.3) {
-    let pred;
-    if (avg > 12 || bias > 0.15) pred = 'Xỉu';
-    else if (avg < 9 || bias < -0.15) pred = 'Tài';
-    else return null;
-    return {
-      prediction: pred,
-      confidence: Math.min(84, Math.round((68 + Math.abs(bias) * 60 + Math.abs(avg - 10.5) * 4) * w)),
-      name: 'Dice/Sum ' + avg.toFixed(1),
-      id: 'dice_bias',
-      score: Math.abs(bias)
-    };
-  }
+  if (Math.abs(bias) < 0.11 && Math.abs(avg - 10.5) < 1.2) return null;
+  let pred;
+  if (avg > 12.1 || bias > 0.16) pred = 'Xỉu';
+  else if (avg < 8.9 || bias < -0.16) pred = 'Tài';
+  else return null;
+  return {
+    pred,
+    conf: Math.min(85, Math.round((69 + Math.abs(bias) * 55 + Math.abs(avg - 10.5) * 3.5) * W(type, 'dice'))),
+    name: 'Dice ' + avg.toFixed(1),
+    id: 'dice',
+    power: Math.abs(bias) + Math.abs(avg - 10.5) / 3
+  };
+}
+
+// 5. Trend / Lệch cửa
+function aTrend(results, type) {
+  if (results.length < 11) return null;
+  const win = results.slice(0, 12);
+  const tai = win.filter(r => r === 'Tài').length;
+  if (tai >= 9) return { pred: 'Xỉu', conf: Math.round(81 * W(type, 'trend')), name: 'Lệch ' + tai + 'T', id: 'trend', power: tai - 6 };
+  if (tai <= 3) return { pred: 'Tài', conf: Math.round(81 * W(type, 'trend')), name: 'Lệch ' + (12 - tai) + 'X', id: 'trend', power: 6 - tai };
+  if (tai >= 8) return { pred: 'Xỉu', conf: Math.round(74 * W(type, 'trend')), name: 'Xu hướng T', id: 'trend', power: 2 };
+  if (tai <= 4) return { pred: 'Tài', conf: Math.round(74 * W(type, 'trend')), name: 'Xu hướng X', id: 'trend', power: 2 };
   return null;
 }
 
-function analyzeTrendEntropy(results, type) {
-  if (results.length < 10) return null;
-  const win = results.slice(0, 12);
-  const tai = win.filter(r => r === 'Tài').length;
-  const p = tai / win.length;
-  const ent = (p === 0 || p === 1) ? 0 : -(p * Math.log2(p) + (1 - p) * Math.log2(1 - p));
-  const w = getW(type, 'entropy');
-  if (ent > 0.9) return null;
-  let pred, conf, name;
-  if (tai >= 9) {
-    pred = 'Xỉu'; conf = 80; name = 'Lệch nặng ' + tai + 'T → đảo';
-  } else if (tai <= 3) {
-    pred = 'Tài'; conf = 80; name = 'Lệch nặng ' + (12-tai) + 'X → đảo';
-  } else if (tai >= 8) {
-    pred = 'Xỉu'; conf = 74; name = 'Xu hướng ' + tai + 'T';
-  } else if (tai <= 4) {
-    pred = 'Tài'; conf = 74; name = 'Xu hướng ' + (12-tai) + 'X';
-  } else return null;
-  return {
-    prediction: pred,
-    confidence: Math.round(conf * w),
-    name,
-    id: 'xu_huong',
-    score: Math.abs(tai - 6)
-  };
-}
-
-function analyzeSeq(results, type) {
-  if (results.length < 12) return null;
-  const target = results.slice(0, 3).join('|');
-  let mT = 0, mX = 0;
-  for (let i = 3; i < Math.min(results.length - 1, 55); i++) {
-    if (results.slice(i, i + 3).join('|') === target) {
-      const next = results[i - 1];
-      if (next === 'Tài') mT++; else mX++;
+// 6. Sequence match
+function aSeq(results, type) {
+  if (results.length < 14) return null;
+  const key = results.slice(0, 3).join('|');
+  let t = 0, x = 0;
+  for (let i = 3; i < Math.min(results.length - 1, 60); i++) {
+    if (results.slice(i, i + 3).join('|') === key) {
+      if (results[i - 1] === 'Tài') t++; else x++;
     }
   }
-  const tot = mT + mX;
+  const tot = t + x;
   if (tot < 2) return null;
-  const pred = mT >= mX ? 'Tài' : 'Xỉu';
-  const w = getW(type, 'seq_mine');
   return {
-    prediction: pred,
-    confidence: Math.min(85, Math.round((68 + tot * 3) * w)),
-    name: 'Seq x' + tot,
-    id: 'seq_mine',
-    score: tot
+    pred: t >= x ? 'Tài' : 'Xỉu',
+    conf: Math.min(86, Math.round((69 + tot * 2.8) * W(type, 'seq'))),
+    name: 'Seq×' + tot,
+    id: 'seq',
+    power: tot
   };
 }
 
-function analyzePairs(results, type) {
+// 7. Pair / Triple pattern
+function aPair(results, type) {
   if (results.length < 6) return null;
-  let pairs = 0, pType = [];
-  let i = 0;
+  // 2-2
+  let pairs = 0, types = [], i = 0;
   while (i < results.length - 1 && pairs < 4) {
-    if (results[i] === results[i + 1]) {
-      pType.push(results[i]);
-      pairs++;
-      i += 2;
-    } else break;
+    if (results[i] === results[i + 1]) { types.push(results[i]); pairs++; i += 2; }
+    else break;
   }
   if (pairs >= 2) {
     let alt = true;
-    for (let j = 1; j < pType.length; j++) if (pType[j] === pType[j - 1]) alt = false;
+    for (let j = 1; j < types.length; j++) if (types[j] === types[j - 1]) alt = false;
     if (alt) {
-      const w = getW(type, 'cau_22');
       return {
-        prediction: pType[pType.length - 1] === 'Tài' ? 'Xỉu' : 'Tài',
-        confidence: Math.round(Math.min(82, 66 + pairs * 4) * w),
-        name: 'Cầu 2-2 (' + pairs + ')',
-        id: 'cau_22',
-        score: pairs
+        pred: types[types.length - 1] === 'Tài' ? 'Xỉu' : 'Tài',
+        conf: Math.round(Math.min(83, 67 + pairs * 3.8) * W(type, 'pair')),
+        name: '2-2×' + pairs,
+        id: 'pair',
+        power: pairs
       };
     }
   }
-  let triples = 0, tType = [];
+  // 3-3
+  let trip = 0, tt = [];
   i = 0;
   while (i < results.length - 2) {
     if (results[i] === results[i + 1] && results[i + 1] === results[i + 2]) {
-      tType.push(results[i]);
-      triples++;
-      i += 3;
+      tt.push(results[i]); trip++; i += 3;
     } else break;
   }
-  if (triples >= 1) {
-    const w = getW(type, 'cau_33');
+  if (trip >= 1) {
     const pos = results.length % 3;
-    const last = tType[tType.length - 1];
+    const last = tt[tt.length - 1];
     const pred = pos === 0 ? (last === 'Tài' ? 'Xỉu' : 'Tài') : last;
     return {
-      prediction: pred,
-      confidence: Math.round(Math.min(84, 70 + triples * 5) * w),
-      name: 'Cầu 3-3 (' + triples + ')',
-      id: 'cau_33',
-      score: triples
+      pred,
+      conf: Math.round(Math.min(85, 71 + trip * 4.5) * W(type, 'pair')),
+      name: '3-3×' + trip,
+      id: 'pair',
+      power: trip
     };
   }
   return null;
 }
 
-function analyzeFollow(results, type) {
-  if (!results.length) return null;
-  const w = getW(type, 'follow');
-  return {
-    prediction: results[0],
-    confidence: Math.round(58 * w),
-    name: 'Theo gần nhất',
-    id: 'follow',
-    score: 1
-  };
+// 8. Exponential decay recent bias
+function aDecay(results, type) {
+  if (results.length < 8) return null;
+  let sT = 0, sX = 0, wsum = 0;
+  for (let i = 0; i < Math.min(20, results.length); i++) {
+    const w = Math.exp(-i * 0.18);
+    if (results[i] === 'Tài') sT += w; else sX += w;
+    wsum += w;
+  }
+  const pT = sT / wsum;
+  if (pT > 0.68) return { pred: 'Xỉu', conf: Math.round(76 * W(type, 'decay')), name: 'Decay T→X', id: 'decay', power: pT };
+  if (pT < 0.32) return { pred: 'Tài', conf: Math.round(76 * W(type, 'decay')), name: 'Decay X→T', id: 'decay', power: 1 - pT };
+  return null;
 }
 
-function calculateAdvancedPrediction(data, type) {
+// 9. Safe follow
+function aFollow(results) {
+  if (!results.length) return null;
+  return { pred: results[0], conf: 57, name: 'Theo gần', id: 'follow', power: 1 };
+}
+
+// ==================== ENGINE ====================
+function predict(data, type) {
   const results = data.slice(0, 80).map(d => d.Ket_qua);
-  initializePatternStats(type);
+  initW(type);
 
-  const signals = [];
-  const add = (r) => { if (r) signals.push(r); };
+  const sigs = [];
+  const push = r => { if (r) sigs.push(r); };
 
-  add(analyzeMarkov(results, type));
-  add(analyzeCauBetSmart(results, type));
-  add(analyzeCauDao(results, type));
-  add(analyzeDice(data, type));
-  add(analyzeTrendEntropy(results, type));
-  add(analyzeSeq(results, type));
-  add(analyzePairs(results, type));
+  push(aMarkov(results, type));
+  push(aBet(results, type));
+  push(aDao(results, type));
+  push(aDice(data, type));
+  push(aTrend(results, type));
+  push(aSeq(results, type));
+  push(aPair(results, type));
+  push(aDecay(results, type));
 
-  if (signals.length === 0) add(analyzeFollow(results, type));
+  if (!sigs.length) push(aFollow(results));
 
-  let scoreT = 0, scoreX = 0;
+  let scT = 0, scX = 0;
   const factors = [];
-  signals.forEach(s => {
-    const pts = s.confidence * (0.7 + (s.score || 1) * 0.08);
-    if (s.prediction === 'Tài') scoreT += pts;
-    else scoreX += pts;
+  sigs.forEach(s => {
+    const pts = s.conf * (0.75 + (s.power || 1) * 0.07);
+    if (s.pred === 'Tài') scT += pts; else scX += pts;
     factors.push(s.name);
   });
 
-  const wrongStreak = learningData[type].recentWrongStreak || 0;
-  if (wrongStreak >= 3) {
-    const tmp = scoreT;
-    scoreT = scoreX * 1.4;
-    scoreX = tmp * 1.4;
-    factors.unshift('Tự đảo (sai ' + wrongStreak + ' liên tục)');
+  // Anti-loss mạnh
+  const wrong = learningData[type].recentWrongStreak || 0;
+  if (wrong >= 3) {
+    const tmp = scT;
+    scT = scX * 1.45;
+    scX = tmp * 1.45;
+    factors.unshift('Đảo sau ' + wrong + ' sai');
   }
 
-  const currStreak = learningData[type].streakAnalysis.currentStreak;
-  if (currStreak <= -2) {
-    if (scoreT > scoreX) scoreX *= 1.25;
-    else scoreT *= 1.25;
+  const curSt = learningData[type].streakAnalysis.currentStreak;
+  if (curSt <= -2) {
+    if (scT > scX) scX *= 1.22; else scT *= 1.22;
   }
 
-  let finalPred = scoreT >= scoreX ? 'Tài' : 'Xỉu';
+  let final = scT >= scX ? 'Tài' : 'Xỉu';
 
-  const agreeT = signals.filter(s => s.prediction === 'Tài').length;
-  const agreeX = signals.filter(s => s.prediction === 'Xỉu').length;
-  const totalSig = signals.length;
-  const agreeRatio = Math.max(agreeT, agreeX) / (totalSig || 1);
+  const aT = sigs.filter(s => s.pred === 'Tài').length;
+  const aX = sigs.filter(s => s.pred === 'Xỉu').length;
+  const total = sigs.length || 1;
+  const ratio = Math.max(aT, aX) / total;
 
-  let conf = 62;
-  conf += agreeRatio * 18;
-  conf += Math.min(12, Math.abs(scoreT - scoreX) / 40);
+  let conf = 61;
+  conf += ratio * 17;
+  conf += Math.min(11, Math.abs(scT - scX) / 45);
 
-  if (wrongStreak >= 2) conf -= 8;
-  if (wrongStreak >= 4) conf -= 6;
+  if (wrong >= 2) conf -= 7;
+  if (wrong >= 4) conf -= 5;
 
   const ra = learningData[type].recentAccuracy;
   if (ra.length >= 8) {
     const acc = ra.reduce((a, b) => a + b, 0) / ra.length;
-    if (acc > 0.65) conf += 6;
-    else if (acc < 0.40) conf -= 8;
+    if (acc > 0.66) conf += 5;
+    else if (acc < 0.38) conf -= 7;
   }
 
-  conf = Math.max(55, Math.min(91, Math.round(conf)));
+  conf = Math.max(54, Math.min(90, Math.round(conf)));
 
-  if (conf < 68 && agreeRatio < 0.6) {
-    const st = getStreak(results);
+  // Khi conf thấp + ít đồng thuận → ưu tiên theo bệt ngắn
+  if (conf < 67 && ratio < 0.58) {
+    const st = streakInfo(results);
     if (st.len >= 2 && st.len <= 4) {
-      finalPred = st.type;
-      conf = Math.max(conf, 66);
-      factors.unshift('An toàn theo bệt ngắn');
+      final = st.type;
+      conf = Math.max(conf, 65);
+      factors.unshift('An toàn bệt ngắn');
     }
   }
 
   return {
-    prediction: finalPred,
+    prediction: final,
     confidence: conf,
-    factors: factors.slice(0, 6),
-    detailedAnalysis: {
-      totalSignals: totalSig,
-      taiVotes: agreeT,
-      xiuVotes: agreeX,
-      scoreT: Math.round(scoreT),
-      scoreX: Math.round(scoreX),
-      wrongStreak,
-      learningStats: {
-        totalPredictions: learningData[type].totalPredictions,
-        correctPredictions: learningData[type].correctPredictions,
-        accuracy: learningData[type].totalPredictions > 0
+    factors: factors.slice(0, 5),
+    analysis: {
+      signals: total,
+      tai: aT,
+      xiu: aX,
+      wrongStreak: wrong,
+      stats: {
+        total: learningData[type].totalPredictions,
+        correct: learningData[type].correctPredictions,
+        acc: learningData[type].totalPredictions
           ? ((learningData[type].correctPredictions / learningData[type].totalPredictions) * 100).toFixed(1) + '%'
           : 'N/A',
-        currentStreak: learningData[type].streakAnalysis.currentStreak,
-        bestStreak: learningData[type].streakAnalysis.bestStreak,
-        recentWrongStreak: wrongStreak
+        streak: learningData[type].streakAnalysis.currentStreak,
+        best: learningData[type].streakAnalysis.bestStreak
       }
     }
   };
 }
 
-function recordPrediction(type, phien, prediction, confidence, patterns) {
-  const p = phien.toString();
+// ==================== RECORD / VERIFY ====================
+function record(type, phien, pred, conf, factors) {
+  const p = String(phien);
   if (learningData[type].predictions.some(r => r.phien === p)) return;
   learningData[type].predictions.unshift({
-    phien: p, prediction, confidence, patterns,
-    timestamp: new Date().toISOString(),
-    verified: false, actual: null, isCorrect: null
+    phien: p, prediction: pred, confidence: conf, patterns: factors,
+    timestamp: new Date().toISOString(), verified: false, actual: null, isCorrect: null
   });
   learningData[type].totalPredictions++;
-  if (learningData[type].predictions.length > 600) {
-    learningData[type].predictions = learningData[type].predictions.slice(0, 600);
+  if (learningData[type].predictions.length > 650) {
+    learningData[type].predictions = learningData[type].predictions.slice(0, 650);
   }
   saveLearningData();
 }
 
-async function verifyPredictions(type, currentData) {
-  let updated = false;
+async function verify(type, data) {
+  let up = false;
   for (const pred of learningData[type].predictions) {
     if (pred.verified) continue;
-    const actual = currentData.find(d => d.Phien.toString() === pred.phien);
-    if (actual) {
-      pred.verified = true;
-      pred.actual = actual.Ket_qua;
-      const norm = pred.prediction === 'Tài' ? 'Tài' : 'Xỉu';
-      pred.isCorrect = pred.actual === norm;
+    const act = data.find(d => String(d.Phien) === pred.phien);
+    if (!act) continue;
+    pred.verified = true;
+    pred.actual = act.Ket_qua;
+    pred.isCorrect = pred.prediction === act.Ket_qua;
 
-      if (pred.isCorrect) {
-        learningData[type].correctPredictions++;
-        learningData[type].streakAnalysis.wins++;
-        learningData[type].streakAnalysis.currentStreak =
-          learningData[type].streakAnalysis.currentStreak >= 0
-            ? learningData[type].streakAnalysis.currentStreak + 1 : 1;
-        if (learningData[type].streakAnalysis.currentStreak > learningData[type].streakAnalysis.bestStreak) {
-          learningData[type].streakAnalysis.bestStreak = learningData[type].streakAnalysis.currentStreak;
-        }
-        learningData[type].recentWrongStreak = 0;
-      } else {
-        learningData[type].streakAnalysis.losses++;
-        learningData[type].streakAnalysis.currentStreak =
-          learningData[type].streakAnalysis.currentStreak <= 0
-            ? learningData[type].streakAnalysis.currentStreak - 1 : -1;
-        if (learningData[type].streakAnalysis.currentStreak < learningData[type].streakAnalysis.worstStreak) {
-          learningData[type].streakAnalysis.worstStreak = learningData[type].streakAnalysis.currentStreak;
-        }
-        learningData[type].recentWrongStreak = (learningData[type].recentWrongStreak || 0) + 1;
+    if (pred.isCorrect) {
+      learningData[type].correctPredictions++;
+      learningData[type].streakAnalysis.wins++;
+      learningData[type].streakAnalysis.currentStreak =
+        learningData[type].streakAnalysis.currentStreak >= 0
+          ? learningData[type].streakAnalysis.currentStreak + 1 : 1;
+      if (learningData[type].streakAnalysis.currentStreak > learningData[type].streakAnalysis.bestStreak) {
+        learningData[type].streakAnalysis.bestStreak = learningData[type].streakAnalysis.currentStreak;
       }
-
-      learningData[type].recentAccuracy.push(pred.isCorrect ? 1 : 0);
-      if (learningData[type].recentAccuracy.length > 60) learningData[type].recentAccuracy.shift();
-
-      if (pred.patterns && pred.patterns.length) {
-        pred.patterns.forEach(pn => {
-          let id = null;
-          if (pn.includes('Markov')) id = 'markov';
-          else if (pn.includes('bệt') || pn.includes('rồng') || pn.includes('Theo bệt')) id = 'cau_bet';
-          else if (pn.includes('Đảo')) id = 'cau_dao';
-          else if (pn.includes('Dice') || pn.includes('Sum')) id = 'dice_bias';
-          else if (pn.includes('Seq')) id = 'seq_mine';
-          else if (pn.includes('2-2')) id = 'cau_22';
-          else if (pn.includes('3-3')) id = 'cau_33';
-          else if (pn.includes('Xu hướng') || pn.includes('Lệch')) id = 'xu_huong';
-          if (id) updatePatternPerf(type, id, pred.isCorrect);
-        });
+      learningData[type].recentWrongStreak = 0;
+    } else {
+      learningData[type].streakAnalysis.losses++;
+      learningData[type].streakAnalysis.currentStreak =
+        learningData[type].streakAnalysis.currentStreak <= 0
+          ? learningData[type].streakAnalysis.currentStreak - 1 : -1;
+      if (learningData[type].streakAnalysis.currentStreak < learningData[type].streakAnalysis.worstStreak) {
+        learningData[type].streakAnalysis.worstStreak = learningData[type].streakAnalysis.currentStreak;
       }
-      updated = true;
+      learningData[type].recentWrongStreak = (learningData[type].recentWrongStreak || 0) + 1;
     }
+    learningData[type].recentAccuracy.push(pred.isCorrect ? 1 : 0);
+    if (learningData[type].recentAccuracy.length > 55) learningData[type].recentAccuracy.shift();
+
+    if (pred.patterns?.length) {
+      pred.patterns.forEach(n => {
+        let id = null;
+        if (n.includes('Markov')) id = 'markov';
+        else if (n.includes('bệt') || n.includes('rồng') || n.includes('Bẻ') || n.includes('Theo bệt')) id = 'cau_bet';
+        else if (n.includes('Đảo')) id = 'cau_dao';
+        else if (n.includes('Dice')) id = 'dice';
+        else if (n.includes('Seq')) id = 'seq';
+        else if (n.includes('2-2') || n.includes('3-3')) id = 'pair';
+        else if (n.includes('Lệch') || n.includes('Xu hướng')) id = 'trend';
+        else if (n.includes('Decay')) id = 'decay';
+        if (id) updateW(type, id, pred.isCorrect);
+      });
+    }
+    up = true;
   }
-  if (updated) {
+  if (up) {
     learningData[type].lastUpdate = new Date().toISOString();
     saveLearningData();
   }
 }
 
-function savePredictionToHistory(type, phien, prediction, confidence, latestData) {
-  const p = phien.toString();
+function saveHist(type, phien, pred, conf, latest) {
+  const p = String(phien);
   if (predictionHistory[type].some(r => r.Phien_hien_tai === p)) {
     return predictionHistory[type].find(r => r.Phien_hien_tai === p);
   }
-  const record = {
-    Phien: latestData.Phien,
-    Xuc_xac_1: latestData.Xuc_xac_1,
-    Xuc_xac_2: latestData.Xuc_xac_2,
-    Xuc_xac_3: latestData.Xuc_xac_3,
-    Tong: latestData.Tong,
-    Ket_qua: latestData.Ket_qua,
-    Do_tin_cay: confidence + '%',
+  const rec = {
+    Phien: latest.Phien,
+    Xuc_xac_1: latest.Xuc_xac_1,
+    Xuc_xac_2: latest.Xuc_xac_2,
+    Xuc_xac_3: latest.Xuc_xac_3,
+    Tong: latest.Tong,
+    Ket_qua: latest.Ket_qua,
+    Do_tin_cay: conf + '%',
     Phien_hien_tai: p,
-    Du_doan: prediction,
+    Du_doan: pred,
     ket_qua_du_doan: '',
     id: '@phamkhoi',
     timestamp: new Date().toISOString()
   };
-  predictionHistory[type].unshift(record);
+  predictionHistory[type].unshift(rec);
   if (predictionHistory[type].length > MAX_HISTORY) {
     predictionHistory[type] = predictionHistory[type].slice(0, MAX_HISTORY);
   }
-  return record;
+  return rec;
 }
 
-async function updateHistoryStatus(type) {
+async function updateStatus(type) {
   try {
-    const data = type === 'hu' ? await fetchDataHu() : await fetchDataMd5();
-    if (!data || !data.length) return;
-    let updated = false;
-    for (const rec of predictionHistory[type]) {
-      if (rec.ket_qua_du_doan) continue;
-      const actual = data.find(d => d.Phien.toString() === rec.Phien_hien_tai);
-      if (actual) {
-        rec.ket_qua_du_doan = rec.Du_doan === actual.Ket_qua ? 'Đúng ✅' : 'Sai ❌';
-        updated = true;
+    const data = type === 'hu' ? await fetchHu() : await fetchMd5();
+    if (!data?.length) return;
+    let up = false;
+    for (const r of predictionHistory[type]) {
+      if (r.ket_qua_du_doan) continue;
+      const a = data.find(d => String(d.Phien) === r.Phien_hien_tai);
+      if (a) {
+        r.ket_qua_du_doan = r.Du_doan === a.Ket_qua ? 'Đúng ✅' : 'Sai ❌';
+        up = true;
       }
     }
-    if (updated) savePredictionHistory();
+    if (up) savePredictionHistory();
   } catch (e) {}
 }
 
-async function autoProcessPredictions() {
+async function auto() {
   try {
-    for (const pair of [['hu', fetchDataHu], ['md5', fetchDataMd5]]) {
-      const type = pair[0];
-      const fetchFn = pair[1];
-      const data = await fetchFn();
-      if (!data || !data.length) continue;
+    for (const [type, fn] of [['hu', fetchHu], ['md5', fetchMd5]]) {
+      const data = await fn();
+      if (!data?.length) continue;
       const next = data[0].Phien + 1;
-      if (lastProcessedPhien[type] !== next && !hasPredictionForPhien(type, next)) {
-        await verifyPredictions(type, data);
-        const result = calculateAdvancedPrediction(data, type);
-        savePredictionToHistory(type, next, result.prediction, result.confidence, data[0]);
-        recordPrediction(type, next, result.prediction, result.confidence, result.factors);
+      if (lastProcessedPhien[type] !== next && !hasPred(type, next)) {
+        await verify(type, data);
+        const r = predict(data, type);
+        saveHist(type, next, r.prediction, r.confidence, data[0]);
+        record(type, next, r.prediction, r.confidence, r.factors);
         lastProcessedPhien[type] = next;
-        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ': ' + result.prediction + ' (' + result.confidence + '%)');
+        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ': ' + r.prediction + ' (' + r.confidence + '%)');
         savePredictionHistory();
         saveLearningData();
       }
     }
-    await updateHistoryStatus('hu');
-    await updateHistoryStatus('md5');
-  } catch (e) {
-    console.error('[Auto]', e.message);
-  }
+    await updateStatus('hu');
+    await updateStatus('md5');
+  } catch (e) { console.error('[Auto]', e.message); }
 }
 
-function startAutoSaveTask() {
-  console.log('🔄 Auto every ' + (AUTO_SAVE_INTERVAL / 1000) + 's');
-  setTimeout(autoProcessPredictions, 3000);
-  setInterval(autoProcessPredictions, AUTO_SAVE_INTERVAL);
+function startAuto() {
+  console.log('🔄 Auto ' + (AUTO_SAVE_INTERVAL / 1000) + 's');
+  setTimeout(auto, 2500);
+  setInterval(auto, AUTO_SAVE_INTERVAL);
 }
 
-async function handlePredict(type, fetchFn, req, res) {
+async function handle(type, fn, req, res) {
   try {
-    const data = await fetchFn();
-    if (!data || !data.length) return res.status(500).json({ error: 'Không lấy được dữ liệu' });
-    await verifyPredictions(type, data);
+    const data = await fn();
+    if (!data?.length) return res.status(500).json({ error: 'Không lấy được dữ liệu' });
+    await verify(type, data);
     const next = data[0].Phien + 1;
 
-    if (hasPredictionForPhien(type, next)) {
-      const exist = getExistingPrediction(type, next);
+    if (hasPred(type, next)) {
+      const e = getExist(type, next);
       return res.json({
-        Phien: exist.Phien, Xuc_xac_1: exist.Xuc_xac_1, Xuc_xac_2: exist.Xuc_xac_2,
-        Xuc_xac_3: exist.Xuc_xac_3, Tong: exist.Tong, Ket_qua: exist.Ket_qua,
-        Do_tin_cay: exist.Do_tin_cay, Phien_hien_tai: exist.Phien_hien_tai,
-        Du_doan: exist.Du_doan, ket_qua_du_doan: exist.ket_qua_du_doan || '',
-        factors: [], id: '@phamkhoi', cached: true
+        Phien: e.Phien, Xuc_xac_1: e.Xuc_xac_1, Xuc_xac_2: e.Xuc_xac_2, Xuc_xac_3: e.Xuc_xac_3,
+        Tong: e.Tong, Ket_qua: e.Ket_qua, Do_tin_cay: e.Do_tin_cay,
+        Phien_hien_tai: e.Phien_hien_tai, Du_doan: e.Du_doan,
+        ket_qua_du_doan: e.ket_qua_du_doan || '', factors: [], id: '@phamkhoi', cached: true
       });
     }
 
-    const result = calculateAdvancedPrediction(data, type);
-    const record = savePredictionToHistory(type, next, result.prediction, result.confidence, data[0]);
-    recordPrediction(type, next, result.prediction, result.confidence, result.factors);
+    const r = predict(data, type);
+    const rec = saveHist(type, next, r.prediction, r.confidence, data[0]);
+    record(type, next, r.prediction, r.confidence, r.factors);
     lastProcessedPhien[type] = next;
     savePredictionHistory();
-    setTimeout(function() { updateHistoryStatus(type); }, 3000);
+    setTimeout(() => updateStatus(type), 2500);
     res.json({
-      Phien: record.Phien, Xuc_xac_1: record.Xuc_xac_1, Xuc_xac_2: record.Xuc_xac_2,
-      Xuc_xac_3: record.Xuc_xac_3, Tong: record.Tong, Ket_qua: record.Ket_qua,
-      Do_tin_cay: record.Do_tin_cay, Phien_hien_tai: record.Phien_hien_tai,
-      Du_doan: record.Du_doan, ket_qua_du_doan: '',
-      factors: result.factors.slice(0, 5), id: '@phamkhoi', cached: false
+      Phien: rec.Phien, Xuc_xac_1: rec.Xuc_xac_1, Xuc_xac_2: rec.Xuc_xac_2, Xuc_xac_3: rec.Xuc_xac_3,
+      Tong: rec.Tong, Ket_qua: rec.Ket_qua, Do_tin_cay: rec.Do_tin_cay,
+      Phien_hien_tai: rec.Phien_hien_tai, Du_doan: rec.Du_doan,
+      ket_qua_du_doan: '', factors: r.factors, id: '@phamkhoi', cached: false
     });
   } catch (e) {
     res.status(500).json({ error: 'Lỗi server' });
   }
 }
 
-app.get('/api/hu', function(req, res) { handlePredict('hu', fetchDataHu, req, res); });
-app.get('/api/md5', function(req, res) { handlePredict('md5', fetchDataMd5, req, res); });
+app.get('/api/hu', (req, res) => handle('hu', fetchHu, req, res));
+app.get('/api/md5', (req, res) => handle('md5', fetchMd5, req, res));
 
-app.get('/api/hu/lichsu', async function(req, res) {
-  await updateHistoryStatus('hu');
-  res.json({ type: 'Hũ - Phạm Khôi', history: predictionHistory.hu, total: predictionHistory.hu.length });
+app.get('/api/hu/lichsu', async (req, res) => {
+  await updateStatus('hu');
+  res.json({ type: 'Hũ', history: predictionHistory.hu, total: predictionHistory.hu.length });
 });
-app.get('/api/md5/lichsu', async function(req, res) {
-  await updateHistoryStatus('md5');
-  res.json({ type: 'MD5 - Phạm Khôi', history: predictionHistory.md5, total: predictionHistory.md5.length });
+app.get('/api/md5/lichsu', async (req, res) => {
+  await updateStatus('md5');
+  res.json({ type: 'MD5', history: predictionHistory.md5, total: predictionHistory.md5.length });
 });
 
-app.get('/api/hu/analysis', async function(req, res) {
+app.get('/api/hu/analysis', async (req, res) => {
   try {
-    const data = await fetchDataHu();
-    if (!data || !data.length) return res.status(500).json({ error: 'No data' });
-    await verifyPredictions('hu', data);
-    const result = calculateAdvancedPrediction(data, 'hu');
-    res.json({ prediction: result.prediction, confidence: result.confidence, factors: result.factors, analysis: result.detailedAnalysis });
+    const data = await fetchHu();
+    if (!data?.length) return res.status(500).json({ error: 'No data' });
+    await verify('hu', data);
+    const r = predict(data, 'hu');
+    res.json({ prediction: r.prediction, confidence: r.confidence, factors: r.factors, analysis: r.analysis });
   } catch (e) { res.status(500).json({ error: 'Error' }); }
 });
-app.get('/api/md5/analysis', async function(req, res) {
+app.get('/api/md5/analysis', async (req, res) => {
   try {
-    const data = await fetchDataMd5();
-    if (!data || !data.length) return res.status(500).json({ error: 'No data' });
-    await verifyPredictions('md5', data);
-    const result = calculateAdvancedPrediction(data, 'md5');
-    res.json({ prediction: result.prediction, confidence: result.confidence, factors: result.factors, analysis: result.detailedAnalysis });
+    const data = await fetchMd5();
+    if (!data?.length) return res.status(500).json({ error: 'No data' });
+    await verify('md5', data);
+    const r = predict(data, 'md5');
+    res.json({ prediction: r.prediction, confidence: r.confidence, factors: r.factors, analysis: r.analysis });
   } catch (e) { res.status(500).json({ error: 'Error' }); }
 });
 
-app.get('/api/hu/learning', function(req, res) {
+app.get('/api/hu/learning', (req, res) => {
   const s = learningData.hu;
-  const acc = s.totalPredictions > 0 ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
+  const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
   res.json({
-    type: 'Hũ - Phạm Khôi',
-    totalPredictions: s.totalPredictions,
-    correctPredictions: s.correctPredictions,
-    overallAccuracy: acc + '%',
-    streakAnalysis: s.streakAnalysis,
-    recentWrongStreak: s.recentWrongStreak || 0
+    type: 'Hũ', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
+    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0
   });
 });
-app.get('/api/md5/learning', function(req, res) {
+app.get('/api/md5/learning', (req, res) => {
   const s = learningData.md5;
-  const acc = s.totalPredictions > 0 ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
+  const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
   res.json({
-    type: 'MD5 - Phạm Khôi',
-    totalPredictions: s.totalPredictions,
-    correctPredictions: s.correctPredictions,
-    overallAccuracy: acc + '%',
-    streakAnalysis: s.streakAnalysis,
-    recentWrongStreak: s.recentWrongStreak || 0
+    type: 'MD5', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
+    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0
   });
 });
 
-app.get('/api/reset-learning', function(req, res) {
-  learningData = { hu: createEmptyLearning(), md5: createEmptyLearning() };
-  learningData.hu.patternWeights = { ...DEFAULT_PATTERN_WEIGHTS };
-  learningData.md5.patternWeights = { ...DEFAULT_PATTERN_WEIGHTS };
+app.get('/api/reset-learning', (req, res) => {
+  learningData = { hu: createEmpty(), md5: createEmpty() };
+  learningData.hu.patternWeights = { ...DEFAULT_W };
+  learningData.md5.patternWeights = { ...DEFAULT_W };
   saveLearningData();
   res.json({ message: 'Reset OK' });
 });
 
-app.get('/', function(req, res) {
+// ==================== UI ====================
+app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>
 <html lang="vi">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
 <title>Phạm Khôi</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
-  *{font-family:Inter,system-ui,sans-serif;box-sizing:border-box}
-  body{background:#0a0a0f;color:#e2e8f0;min-height:100vh}
-  .card{background:#12121a;border:1px solid rgba(255,255,255,0.06);border-radius:20px}
-  .tai{color:#34d399}.xiu{color:#fb7185}
-  .glow-t{box-shadow:0 0 32px -8px rgba(52,211,153,0.3)}
-  .glow-x{box-shadow:0 0 32px -8px rgba(251,113,133,0.3)}
-  .dot{width:7px;height:7px;border-radius:50%;animation:p 1.8s infinite}
-  @keyframes p{0%,100%{opacity:1}50%{opacity:.4}}
-  .chip{font-size:10px;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,0.05);color:rgba(255,255,255,0.45)}
-  ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:4px}
+*{font-family:Inter,system-ui,sans-serif;box-sizing:border-box;margin:0;padding:0}
+body{background:#09090b;color:#fafafa;min-height:100vh}
+.card{background:#111114;border:1px solid rgba(255,255,255,.06);border-radius:18px}
+.tai{color:#4ade80}.xiu{color:#fb7185}
+.gt{box-shadow:0 0 28px -6px rgba(74,222,128,.28)}
+.gx{box-shadow:0 0 28px -6px rgba(251,113,133,.28)}
+.dot{width:6px;height:6px;border-radius:50%;animation:blink 1.6s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+.chip{font-size:10px;padding:2px 7px;border-radius:99px;background:rgba(255,255,255,.05);color:rgba(255,255,255,.4)}
+::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.1);border-radius:3px}
 </style>
 </head>
-<body class="px-3 py-5 max-w-lg mx-auto">
-  <div class="flex items-center justify-between mb-6">
-    <div class="flex items-center gap-2.5">
-      <div class="w-9 h-9 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-sm font-black text-black">PK</div>
-      <div>
-        <div class="font-bold text-[15px] leading-tight">Phạm Khôi</div>
-        <div class="text-[10px] text-white/30">Tài Xỉu • Bắt Cầu</div>
-      </div>
+<body class="px-3 py-4 max-w-md mx-auto">
+<div class="flex items-center justify-between mb-5">
+  <div class="flex items-center gap-2">
+    <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-xs font-black text-black">PK</div>
+    <div>
+      <div class="font-bold text-sm leading-none">Phạm Khôi</div>
+      <div class="text-[9px] text-white/30 mt-0.5">Tài Xỉu • Bắt Cầu</div>
     </div>
-    <div class="flex items-center gap-2">
-      <span id="clock" class="text-[10px] text-white/25 tabular-nums"></span>
-      <button onclick="refreshAll()" class="text-[11px] px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 font-medium">Làm mới</button>
+  </div>
+  <div class="flex items-center gap-2">
+    <span id="clock" class="text-[9px] text-white/20 tabular-nums"></span>
+    <button onclick="go()" class="text-[10px] px-2.5 py-1 rounded-lg bg-white/5 active:bg-white/10 font-medium">Làm mới</button>
+  </div>
+</div>
+
+<div class="space-y-2.5 mb-4">
+  <div id="c-hu" class="card p-3.5">
+    <div class="flex items-center justify-between mb-2">
+      <div class="flex items-center gap-1.5"><span class="dot bg-emerald-400"></span><span class="text-[11px] font-semibold text-white/60">Hũ</span></div>
+      <span id="hu-p" class="text-[9px] text-white/20 font-mono">#—</span>
+    </div>
+    <div class="text-center py-1.5">
+      <div id="hu-d" class="text-3xl font-extrabold tracking-tight">—</div>
+      <div id="hu-c" class="text-base font-bold text-amber-400/85 mt-0.5">—%</div>
+    </div>
+    <div class="flex justify-center gap-4 text-[10px] text-white/30 mt-0.5 mb-1.5">
+      <span>XX <b id="hu-x" class="text-white/55 font-mono">—</b></span>
+      <span>Tổng <b id="hu-t" class="text-white/55">—</b></span>
+    </div>
+    <div id="hu-f" class="flex flex-wrap gap-1 justify-center min-h-[18px] mb-1.5"></div>
+    <div class="grid grid-cols-3 gap-1 pt-1.5 border-t border-white/5 text-center text-[9px]">
+      <div><div class="text-white/20">Đúng</div><div id="hu-a" class="font-bold text-emerald-400">—</div></div>
+      <div><div class="text-white/20">Chuỗi</div><div id="hu-s" class="font-bold">—</div></div>
+      <div><div class="text-white/20">Phiên</div><div id="hu-n" class="font-bold text-amber-400/70">#—</div></div>
     </div>
   </div>
 
-  <div class="space-y-3 mb-5">
-    <div id="card-hu" class="card p-4">
-      <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-1.5"><span class="dot bg-emerald-400"></span><span class="text-xs font-semibold text-white/70">Hũ</span></div>
-        <span id="hu-phien" class="text-[10px] text-white/25 font-mono">#—</span>
-      </div>
-      <div class="text-center py-2">
-        <div id="hu-pred" class="text-4xl font-extrabold tracking-tight">—</div>
-        <div id="hu-conf" class="text-lg font-bold text-amber-400/90 mt-0.5">—%</div>
-      </div>
-      <div class="flex justify-center gap-5 text-[11px] text-white/35 mt-1 mb-2">
-        <span>Xúc xắc <b id="hu-dice" class="text-white/60 font-mono">—</b></span>
-        <span>Tổng <b id="hu-tong" class="text-white/60">—</b></span>
-      </div>
-      <div id="hu-factors" class="flex flex-wrap gap-1 justify-center min-h-[20px] mb-2"></div>
-      <div class="grid grid-cols-3 gap-1 pt-2 border-t border-white/5 text-center text-[10px]">
-        <div><div class="text-white/25">Chính xác</div><div id="hu-acc" class="font-bold text-emerald-400">—</div></div>
-        <div><div class="text-white/25">Chuỗi</div><div id="hu-streak" class="font-bold">—</div></div>
-        <div><div class="text-white/25">Phiên</div><div id="hu-next" class="font-bold text-amber-400/70">#—</div></div>
-      </div>
+  <div id="c-md5" class="card p-3.5">
+    <div class="flex items-center justify-between mb-2">
+      <div class="flex items-center gap-1.5"><span class="dot bg-violet-400"></span><span class="text-[11px] font-semibold text-white/60">MD5</span></div>
+      <span id="md5-p" class="text-[9px] text-white/20 font-mono">#—</span>
     </div>
-
-    <div id="card-md5" class="card p-4">
-      <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-1.5"><span class="dot bg-violet-400"></span><span class="text-xs font-semibold text-white/70">MD5</span></div>
-        <span id="md5-phien" class="text-[10px] text-white/25 font-mono">#—</span>
-      </div>
-      <div class="text-center py-2">
-        <div id="md5-pred" class="text-4xl font-extrabold tracking-tight">—</div>
-        <div id="md5-conf" class="text-lg font-bold text-amber-400/90 mt-0.5">—%</div>
-      </div>
-      <div class="flex justify-center gap-5 text-[11px] text-white/35 mt-1 mb-2">
-        <span>Xúc xắc <b id="md5-dice" class="text-white/60 font-mono">—</b></span>
-        <span>Tổng <b id="md5-tong" class="text-white/60">—</b></span>
-      </div>
-      <div id="md5-factors" class="flex flex-wrap gap-1 justify-center min-h-[20px] mb-2"></div>
-      <div class="grid grid-cols-3 gap-1 pt-2 border-t border-white/5 text-center text-[10px]">
-        <div><div class="text-white/25">Chính xác</div><div id="md5-acc" class="font-bold text-emerald-400">—</div></div>
-        <div><div class="text-white/25">Chuỗi</div><div id="md5-streak" class="font-bold">—</div></div>
-        <div><div class="text-white/25">Phiên</div><div id="md5-next" class="font-bold text-amber-400/70">#—</div></div>
-      </div>
+    <div class="text-center py-1.5">
+      <div id="md5-d" class="text-3xl font-extrabold tracking-tight">—</div>
+      <div id="md5-c" class="text-base font-bold text-amber-400/85 mt-0.5">—%</div>
+    </div>
+    <div class="flex justify-center gap-4 text-[10px] text-white/30 mt-0.5 mb-1.5">
+      <span>XX <b id="md5-x" class="text-white/55 font-mono">—</b></span>
+      <span>Tổng <b id="md5-t" class="text-white/55">—</b></span>
+    </div>
+    <div id="md5-f" class="flex flex-wrap gap-1 justify-center min-h-[18px] mb-1.5"></div>
+    <div class="grid grid-cols-3 gap-1 pt-1.5 border-t border-white/5 text-center text-[9px]">
+      <div><div class="text-white/20">Đúng</div><div id="md5-a" class="font-bold text-emerald-400">—</div></div>
+      <div><div class="text-white/20">Chuỗi</div><div id="md5-s" class="font-bold">—</div></div>
+      <div><div class="text-white/20">Phiên</div><div id="md5-n" class="font-bold text-amber-400/70">#—</div></div>
     </div>
   </div>
+</div>
 
-  <div class="space-y-3 mb-5">
-    <div class="card p-3.5">
-      <div class="text-xs font-semibold text-white/50 mb-2">Lịch sử Hũ</div>
-      <div id="hu-history" class="space-y-0.5 max-h-52 overflow-y-auto text-[12px]"></div>
-    </div>
-    <div class="card p-3.5">
-      <div class="text-xs font-semibold text-white/50 mb-2">Lịch sử MD5</div>
-      <div id="md5-history" class="space-y-0.5 max-h-52 overflow-y-auto text-[12px]"></div>
-    </div>
+<div class="space-y-2.5 mb-4">
+  <div class="card p-3">
+    <div class="text-[10px] font-semibold text-white/40 mb-1.5">Lịch sử Hũ</div>
+    <div id="hu-h" class="space-y-0 max-h-44 overflow-y-auto text-[11px]"></div>
   </div>
-
-  <div class="grid grid-cols-2 gap-3 mb-6">
-    <div class="card p-3">
-      <div class="text-[11px] font-semibold text-white/45 mb-1.5">Thống kê Hũ</div>
-      <div id="hu-learning" class="text-[11px] text-white/40 space-y-0.5"></div>
-    </div>
-    <div class="card p-3">
-      <div class="text-[11px] font-semibold text-white/45 mb-1.5">Thống kê MD5</div>
-      <div id="md5-learning" class="text-[11px] text-white/40 space-y-0.5"></div>
-    </div>
+  <div class="card p-3">
+    <div class="text-[10px] font-semibold text-white/40 mb-1.5">Lịch sử MD5</div>
+    <div id="md5-h" class="space-y-0 max-h-44 overflow-y-auto text-[11px]"></div>
   </div>
+</div>
 
-  <div class="text-center text-[10px] text-white/15 pb-4">Phạm Khôi • Một phiên – Một dự đoán</div>
+<div class="grid grid-cols-2 gap-2 mb-5">
+  <div class="card p-2.5">
+    <div class="text-[9px] font-semibold text-white/35 mb-1">Thống kê Hũ</div>
+    <div id="hu-l" class="text-[10px] text-white/35 space-y-0.5 leading-relaxed"></div>
+  </div>
+  <div class="card p-2.5">
+    <div class="text-[9px] font-semibold text-white/35 mb-1">Thống kê MD5</div>
+    <div id="md5-l" class="text-[10px] text-white/35 space-y-0.5 leading-relaxed"></div>
+  </div>
+</div>
+
+<div class="text-center text-[9px] text-white/12 pb-3">Phạm Khôi • Một phiên – Một dự đoán</div>
 
 <script>
 const $=id=>document.getElementById(id);
-function tick(){$('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour12:false})}
+const tick=()=>$('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour12:false});
 setInterval(tick,1000);tick();
-function pc(p){return p==='Tài'?'tai':p==='Xỉu'?'xiu':''}
-function gc(p){return p==='Tài'?'glow-t':p==='Xỉu'?'glow-x':''}
+const pc=p=>p==='Tài'?'tai':p==='Xỉu'?'xiu':'';
+const gc=p=>p==='Tài'?'gt':p==='Xỉu'?'gx':'';
 
-async function loadSide(s){
+async function side(s){
   try{
     const r=await fetch('/api/'+s);const d=await r.json();if(d.error)return;
-    $(s+'-phien').textContent='#'+d.Phien;
-    $(s+'-next').textContent='#'+d.Phien_hien_tai;
-    $(s+'-pred').textContent=d.Du_doan;
-    $(s+'-pred').className='text-4xl font-extrabold tracking-tight '+pc(d.Du_doan);
-    $(s+'-conf').textContent=d.Do_tin_cay;
-    $(s+'-dice').textContent=d.Xuc_xac_1+' '+d.Xuc_xac_2+' '+d.Xuc_xac_3;
-    $(s+'-tong').textContent=d.Tong+' · '+d.Ket_qua;
-    $('card-'+s).className='card p-4 '+gc(d.Du_doan);
-    $(s+'-factors').innerHTML=(d.factors||[]).slice(0,3).map(f=>'<span class="chip">'+f.split('→')[0].trim().substring(0,18)+'</span>').join('');
+    $(s+'-p').textContent='#'+d.Phien;
+    $(s+'-n').textContent='#'+d.Phien_hien_tai;
+    $(s+'-d').textContent=d.Du_doan;
+    $(s+'-d').className='text-3xl font-extrabold tracking-tight '+pc(d.Du_doan);
+    $(s+'-c').textContent=d.Do_tin_cay;
+    $(s+'-x').textContent=d.Xuc_xac_1+' '+d.Xuc_xac_2+' '+d.Xuc_xac_3;
+    $(s+'-t').textContent=d.Tong+' · '+d.Ket_qua;
+    $('c-'+s).className='card p-3.5 '+gc(d.Du_doan);
+    $(s+'-f').innerHTML=(d.factors||[]).slice(0,3).map(f=>'<span class="chip">'+f.substring(0,16)+'</span>').join('');
   }catch(e){}
 }
-async function loadHist(s){
+async function hist(s){
   try{
     const r=await fetch('/api/'+s+'/lichsu');const d=await r.json();
-    const box=$(s+'-history');
-    if(!d.history||!d.history.length){box.innerHTML='<div class="text-white/15 text-center py-4 text-[11px]">Chưa có dữ liệu</div>';return}
-    box.innerHTML=d.history.slice(0,18).map(h=>{
+    const b=$(s+'-h');
+    if(!d.history?.length){b.innerHTML='<div class="text-white/12 text-center py-3 text-[10px]">Chưa có dữ liệu</div>';return}
+    b.innerHTML=d.history.slice(0,16).map(h=>{
       const ok=h.ket_qua_du_doan||'';
-      const c=ok.includes('Đúng')?'text-emerald-400':ok.includes('Sai')?'text-rose-400':'text-white/20';
-      return '<div class="flex items-center justify-between py-1 px-1 rounded hover:bg-white/[0.03]"><span class="font-mono text-[10px] text-white/25">#'+h.Phien_hien_tai+'</span><span class="font-semibold '+pc(h.Du_doan)+'">'+h.Du_doan+'</span><span class="text-[10px] text-white/30">'+h.Do_tin_cay+'</span><span class="text-[10px] '+c+'">'+(ok||'…')+'</span></div>';
+      const c=ok.includes('Đúng')?'text-emerald-400':ok.includes('Sai')?'text-rose-400':'text-white/15';
+      return '<div class="flex items-center justify-between py-0.5 px-0.5"><span class="font-mono text-[9px] text-white/20">#'+h.Phien_hien_tai+'</span><span class="font-semibold '+pc(h.Du_doan)+'">'+h.Du_doan+'</span><span class="text-[9px] text-white/25">'+h.Do_tin_cay+'</span><span class="text-[9px] '+c+'">'+(ok||'…')+'</span></div>';
     }).join('');
   }catch(e){}
 }
-async function loadLearn(s){
+async function learn(s){
   try{
     const r=await fetch('/api/'+s+'/learning');const d=await r.json();
     const st=d.streakAnalysis||{};
-    $(s+'-learning').innerHTML='Tổng: <b class="text-white/70">'+d.totalPredictions+'</b><br>Đúng: <b class="text-emerald-400">'+d.correctPredictions+'</b> — <b class="text-amber-400">'+d.overallAccuracy+'</b><br>Chuỗi: <b class="text-white/70">'+(st.currentStreak||0)+'</b> · Best '+(st.bestStreak||0)+' · Worst <span class="text-rose-400">'+(st.worstStreak||0)+'</span>'+(d.recentWrongStreak?('<br><span class="text-rose-400">Sai liên tục: '+d.recentWrongStreak+'</span>'):'');
-    $(s+'-acc').textContent=d.overallAccuracy;
-    $(s+'-streak').textContent=((st.currentStreak||0)>=0?'+':'')+(st.currentStreak||0);
+    $(s+'-l').innerHTML='Tổng <b class="text-white/60">'+d.totalPredictions+'</b><br>Đúng <b class="text-emerald-400">'+d.correctPredictions+'</b> · <b class="text-amber-400">'+d.overallAccuracy+'</b><br>Chuỗi <b class="text-white/60">'+(st.currentStreak||0)+'</b> · Best '+(st.bestStreak||0)+(d.recentWrongStreak?'<br><span class="text-rose-400">Sai liên tục '+d.recentWrongStreak+'</span>':'');
+    $(s+'-a').textContent=d.overallAccuracy;
+    $(s+'-s').textContent=((st.currentStreak||0)>=0?'+':'')+(st.currentStreak||0);
   }catch(e){}
 }
-async function refreshAll(){await Promise.all([loadSide('hu'),loadSide('md5'),loadHist('hu'),loadHist('md5'),loadLearn('hu'),loadLearn('md5')])}
-refreshAll();setInterval(refreshAll,15000);
+async function go(){await Promise.all([side('hu'),side('md5'),hist('hu'),hist('md5'),learn('hu'),learn('md5')])}
+go();setInterval(go,14000);
 </script>
 </body>
 </html>`);
@@ -926,12 +868,12 @@ refreshAll();setInterval(refreshAll,15000);
 loadLearningData();
 loadPredictionHistory();
 
-app.listen(PORT, '0.0.0.0', function() {
+app.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('══════════════════════════════════════');
   console.log('  PHẠM KHÔI TÀI XỈU');
   console.log('  http://0.0.0.0:' + PORT);
-  console.log('  Anti-loss · Smart Bệt · Consensus');
+  console.log('  Super Ensemble · Anti-loss · Smart Bet');
   console.log('══════════════════════════════════════');
-  startAutoSaveTask();
+  startAuto();
 });
