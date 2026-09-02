@@ -11,8 +11,8 @@ const LEARNING_FILE = 'phamkhoi.json';
 const HISTORY_FILE = 'phamkhoi1.json';
 
 let predictionHistory = { hu: [], md5: [] };
-const MAX_HISTORY = 105;
-const AUTO_INTERVAL = 14000;
+const MAX_HISTORY = 300;
+const AUTO_INTERVAL = 13000;
 let lastProcessed = { hu: null, md5: null };
 let learningData = { hu: emptyL(), md5: emptyL() };
 
@@ -25,13 +25,15 @@ function emptyL() {
     recentAccuracy: [],
     recentWrongStreak: 0,
     lastPredDirection: null,
+    lastStrategy: 'hybrid',
     patternMemory: {},
     expertPerformance: {
       markov: { correct: 0, total: 0 },
       pattern: { correct: 0, total: 0 },
       streak: { correct: 0, total: 0 },
       dice: { correct: 0, total: 0 },
-      balance: { correct: 0, total: 0 }
+      balance: { correct: 0, total: 0 },
+      bridge: { correct: 0, total: 0 }
     }
   };
 }
@@ -46,19 +48,16 @@ function loadL() {
       };
       if (!learningData.hu.patternMemory) learningData.hu.patternMemory = {};
       if (!learningData.md5.patternMemory) learningData.md5.patternMemory = {};
-      console.log('Learning + Pattern Memory loaded');
+      if (!learningData.hu.expertPerformance.bridge) learningData.hu.expertPerformance.bridge = { correct: 0, total: 0 };
+      if (!learningData.md5.expertPerformance.bridge) learningData.md5.expertPerformance.bridge = { correct: 0, total: 0 };
     }
-  } catch (e) {
-    console.error('loadL', e.message);
-  }
+  } catch (e) {}
 }
 
 function saveL() {
   try {
     fs.writeFileSync(LEARNING_FILE, JSON.stringify(learningData, null, 2));
-  } catch (e) {
-    console.error('saveL', e.message);
-  }
+  } catch (e) {}
 }
 
 function loadH() {
@@ -75,11 +74,8 @@ function loadH() {
           return true;
         });
       });
-      console.log('History HU:' + predictionHistory.hu.length + ' MD5:' + predictionHistory.md5.length);
     }
-  } catch (e) {
-    console.error('loadH', e.message);
-  }
+  } catch (e) {}
 }
 
 function saveH() {
@@ -89,9 +85,7 @@ function saveH() {
       lastProcessedPhien: lastProcessed,
       lastSaved: new Date().toISOString()
     }, null, 2));
-  } catch (e) {
-    console.error('saveH', e.message);
-  }
+  } catch (e) {}
 }
 
 function transform(api) {
@@ -100,7 +94,7 @@ function transform(api) {
     .filter(i => i && i.id && Array.isArray(i.dices) && i.dices.length === 3 && i.resultTruyenThong)
     .map(i => ({
       Phien: i.id,
-      Ket_qua: i.resultTruyenThong === 'TAI' ? 'TÃ i' : 'Xá»u',
+      Ket_qua: i.resultTruyenThong === 'TAI' ? 'Tài' : 'Xỉu',
       Xuc_xac_1: i.dices[0],
       Xuc_xac_2: i.dices[1],
       Xuc_xac_3: i.dices[2],
@@ -113,7 +107,6 @@ async function fetchHu() {
     const r = await axios.get(API_URL_HU, { timeout: 12000 });
     return transform(r.data);
   } catch (e) {
-    console.error('HU', e.message);
     return null;
   }
 }
@@ -123,58 +116,54 @@ async function fetchMd5() {
     const r = await axios.get(API_URL_MD5, { timeout: 12000 });
     return transform(r.data);
   } catch (e) {
-    console.error('MD5', e.message);
     return null;
   }
 }
 
 function analyze(data, type) {
-  if (!data || data.length < 18) {
+  if (!data || data.length < 20) {
     return {
-      prediction: 'Xá»u',
-      confidence: 53,
-      factors: ['Thiáº¿u dá»¯ liá»u'],
-      reasons: ['Cáº§n â¥18 phiÃªn ÄÃ£ hoÃ n thÃ nh'],
+      prediction: 'Xỉu',
+      confidence: 51,
+      factors: ['Thiếu dữ liệu'],
+      reasons: ['Cần tối thiểu 20 phiên'],
       experts: {},
       agree: '-'
     };
   }
 
-  const R = data.map(d => d.Ket_qua === 'TÃ i' ? 1 : 0);
+  const R = data.map(d => d.Ket_qua === 'Tài' ? 1 : 0);
   const H = [...R].reverse();
   const dice = data.map(d => ({
     faces: [d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3],
     sum: d.Tong,
-    result: d.Ket_qua === 'TÃ i' ? 1 : 0
+    result: d.Ket_qua === 'Tài' ? 1 : 0
   }));
 
   const mem = learningData[type].patternMemory || {};
-  const expPerf = learningData[type].expertPerformance || {
-    markov: { correct: 0, total: 0 },
-    pattern: { correct: 0, total: 0 },
-    streak: { correct: 0, total: 0 },
-    dice: { correct: 0, total: 0 },
-    balance: { correct: 0, total: 0 }
-  };
+  const expPerf = learningData[type].expertPerformance || emptyL().expertPerformance;
+  const wrong = learningData[type].recentWrongStreak || 0;
+  const lastDir = learningData[type].lastPredDirection;
 
   function dynamicWeight(base, key) {
     const p = expPerf[key] || { correct: 0, total: 0 };
-    if (p.total < 8) return base;
+    if (p.total < 10) return base;
     const acc = p.correct / p.total;
-    return base * (0.75 + acc * 0.55);
+    return base * (0.70 + acc * 0.65);
   }
 
   function expertMarkov() {
     let scoreT = 0, scoreX = 0;
     const details = [];
     const orders = [
-      { o: 1, baseW: 1.15 },
-      { o: 2, baseW: 1.85 },
-      { o: 3, baseW: 2.45 },
-      { o: 4, baseW: 2.75 }
+      { o: 1, baseW: 1.25 },
+      { o: 2, baseW: 1.95 },
+      { o: 3, baseW: 2.55 },
+      { o: 4, baseW: 2.85 },
+      { o: 5, baseW: 2.35 }
     ];
     for (const { o, baseW } of orders) {
-      if (H.length < o + 14) continue;
+      if (H.length < o + 16) continue;
       const pat = H.slice(-o).join('');
       let t = 0, x = 0;
       for (let i = 0; i <= H.length - o - 1; i++) {
@@ -184,10 +173,10 @@ function analyze(data, type) {
         }
       }
       const tot = t + x;
-      if (tot < 3) continue;
+      if (tot < 4) continue;
       const pT = t / tot;
-      const conf = 0.53 + Math.abs(pT - 0.5) * 0.9;
-      const w = baseW * conf * Math.min(1.2, tot / 6.5);
+      const conf = 0.54 + Math.abs(pT - 0.5) * 0.92;
+      const w = baseW * conf * Math.min(1.25, tot / 7);
       if (pT >= 0.5) scoreT += w;
       else scoreX += w;
       details.push('M' + o + ':' + (pT >= 0.5 ? 'T' : 'X') + '(' + Math.round(conf * 100) + '%)');
@@ -197,8 +186,8 @@ function analyze(data, type) {
     const dom = Math.abs(scoreT - scoreX) / total;
     return {
       pred,
-      conf: Math.min(0.88, 0.54 + dom * 0.38),
-      weight: dynamicWeight(2.65, 'markov'),
+      conf: Math.min(0.89, 0.55 + dom * 0.40),
+      weight: dynamicWeight(2.80, 'markov'),
       details: details.slice(0, 3),
       scoreT, scoreX
     };
@@ -209,7 +198,7 @@ function analyze(data, type) {
     let next = null;
     let matches = 0;
     let memBoost = 0;
-    for (let len = Math.min(12, H.length - 3); len >= 3; len--) {
+    for (let len = Math.min(14, H.length - 4); len >= 3; len--) {
       const suffix = H.slice(-len).join('');
       let t = 0, x = 0;
       for (let i = 0; i <= H.length - len - 1; i++) {
@@ -219,28 +208,28 @@ function analyze(data, type) {
         }
       }
       const tot = t + x;
-      if (tot >= 2) {
+      if (tot >= 3) {
         bestLen = len;
         next = t >= x ? 1 : 0;
         matches = tot;
         const key = suffix;
         if (mem[key]) {
           const m = mem[key];
-          memBoost = Math.min(1.8, (m.hangLen || 0) * 0.15 + (m.count || 0) * 0.08);
-          if (m.success > m.fail) memBoost += 0.35;
+          memBoost = Math.min(2.0, (m.hangLen || 0) * 0.18 + (m.count || 0) * 0.09);
+          if (m.success > m.fail) memBoost += 0.45;
         }
         break;
       }
     }
     if (bestLen === 0) {
-      return { pred: R[0], conf: 0.52, weight: dynamicWeight(1.4, 'pattern'), details: ['Pattern yáº¿u'], scoreT: 0.5, scoreX: 0.5 };
+      return { pred: R[0], conf: 0.53, weight: dynamicWeight(1.55, 'pattern'), details: ['Ptn yếu'], scoreT: 0.5, scoreX: 0.5 };
     }
-    const conf = 0.57 + Math.min(0.25, bestLen * 0.02) + Math.min(0.1, matches * 0.015) + memBoost * 0.08;
-    const details = ['Ptn' + bestLen + 'â' + (next === 1 ? 'T' : 'X') + (memBoost > 0.3 ? '+Mem' : '')];
+    const conf = 0.58 + Math.min(0.28, bestLen * 0.022) + Math.min(0.12, matches * 0.018) + memBoost * 0.09;
+    const details = ['Ptn' + bestLen + '→' + (next === 1 ? 'T' : 'X') + (memBoost > 0.4 ? '+Mem' : '')];
     return {
       pred: next,
-      conf: Math.min(0.87, conf),
-      weight: dynamicWeight(2.2 + memBoost * 0.4, 'pattern'),
+      conf: Math.min(0.88, conf),
+      weight: dynamicWeight(2.35 + memBoost * 0.45, 'pattern'),
       details,
       scoreT: next === 1 ? conf : 1 - conf,
       scoreX: next === 0 ? conf : 1 - conf
@@ -255,58 +244,65 @@ function analyze(data, type) {
     }
     const streakVal = R[0];
     let alt = 1;
-    for (let i = 1; i < Math.min(R.length, 16); i++) {
+    for (let i = 1; i < Math.min(R.length, 18); i++) {
       if (R[i] !== R[i - 1]) alt++;
       else break;
     }
     let scoreT = 0, scoreX = 0;
     const details = [];
-    if (streak === 2) {
-      const w = 1.25;
+
+    if (streak === 1) {
+      const w = 1.35;
       if (streakVal === 1) scoreT += w; else scoreX += w;
-      details.push('Bá»t2');
+      details.push('Cầu1');
+    } else if (streak === 2) {
+      const w = 1.65;
+      if (streakVal === 1) scoreT += w; else scoreX += w;
+      details.push('Bệt2 theo');
     } else if (streak === 3) {
-      const w = 1.55;
+      const w = 1.45;
       if (streakVal === 1) scoreT += w; else scoreX += w;
-      details.push('Bá»t3 theo');
+      details.push('Bệt3');
     } else if (streak === 4) {
-      const w = 0.7;
+      const w = 0.85;
       if (streakVal === 1) scoreT += w; else scoreX += w;
-      details.push('Bá»t4 tháº­n');
+      details.push('Bệt4 thận');
     } else if (streak === 5) {
-      const w = 2.15;
+      const w = 2.35;
       if (streakVal === 1) scoreX += w; else scoreT += w;
-      details.push('Báº» bá»t5');
+      details.push('Bẻ5');
     } else if (streak >= 6) {
-      const w = 2.6 + Math.min(1.3, (streak - 6) * 0.3);
+      const w = 2.85 + Math.min(1.5, (streak - 6) * 0.35);
       if (streakVal === 1) scoreX += w; else scoreT += w;
-      details.push('Báº» bá»t' + streak);
+      details.push('Bẻ' + streak);
     }
-    if (alt >= 5 && alt <= 7) {
-      const w = 1.7;
+
+    if (alt >= 4 && alt <= 6) {
+      const w = 1.85;
       if (R[0] === 1) scoreX += w; else scoreT += w;
-      details.push('Äáº£o' + alt);
-    } else if (alt >= 8) {
-      const w = 1.15;
+      details.push('Đảo' + alt);
+    } else if (alt >= 7) {
+      const w = 1.25;
       if (R[0] === 1) scoreT += w; else scoreX += w;
-      details.push('Äá»©t Äáº£o' + alt);
+      details.push('Đứt' + alt);
     }
+
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
-    const conf = 0.55 + Math.abs(scoreT - scoreX) / total * 0.36;
+    const conf = 0.56 + Math.abs(scoreT - scoreX) / total * 0.38;
     return {
       pred,
       conf,
-      weight: dynamicWeight(2.05, 'streak'),
+      weight: dynamicWeight(2.25, 'streak'),
       details,
       scoreT, scoreX
     };
   }
 
   function expertDice() {
-    const recent = dice.slice(0, 30);
-    if (recent.length < 12) {
-      return { pred: 0, conf: 0.52, weight: dynamicWeight(1.7, 'dice'), details: ['Dice thiáº¿u'], scoreT: 0.5, scoreX: 0.5 };
+    const recent = dice.slice(0, 35);
+    if (recent.length < 14) {
+      return { pred: 0, conf: 0.53, weight: dynamicWeight(1.85, 'dice'), details: ['Dice thiếu'], scoreT: 0.5, scoreX: 0.5 };
     }
     let high = 0, low = 0, totalF = 0;
     recent.forEach(d => {
@@ -320,51 +316,51 @@ function analyze(data, type) {
     });
     const highRatio = high / (totalF || 1);
     const lowRatio = low / (totalF || 1);
-    const sums12 = recent.slice(0, 12).map(d => d.sum);
-    const avg12 = sums12.reduce((a, b) => a + b, 0) / 12;
-    const sums8 = recent.slice(0, 8).map(d => d.sum);
-    const avg8 = sums8.reduce((a, b) => a + b, 0) / 8;
+    const sums14 = recent.slice(0, 14).map(d => d.sum);
+    const avg14 = sums14.reduce((a, b) => a + b, 0) / 14;
+    const sums9 = recent.slice(0, 9).map(d => d.sum);
+    const avg9 = sums9.reduce((a, b) => a + b, 0) / 9;
     let consecHigh = 0, consecLow = 0;
-    for (let i = 0; i < Math.min(8, recent.length); i++) {
+    for (let i = 0; i < Math.min(9, recent.length); i++) {
       if (recent[i].sum >= 12) consecHigh++;
       else break;
     }
-    for (let i = 0; i < Math.min(8, recent.length); i++) {
+    for (let i = 0; i < Math.min(9, recent.length); i++) {
       if (recent[i].sum <= 9) consecLow++;
       else break;
     }
     let scoreT = 0, scoreX = 0;
     const details = [];
-    if (avg12 >= 12.6) { scoreX += 2.25; details.push('Sum12 cao'); }
-    else if (avg12 <= 8.4) { scoreT += 2.25; details.push('Sum12 tháº¥p'); }
-    else if (avg12 >= 11.7) { scoreX += 1.1; details.push('Sum12 hÆ¡i cao'); }
-    else if (avg12 <= 9.3) { scoreT += 1.1; details.push('Sum12 hÆ¡i tháº¥p'); }
-    if (avg8 >= 13.2) { scoreX += 1.4; details.push('Sum8 ráº¥t cao'); }
-    else if (avg8 <= 7.8) { scoreT += 1.4; details.push('Sum8 ráº¥t tháº¥p'); }
-    if (highRatio >= 0.60) { scoreX += 1.6; details.push('Máº·t cao'); }
-    else if (lowRatio >= 0.60) { scoreT += 1.6; details.push('Máº·t tháº¥p'); }
+    if (avg14 >= 12.8) { scoreX += 2.45; details.push('Sum14 cao'); }
+    else if (avg14 <= 8.2) { scoreT += 2.45; details.push('Sum14 thấp'); }
+    else if (avg14 >= 11.9) { scoreX += 1.25; details.push('Sum14 hơi cao'); }
+    else if (avg14 <= 9.1) { scoreT += 1.25; details.push('Sum14 hơi thấp'); }
+    if (avg9 >= 13.4) { scoreX += 1.55; details.push('Sum9 cực cao'); }
+    else if (avg9 <= 7.6) { scoreT += 1.55; details.push('Sum9 cực thấp'); }
+    if (highRatio >= 0.62) { scoreX += 1.75; details.push('Mặt cao'); }
+    else if (lowRatio >= 0.62) { scoreT += 1.75; details.push('Mặt thấp'); }
     if (consecHigh >= 3) {
-      scoreX += 1.45 + (consecHigh - 3) * 0.25;
-      details.push('Cao liÃªn' + consecHigh);
+      scoreX += 1.55 + (consecHigh - 3) * 0.28;
+      details.push('Cao' + consecHigh);
     }
     if (consecLow >= 3) {
-      scoreT += 1.45 + (consecLow - 3) * 0.25;
-      details.push('Tháº¥p liÃªn' + consecLow);
+      scoreT += 1.55 + (consecLow - 3) * 0.28;
+      details.push('Thấp' + consecLow);
     }
     const lastSum = recent[0].sum;
-    if (lastSum >= 16) { scoreX += 1.2; details.push('Cá»±c cao'); }
-    else if (lastSum <= 5) { scoreT += 1.2; details.push('Cá»±c tháº¥p'); }
-    const last16 = recent.slice(0, 16).map(d => d.result);
-    const tai16 = last16.filter(x => x === 1).length;
-    if (tai16 >= 12) { scoreX += 1.55; details.push('Lá»chT máº¡nh'); }
-    else if (tai16 <= 4) { scoreT += 1.55; details.push('Lá»chX máº¡nh'); }
+    if (lastSum >= 16) { scoreX += 1.35; details.push('Cực cao'); }
+    else if (lastSum <= 5) { scoreT += 1.35; details.push('Cực thấp'); }
+    const last18 = recent.slice(0, 18).map(d => d.result);
+    const tai18 = last18.filter(x => x === 1).length;
+    if (tai18 >= 13) { scoreX += 1.65; details.push('LệchT'); }
+    else if (tai18 <= 5) { scoreT += 1.65; details.push('LệchX'); }
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
     const dom = Math.abs(scoreT - scoreX) / total;
     return {
       pred,
-      conf: Math.min(0.87, 0.56 + dom * 0.36),
-      weight: dynamicWeight(2.5, 'dice'),
+      conf: Math.min(0.88, 0.57 + dom * 0.37),
+      weight: dynamicWeight(2.65, 'dice'),
       details: details.slice(0, 4),
       scoreT, scoreX
     };
@@ -373,47 +369,97 @@ function analyze(data, type) {
   function expertBalance() {
     let scoreT = 0, scoreX = 0;
     const details = [];
-    [8, 12, 18, 26].forEach(w => {
+    [9, 13, 19, 28].forEach(w => {
       if (R.length < w) return;
       const slice = R.slice(0, w);
       const tai = slice.filter(x => x === 1).length;
       const ratio = tai / w;
-      if (ratio >= 0.76) {
-        scoreX += 1.3 * (w / 15);
-        details.push('Lá»chT' + w);
-      } else if (ratio <= 0.24) {
-        scoreT += 1.3 * (w / 15);
-        details.push('Lá»chX' + w);
+      if (ratio >= 0.78) {
+        scoreX += 1.45 * (w / 16);
+        details.push('LệchT' + w);
+      } else if (ratio <= 0.22) {
+        scoreT += 1.45 * (w / 16);
+        details.push('LệchX' + w);
       }
     });
     let bestSc = 0, cyclePred = null;
-    for (const p of [2, 3, 4]) {
-      if (R.length < p * 5) continue;
+    for (const p of [2, 3, 4, 5]) {
+      if (R.length < p * 6) continue;
       let match = 0;
-      const chk = p * 3;
+      const chk = p * 4;
       for (let i = 0; i < chk; i++) {
         if (R[i] === R[i + p]) match++;
       }
       const sc = match / chk;
-      if (sc > 0.74 && sc > bestSc) {
+      if (sc > 0.76 && sc > bestSc) {
         bestSc = sc;
         cyclePred = R[p - 1];
       }
     }
     if (cyclePred !== null) {
-      const w = 1.6 * bestSc;
+      const w = 1.75 * bestSc;
       if (cyclePred === 1) scoreT += w;
       else scoreX += w;
-      details.push('Chu ká»³');
+      details.push('Chu kỳ');
     }
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
-    const conf = 0.54 + Math.abs(scoreT - scoreX) / total * 0.3;
+    const conf = 0.55 + Math.abs(scoreT - scoreX) / total * 0.32;
     return {
       pred,
       conf,
-      weight: dynamicWeight(1.55, 'balance'),
+      weight: dynamicWeight(1.70, 'balance'),
       details: details.slice(0, 3),
+      scoreT, scoreX
+    };
+  }
+
+  function expertBridge() {
+    const recent = H.slice(-12);
+    if (recent.length < 6) {
+      return { pred: R[0], conf: 0.54, weight: dynamicWeight(1.90, 'bridge'), details: ['Bridge thiếu'], scoreT: 0.5, scoreX: 0.5 };
+    }
+    let changes = 0;
+    for (let i = 1; i < recent.length; i++) {
+      if (recent[i] !== recent[i - 1]) changes++;
+    }
+    const last = recent[recent.length - 1];
+    let scoreT = 0, scoreX = 0;
+    const details = [];
+
+    if (changes <= 2) {
+      const w = 1.95;
+      if (last === 1) scoreT += w; else scoreX += w;
+      details.push('Cầu bệt');
+    } else if (changes >= 5) {
+      const w = 1.75;
+      if (last === 1) scoreX += w; else scoreT += w;
+      details.push('Chờ bệt');
+    } else {
+      const w = 1.35;
+      if (last === 1) scoreT += w; else scoreX += w;
+      details.push('Cầu ngắn');
+    }
+
+    let shortToLong = 0;
+    for (let i = recent.length - 1; i >= 1; i--) {
+      if (recent[i] === recent[i - 1]) shortToLong++;
+      else break;
+    }
+    if (shortToLong >= 2 && shortToLong <= 3) {
+      const w = 1.55;
+      if (last === 1) scoreT += w; else scoreX += w;
+      details.push('Ngắn→Bệt');
+    }
+
+    const pred = scoreT >= scoreX ? 1 : 0;
+    const total = scoreT + scoreX || 1;
+    const conf = 0.57 + Math.abs(scoreT - scoreX) / total * 0.34;
+    return {
+      pred,
+      conf,
+      weight: dynamicWeight(2.15, 'bridge'),
+      details,
       scoreT, scoreX
     };
   }
@@ -423,6 +469,7 @@ function analyze(data, type) {
   const s = expertStreak();
   const d = expertDice();
   const b = expertBalance();
+  const br = expertBridge();
 
   let finalT = 0, finalX = 0;
   const factors = [];
@@ -433,7 +480,8 @@ function analyze(data, type) {
     { name: 'Pattern', e: p, key: 'pattern' },
     { name: 'Streak', e: s, key: 'streak' },
     { name: 'Dice', e: d, key: 'dice' },
-    { name: 'Balance', e: b, key: 'balance' }
+    { name: 'Balance', e: b, key: 'balance' },
+    { name: 'Bridge', e: br, key: 'bridge' }
   ];
 
   team.forEach(({ name, e }) => {
@@ -445,23 +493,27 @@ function analyze(data, type) {
     }
   });
 
-  const wrong = learningData[type].recentWrongStreak || 0;
-  const lastDir = learningData[type].lastPredDirection;
-
   if (wrong >= 3 && lastDir !== null) {
     if (lastDir === 1) {
-      finalX += 4.8;
-      finalT *= 0.28;
+      finalX += 6.2;
+      finalT *= 0.22;
     } else {
-      finalT += 4.8;
-      finalX *= 0.28;
+      finalT += 6.2;
+      finalX *= 0.22;
     }
-    factors.unshift('Äáº£o' + wrong + 'sai');
-    reasons.push('Sai liÃªn tiáº¿p ' + wrong + ' láº§n â Äáº£o chiá»u máº¡nh');
+    factors.unshift('Đảo' + wrong);
+    reasons.push('Sai liên tiếp ' + wrong + ' → đảo mạnh');
   } else if (wrong >= 2 && lastDir !== null) {
-    if (lastDir === 1) finalX += 1.85;
-    else finalT += 1.85;
-    factors.unshift('NghiÃªng' + wrong);
+    if (lastDir === 1) finalX += 2.35;
+    else finalT += 2.35;
+    factors.unshift('Nghiêng' + wrong);
+  }
+
+  if (wrong === 0 && learningData[type].streakAnalysis.currentStreak >= 3) {
+    const boost = 1.45;
+    if (lastDir === 1) finalT += boost;
+    else finalX += boost;
+    reasons.push('Thắng chuỗi → giữ chiến lược');
   }
 
   const finalPred = finalT >= finalX ? 1 : 0;
@@ -469,14 +521,16 @@ function analyze(data, type) {
   const dominance = Math.abs(finalT - finalX) / totalScore;
   const agreeCount = team.filter(t => t.e.pred === finalPred).length;
 
-  let conf = 57 + dominance * 24 + (agreeCount - 2.5) * 3.4;
-  if (m.pred === finalPred && d.pred === finalPred) conf += 5.5;
-  if (m.pred === finalPred && p.pred === finalPred) conf += 3.8;
-  if (wrong >= 2) conf -= 3.5;
-  if (wrong >= 4) conf -= 4.2;
-  conf = Math.max(54, Math.min(89, Math.round(conf)));
+  let conf = 56 + dominance * 26 + (agreeCount - 3) * 3.2;
+  if (m.pred === finalPred && d.pred === finalPred) conf += 6.0;
+  if (m.pred === finalPred && p.pred === finalPred) conf += 4.2;
+  if (br.pred === finalPred && s.pred === finalPred) conf += 3.5;
+  if (wrong >= 2) conf -= 4.0;
+  if (wrong >= 4) conf -= 5.5;
+  if (data.length < 30) conf -= 3.0;
+  conf = Math.max(52, Math.min(91, Math.round(conf)));
 
-  const currentSuffix = H.slice(-Math.min(8, H.length)).join('');
+  const currentSuffix = H.slice(-Math.min(9, H.length)).join('');
   if (!mem[currentSuffix]) {
     mem[currentSuffix] = { count: 1, hangLen: 1, success: 0, fail: 0, lastSeen: Date.now() };
   } else {
@@ -485,31 +539,33 @@ function analyze(data, type) {
     mem[currentSuffix].lastSeen = Date.now();
   }
   const keys = Object.keys(mem);
-  if (keys.length > 400) {
+  if (keys.length > 450) {
     keys.sort((a, b) => (mem[a].lastSeen || 0) - (mem[b].lastSeen || 0));
-    for (let i = 0; i < 80; i++) delete mem[keys[i]];
+    for (let i = 0; i < 90; i++) delete mem[keys[i]];
   }
   learningData[type].patternMemory = mem;
   learningData[type].lastPredDirection = finalPred;
+  learningData[type].lastStrategy = agreeCount >= 4 ? 'consensus' : (wrong >= 3 ? 'reverse' : 'hybrid');
 
-  if (d.details.length) reasons.push('XÃºc xáº¯c: ' + d.details.slice(0, 2).join(', '));
-  if (s.details.length) reasons.push('Cáº§u: ' + s.details[0]);
-  if (p.details.length) reasons.push('Pattern: ' + p.details[0]);
-  if (agreeCount >= 4) reasons.push('Äá»ng thuáº­n ' + agreeCount + '/5 chuyÃªn gia');
+  if (d.details.length) reasons.push('Xúc xắc: ' + d.details.slice(0, 2).join(', '));
+  if (s.details.length) reasons.push('Cầu: ' + s.details[0]);
+  if (br.details.length) reasons.push('Bridge: ' + br.details[0]);
+  if (agreeCount >= 5) reasons.push('Đồng thuận ' + agreeCount + '/6');
 
   return {
-    prediction: finalPred === 1 ? 'TÃ i' : 'Xá»u',
+    prediction: finalPred === 1 ? 'Tài' : 'Xỉu',
     confidence: conf,
-    factors: [...new Set(factors)].slice(0, 6),
+    factors: [...new Set(factors)].slice(0, 7),
     reasons: reasons.slice(0, 4),
     agree: (finalT > finalX ? 'T' : 'X') + '(' + Math.round(dominance * 100) + '%)',
     experts: {
-      markov: m.pred === 1 ? 'TÃ i' : 'Xá»u',
-      pattern: p.pred === 1 ? 'TÃ i' : 'Xá»u',
-      streak: s.pred === 1 ? 'TÃ i' : 'Xá»u',
-      dice: d.pred === 1 ? 'TÃ i' : 'Xá»u',
-      balance: b.pred === 1 ? 'TÃ i' : 'Xá»u',
-      agreement: agreeCount + '/5'
+      markov: m.pred === 1 ? 'Tài' : 'Xỉu',
+      pattern: p.pred === 1 ? 'Tài' : 'Xỉu',
+      streak: s.pred === 1 ? 'Tài' : 'Xỉu',
+      dice: d.pred === 1 ? 'Tài' : 'Xỉu',
+      balance: b.pred === 1 ? 'Tài' : 'Xỉu',
+      bridge: br.pred === 1 ? 'Tài' : 'Xỉu',
+      agreement: agreeCount + '/6'
     }
   };
 }
@@ -534,8 +590,8 @@ function record(type, phien, pred, conf, factors) {
     verified: false
   });
   learningData[type].totalPredictions++;
-  if (learningData[type].predictions.length > 700) {
-    learningData[type].predictions = learningData[type].predictions.slice(0, 700);
+  if (learningData[type].predictions.length > 800) {
+    learningData[type].predictions = learningData[type].predictions.slice(0, 800);
   }
   saveL();
 }
@@ -552,13 +608,13 @@ async function verify(type, data) {
 
     const exp = learningData[type].expertPerformance;
     if (exp) {
-      ['markov', 'pattern', 'streak', 'dice', 'balance'].forEach(k => {
+      ['markov', 'pattern', 'streak', 'dice', 'balance', 'bridge'].forEach(k => {
         if (!exp[k]) exp[k] = { correct: 0, total: 0 };
         exp[k].total = (exp[k].total || 0) + 1;
         if (pred.isCorrect) exp[k].correct = (exp[k].correct || 0) + 1;
-        if (exp[k].total > 60) {
-          exp[k].correct = Math.round(exp[k].correct * 0.85);
-          exp[k].total = Math.round(exp[k].total * 0.85);
+        if (exp[k].total > 70) {
+          exp[k].correct = Math.round(exp[k].correct * 0.82);
+          exp[k].total = Math.round(exp[k].total * 0.82);
         }
       });
     }
@@ -584,7 +640,7 @@ async function verify(type, data) {
       learningData[type].recentWrongStreak = (learningData[type].recentWrongStreak || 0) + 1;
     }
     learningData[type].recentAccuracy.push(pred.isCorrect ? 1 : 0);
-    if (learningData[type].recentAccuracy.length > 55) learningData[type].recentAccuracy.shift();
+    if (learningData[type].recentAccuracy.length > 60) learningData[type].recentAccuracy.shift();
     changed = true;
   }
   if (changed) saveL();
@@ -625,7 +681,7 @@ async function updateStatus(type) {
       if (r.ket_qua_du_doan) continue;
       const a = data.find(d => String(d.Phien) === String(r.Phien_hien_tai));
       if (a) {
-        r.ket_qua_du_doan = r.Du_doan === a.Ket_qua ? 'ÄÃºng' : 'Sai';
+        r.ket_qua_du_doan = r.Du_doan === a.Ket_qua ? 'Đúng' : 'Sai';
         changed = true;
       }
     }
@@ -645,22 +701,19 @@ async function autoRun() {
         saveToHist(type, next, r.prediction, r.confidence, data[0]);
         record(type, next, r.prediction, r.confidence, r.factors);
         lastProcessed[type] = next;
-        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ' â ' + r.prediction + ' (' + r.confidence + '%) | ' + (r.experts ? r.experts.agreement : ''));
         saveH();
         saveL();
       }
     }
     await updateStatus('hu');
     await updateStatus('md5');
-  } catch (e) {
-    console.error('[Auto]', e.message);
-  }
+  } catch (e) {}
 }
 
 async function handle(type, fn, req, res) {
   try {
     const data = await fn();
-    if (!data || !data.length) return res.status(500).json({ error: 'KhÃ´ng láº¥y ÄÆ°á»£c dá»¯ liá»u' });
+    if (!data || !data.length) return res.status(500).json({ error: 'Không lấy được dữ liệu' });
     await verify(type, data);
     const next = data[0].Phien + 1;
 
@@ -680,7 +733,7 @@ async function handle(type, fn, req, res) {
     record(type, next, r.prediction, r.confidence, r.factors);
     lastProcessed[type] = next;
     saveH();
-    setTimeout(() => updateStatus(type), 2500);
+    setTimeout(() => updateStatus(type), 2200);
 
     res.json({
       Phien: rec.Phien, Xuc_xac_1: rec.Xuc_xac_1, Xuc_xac_2: rec.Xuc_xac_2, Xuc_xac_3: rec.Xuc_xac_3,
@@ -690,8 +743,7 @@ async function handle(type, fn, req, res) {
       agree: r.agree, experts: r.experts, id: '@phamkhoi', cached: false
     });
   } catch (e) {
-    console.error('handle', e.message);
-    res.status(500).json({ error: 'Lá»i server' });
+    res.status(500).json({ error: 'Lỗi server' });
   }
 }
 
@@ -699,7 +751,7 @@ app.get('/api/hu', (req, res) => handle('hu', fetchHu, req, res));
 app.get('/api/md5', (req, res) => handle('md5', fetchMd5, req, res));
 app.get('/api/hu/lichsu', async (req, res) => {
   await updateStatus('hu');
-  res.json({ type: 'HÅ©', history: predictionHistory.hu, total: predictionHistory.hu.length });
+  res.json({ type: 'Hũ', history: predictionHistory.hu, total: predictionHistory.hu.length });
 });
 app.get('/api/md5/lichsu', async (req, res) => {
   await updateStatus('md5');
@@ -709,7 +761,7 @@ app.get('/api/hu/learning', (req, res) => {
   const s = learningData.hu;
   const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : '0.00';
   res.json({
-    type: 'HÅ©', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
+    type: 'Hũ', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
     overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0,
     patternMemorySize: Object.keys(s.patternMemory || {}).length
   });
@@ -736,132 +788,143 @@ app.get('/', (req, res) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Pháº¡m KhÃ´i â¢ VIP Adaptive</title>
+<title>Phạm Khôi • VIP BlueBlack</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 *{font-family:Inter,system-ui,sans-serif;box-sizing:border-box;margin:0;padding:0}
-body{background:#06060a;color:#f4f4f5;min-height:100vh;background-image:radial-gradient(ellipse 80% 50% at 50% -20%,rgba(245,158,11,.07),transparent),radial-gradient(ellipse 50% 40% at 100% 100%,rgba(139,92,246,.05),transparent)}
-.glass{background:rgba(16,16,20,.85);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.055);border-radius:18px}
-.tai{color:#4ade80}.xiu{color:#fb7185}
-.glow-t{box-shadow:0 0 30px -8px rgba(74,222,128,.25)}
-.glow-x{box-shadow:0 0 30px -8px rgba(251,113,133,.25)}
-.dot{width:7px;height:7px;border-radius:50%;animation:p 1.7s ease-in-out infinite}
-@keyframes p{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.82)}}
-.chip{font-size:10px;padding:3px 8px;border-radius:999px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.045);color:rgba(255,255,255,.42)}
+body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-gradient(ellipse 90% 60% at 50% -30%,rgba(14,165,233,.12),transparent),radial-gradient(ellipse 60% 50% at 100% 100%,rgba(6,182,212,.08),transparent),radial-gradient(ellipse 50% 40% at 0% 80%,rgba(59,130,246,.06),transparent)}
+.glass{background:rgba(15,23,42,.82);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(56,189,248,.12);border-radius:20px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+.tai{color:#22d3ee}.xiu{color:#38bdf8}
+.glow-t{box-shadow:0 0 40px -6px rgba(34,211,238,.35),inset 0 1px 0 rgba(34,211,238,.15)}
+.glow-x{box-shadow:0 0 40px -6px rgba(56,189,248,.35),inset 0 1px 0 rgba(56,189,248,.15)}
+.dot{width:8px;height:8px;border-radius:50%;animation:pulse 1.8s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}
+.chip{font-size:10px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,.08);border:1px solid rgba(56,189,248,.15);color:rgba(186,230,253,.55)}
 .mono{font-family:'JetBrains Mono',monospace}
-::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.07);border-radius:3px}
-.bar{height:3px;border-radius:99px;background:rgba(255,255,255,.055);overflow:hidden}
-.bar>div{height:100%;border-radius:99px;transition:width .55s cubic-bezier(.22,1,.36,1)}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:rgba(56,189,248,.15);border-radius:4px}
+.bar{height:4px;border-radius:99px;background:rgba(15,23,42,.9);overflow:hidden;border:1px solid rgba(56,189,248,.1)}
+.bar>div{height:100%;border-radius:99px;transition:width .6s cubic-bezier(.22,1,.36,1)}
+.card-enter{animation:fadeUp .5s ease both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+.btn{transition:all .2s ease}
+.btn:active{transform:scale(.96)}
+.header-glow{background:linear-gradient(135deg,#0ea5e9,#06b6d4,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
 </style>
 </head>
 <body class="px-3 py-5 max-w-md mx-auto">
-  <div class="flex items-center justify-between mb-5">
-    <div class="flex items-center gap-2.5">
-      <div class="w-9 h-9 rounded-2xl bg-gradient-to-br from-amber-400 via-orange-500 to-rose-500 flex items-center justify-center text-[11px] font-black text-black shadow-lg shadow-amber-500/15">PK</div>
+  <div class="flex items-center justify-between mb-6">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-400 via-cyan-500 to-blue-600 flex items-center justify-center text-[12px] font-black text-slate-950 shadow-lg shadow-cyan-500/25">PK</div>
       <div>
-        <div class="font-bold text-[15px] leading-none tracking-tight">Pháº¡m KhÃ´i</div>
-        <div class="text-[10px] text-white/28 mt-0.5 font-medium">VIP Adaptive Memory</div>
+        <div class="font-extrabold text-[16px] leading-none tracking-tight header-glow">Phạm Khôi</div>
+        <div class="text-[10px] text-sky-300/40 mt-1 font-medium tracking-wide">VIP BlueBlack Engine</div>
       </div>
     </div>
     <div class="flex items-center gap-2.5">
-      <span id="clock" class="text-[10px] text-white/18 mono tabular-nums"></span>
-      <button onclick="go()" class="text-[11px] px-3 py-1.5 rounded-xl bg-white/[0.035] hover:bg-white/[0.07] active:scale-95 transition font-medium border border-white/[0.05]">LÃ m má»i</button>
+      <span id="clock" class="text-[10px] text-sky-200/25 mono tabular-nums"></span>
+      <button onclick="go()" class="btn text-[11px] px-3.5 py-1.5 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 text-sky-300/80 font-semibold border border-sky-400/15">Làm mới</button>
     </div>
   </div>
-  <div class="space-y-3 mb-5">
-    <div id="c-hu" class="glass p-4 transition-all duration-500">
+
+  <div class="space-y-3.5 mb-6">
+    <div id="c-hu" class="glass p-4 card-enter transition-all duration-500">
       <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-2"><span class="dot bg-emerald-400"></span><span class="text-[12px] font-semibold text-white/55">HÅ©</span></div>
-        <span id="hu-p" class="text-[10px] text-white/22 mono">#â</span>
+        <div class="flex items-center gap-2"><span class="dot bg-cyan-400"></span><span class="text-[12px] font-semibold text-sky-200/60">Hũ</span></div>
+        <span id="hu-p" class="text-[10px] text-sky-300/30 mono">#—</span>
       </div>
-      <div class="text-center py-1">
-        <div id="hu-d" class="text-[34px] font-extrabold tracking-tight leading-none">â</div>
-        <div id="hu-c" class="text-[17px] font-bold text-amber-400/90 mt-1.5">â%</div>
-        <div class="bar mt-2.5 mx-auto max-w-[130px]"><div id="hu-bar" class="bg-gradient-to-r from-amber-500 to-orange-400" style="width:0%"></div></div>
+      <div class="text-center py-1.5">
+        <div id="hu-d" class="text-[36px] font-black tracking-tight leading-none">—</div>
+        <div id="hu-c" class="text-[18px] font-bold text-cyan-400/90 mt-2">—%</div>
+        <div class="bar mt-3 mx-auto max-w-[140px]"><div id="hu-bar" class="bg-gradient-to-r from-cyan-400 to-sky-500" style="width:0%"></div></div>
       </div>
-      <div class="flex justify-center gap-5 text-[11px] text-white/28 mt-2 mb-1.5">
-        <span>XX <b id="hu-x" class="text-white/55 mono font-medium">â</b></span>
-        <span>Tá»ng <b id="hu-t" class="text-white/55 font-medium">â</b></span>
+      <div class="flex justify-center gap-6 text-[11px] text-sky-200/35 mt-2.5 mb-2">
+        <span>XX <b id="hu-x" class="text-sky-100/70 mono font-medium">—</b></span>
+        <span>Tổng <b id="hu-t" class="text-sky-100/70 font-medium">—</b></span>
       </div>
-      <div id="hu-f" class="flex flex-wrap gap-1.5 justify-center min-h-[20px] mb-1.5"></div>
-      <div id="hu-r" class="text-[10px] text-white/30 text-center mb-1.5 leading-snug px-1"></div>
-      <div id="hu-e" class="text-[10px] text-white/22 text-center mb-2 mono"></div>
-      <div class="grid grid-cols-3 gap-1.5 pt-2.5 border-t border-white/[0.045] text-center text-[10px]">
-        <div><div class="text-white/22 mb-0.5">ÄÃºng</div><div id="hu-a" class="font-bold text-emerald-400 text-[12px]">â</div></div>
-        <div><div class="text-white/22 mb-0.5">Chuá»i</div><div id="hu-s" class="font-bold text-[12px]">â</div></div>
-        <div><div class="text-white/22 mb-0.5">PhiÃªn</div><div id="hu-n" class="font-bold text-amber-400/70 text-[12px]">#â</div></div>
+      <div id="hu-f" class="flex flex-wrap gap-1.5 justify-center min-h-[22px] mb-1.5"></div>
+      <div id="hu-r" class="text-[10px] text-sky-200/35 text-center mb-1.5 leading-snug px-1"></div>
+      <div id="hu-e" class="text-[10px] text-sky-300/25 text-center mb-2 mono"></div>
+      <div class="grid grid-cols-3 gap-1.5 pt-3 border-t border-sky-400/10 text-center text-[10px]">
+        <div><div class="text-sky-300/30 mb-0.5">Đúng</div><div id="hu-a" class="font-bold text-cyan-400 text-[13px]">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Chuỗi</div><div id="hu-s" class="font-bold text-[13px] text-sky-100/80">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Phiên</div><div id="hu-n" class="font-bold text-sky-400/70 text-[13px]">#—</div></div>
       </div>
     </div>
-    <div id="c-md5" class="glass p-4 transition-all duration-500">
+
+    <div id="c-md5" class="glass p-4 card-enter transition-all duration-500" style="animation-delay:.08s">
       <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-2"><span class="dot bg-violet-400"></span><span class="text-[12px] font-semibold text-white/55">MD5</span></div>
-        <span id="md5-p" class="text-[10px] text-white/22 mono">#â</span>
+        <div class="flex items-center gap-2"><span class="dot bg-blue-400"></span><span class="text-[12px] font-semibold text-sky-200/60">MD5</span></div>
+        <span id="md5-p" class="text-[10px] text-sky-300/30 mono">#—</span>
       </div>
-      <div class="text-center py-1">
-        <div id="md5-d" class="text-[34px] font-extrabold tracking-tight leading-none">â</div>
-        <div id="md5-c" class="text-[17px] font-bold text-amber-400/90 mt-1.5">â%</div>
-        <div class="bar mt-2.5 mx-auto max-w-[130px]"><div id="md5-bar" class="bg-gradient-to-r from-violet-500 to-fuchsia-400" style="width:0%"></div></div>
+      <div class="text-center py-1.5">
+        <div id="md5-d" class="text-[36px] font-black tracking-tight leading-none">—</div>
+        <div id="md5-c" class="text-[18px] font-bold text-blue-400/90 mt-2">—%</div>
+        <div class="bar mt-3 mx-auto max-w-[140px]"><div id="md5-bar" class="bg-gradient-to-r from-blue-400 to-indigo-500" style="width:0%"></div></div>
       </div>
-      <div class="flex justify-center gap-5 text-[11px] text-white/28 mt-2 mb-1.5">
-        <span>XX <b id="md5-x" class="text-white/55 mono font-medium">â</b></span>
-        <span>Tá»ng <b id="md5-t" class="text-white/55 font-medium">â</b></span>
+      <div class="flex justify-center gap-6 text-[11px] text-sky-200/35 mt-2.5 mb-2">
+        <span>XX <b id="md5-x" class="text-sky-100/70 mono font-medium">—</b></span>
+        <span>Tổng <b id="md5-t" class="text-sky-100/70 font-medium">—</b></span>
       </div>
-      <div id="md5-f" class="flex flex-wrap gap-1.5 justify-center min-h-[20px] mb-1.5"></div>
-      <div id="md5-r" class="text-[10px] text-white/30 text-center mb-1.5 leading-snug px-1"></div>
-      <div id="md5-e" class="text-[10px] text-white/22 text-center mb-2 mono"></div>
-      <div class="grid grid-cols-3 gap-1.5 pt-2.5 border-t border-white/[0.045] text-center text-[10px]">
-        <div><div class="text-white/22 mb-0.5">ÄÃºng</div><div id="md5-a" class="font-bold text-emerald-400 text-[12px]">â</div></div>
-        <div><div class="text-white/22 mb-0.5">Chuá»i</div><div id="md5-s" class="font-bold text-[12px]">â</div></div>
-        <div><div class="text-white/22 mb-0.5">PhiÃªn</div><div id="md5-n" class="font-bold text-amber-400/70 text-[12px]">#â</div></div>
+      <div id="md5-f" class="flex flex-wrap gap-1.5 justify-center min-h-[22px] mb-1.5"></div>
+      <div id="md5-r" class="text-[10px] text-sky-200/35 text-center mb-1.5 leading-snug px-1"></div>
+      <div id="md5-e" class="text-[10px] text-sky-300/25 text-center mb-2 mono"></div>
+      <div class="grid grid-cols-3 gap-1.5 pt-3 border-t border-sky-400/10 text-center text-[10px]">
+        <div><div class="text-sky-300/30 mb-0.5">Đúng</div><div id="md5-a" class="font-bold text-cyan-400 text-[13px]">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Chuỗi</div><div id="md5-s" class="font-bold text-[13px] text-sky-100/80">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Phiên</div><div id="md5-n" class="font-bold text-sky-400/70 text-[13px]">#—</div></div>
       </div>
     </div>
   </div>
-  <div class="space-y-3 mb-5">
-    <div class="glass p-3.5">
-      <div class="text-[11px] font-semibold text-white/38 mb-2 flex items-center gap-1.5"><span class="w-1 h-3 rounded-full bg-emerald-400/55"></span>Lá»ch sá»­ HÅ©</div>
-      <div id="hu-h" class="space-y-0 max-h-44 overflow-y-auto text-[11px]"></div>
+
+  <div class="space-y-3.5 mb-6">
+    <div class="glass p-3.5 card-enter" style="animation-delay:.12s">
+      <div class="text-[11px] font-semibold text-sky-300/45 mb-2.5 flex items-center gap-1.5"><span class="w-1 h-3.5 rounded-full bg-cyan-400/70"></span>Lịch sử Hũ</div>
+      <div id="hu-h" class="space-y-0 max-h-48 overflow-y-auto text-[11px]"></div>
     </div>
-    <div class="glass p-3.5">
-      <div class="text-[11px] font-semibold text-white/38 mb-2 flex items-center gap-1.5"><span class="w-1 h-3 rounded-full bg-violet-400/55"></span>Lá»ch sá»­ MD5</div>
-      <div id="md5-h" class="space-y-0 max-h-44 overflow-y-auto text-[11px]"></div>
-    </div>
-  </div>
-  <div class="grid grid-cols-2 gap-2.5 mb-5">
-    <div class="glass p-3">
-      <div class="text-[10px] font-semibold text-white/32 mb-1.5">Thá»ng kÃª HÅ©</div>
-      <div id="hu-l" class="text-[11px] text-white/32 space-y-0.5 leading-relaxed"></div>
-    </div>
-    <div class="glass p-3">
-      <div class="text-[10px] font-semibold text-white/32 mb-1.5">Thá»ng kÃª MD5</div>
-      <div id="md5-l" class="text-[11px] text-white/32 space-y-0.5 leading-relaxed"></div>
+    <div class="glass p-3.5 card-enter" style="animation-delay:.16s">
+      <div class="text-[11px] font-semibold text-sky-300/45 mb-2.5 flex items-center gap-1.5"><span class="w-1 h-3.5 rounded-full bg-blue-400/70"></span>Lịch sử MD5</div>
+      <div id="md5-h" class="space-y-0 max-h-48 overflow-y-auto text-[11px]"></div>
     </div>
   </div>
-  <div class="text-center text-[10px] text-white/12 pb-4 tracking-wide">Pháº¡m KhÃ´i â¢ VIP Adaptive Memory Engine</div>
+
+  <div class="grid grid-cols-2 gap-3 mb-6">
+    <div class="glass p-3.5 card-enter" style="animation-delay:.2s">
+      <div class="text-[10px] font-semibold text-sky-300/40 mb-2">Thống kê Hũ</div>
+      <div id="hu-l" class="text-[11px] text-sky-200/40 space-y-1 leading-relaxed"></div>
+    </div>
+    <div class="glass p-3.5 card-enter" style="animation-delay:.24s">
+      <div class="text-[10px] font-semibold text-sky-300/40 mb-2">Thống kê MD5</div>
+      <div id="md5-l" class="text-[11px] text-sky-200/40 space-y-1 leading-relaxed"></div>
+    </div>
+  </div>
+
+  <div class="text-center text-[10px] text-sky-400/20 pb-5 tracking-widest uppercase">Phạm Khôi • VIP BlueBlack Adaptive</div>
+
 <script>
 const $=id=>document.getElementById(id);
 const tick=()=>$('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour12:false});
 setInterval(tick,1000);tick();
-const pc=p=>p==='TÃ i'?'tai':p==='Xá»u'?'xiu':'';
-const gc=p=>p==='TÃ i'?'glow-t':p==='Xá»u'?'glow-x':'';
+const pc=p=>p==='Tài'?'tai':p==='Xỉu'?'xiu':'';
+const gc=p=>p==='Tài'?'glow-t':p==='Xỉu'?'glow-x':'';
 async function side(s){
   try{
     const r=await fetch('/api/'+s);const d=await r.json();if(d.error)return;
     $(s+'-p').textContent='#'+d.Phien;
     $(s+'-n').textContent='#'+d.Phien_hien_tai;
     $(s+'-d').textContent=d.Du_doan;
-    $(s+'-d').className='text-[34px] font-extrabold tracking-tight leading-none '+pc(d.Du_doan);
+    $(s+'-d').className='text-[36px] font-black tracking-tight leading-none '+pc(d.Du_doan);
     $(s+'-c').textContent=d.Do_tin_cay;
     const confNum=parseInt(d.Do_tin_cay)||0;
     $(s+'-bar').style.width=confNum+'%';
     $(s+'-x').textContent=d.Xuc_xac_1+' '+d.Xuc_xac_2+' '+d.Xuc_xac_3;
-    $(s+'-t').textContent=d.Tong+' Â· '+d.Ket_qua;
-    $('c-'+s).className='glass p-4 transition-all duration-500 '+gc(d.Du_doan);
-    $(s+'-f').innerHTML=(d.factors||[]).slice(0,5).map(f=>'<span class="chip">'+f+'</span>').join('');
-    $(s+'-r').textContent=(d.reasons||[]).slice(0,2).join(' â¢ ')||'';
+    $(s+'-t').textContent=d.Tong+' · '+d.Ket_qua;
+    $('c-'+s).className='glass p-4 card-enter transition-all duration-500 '+gc(d.Du_doan);
+    $(s+'-f').innerHTML=(d.factors||[]).slice(0,6).map(f=>'<span class="chip">'+f+'</span>').join('');
+    $(s+'-r').textContent=(d.reasons||[]).slice(0,2).join(' • ')||'';
     if(d.experts){
       const e=d.experts;
-      $(s+'-e').textContent='M:'+e.markov+' P:'+e.pattern+' S:'+e.streak+' D:'+e.dice+' B:'+e.balance+' Â· '+e.agreement;
+      $(s+'-e').textContent='M:'+e.markov+' P:'+e.pattern+' S:'+e.streak+' D:'+e.dice+' B:'+e.balance+' Br:'+e.bridge+' · '+e.agreement;
     }else $(s+'-e').textContent='';
   }catch(e){}
 }
@@ -869,15 +932,15 @@ async function hist(s){
   try{
     const r=await fetch('/api/'+s+'/lichsu');const d=await r.json();
     const b=$(s+'-h');
-    if(!d.history||!d.history.length){b.innerHTML='<div class="text-white/12 text-center py-4 text-[11px]">ChÆ°a cÃ³ dá»¯ liá»u</div>';return}
-    b.innerHTML=d.history.slice(0,16).map(h=>{
+    if(!d.history||!d.history.length){b.innerHTML='<div class="text-sky-400/20 text-center py-5 text-[11px]">Chưa có dữ liệu</div>';return}
+    b.innerHTML=d.history.slice(0,18).map(h=>{
       const ok=h.ket_qua_du_doan||'';
-      const c=ok.includes('ÄÃºng')?'text-emerald-400':ok.includes('Sai')?'text-rose-400':'text-white/18';
-      return '<div class="flex items-center justify-between py-[5px] border-b border-white/[0.03] last:border-0">'+
-        '<span class="mono text-[10px] text-white/22 w-14">#'+h.Phien_hien_tai+'</span>'+
+      const c=ok.includes('Đúng')?'text-cyan-400':ok.includes('Sai')?'text-rose-400':'text-sky-300/25';
+      return '<div class="flex items-center justify-between py-[6px] border-b border-sky-400/5 last:border-0">'+
+        '<span class="mono text-[10px] text-sky-300/30 w-14">#'+h.Phien_hien_tai+'</span>'+
         '<span class="font-semibold '+pc(h.Du_doan)+' w-10 text-center">'+h.Du_doan+'</span>'+
-        '<span class="text-[10px] text-white/28 w-10 text-center">'+h.Do_tin_cay+'</span>'+
-        '<span class="text-[10px] '+c+' w-10 text-right">'+(ok||'â¦')+'</span></div>';
+        '<span class="text-[10px] text-sky-300/35 w-10 text-center">'+h.Do_tin_cay+'</span>'+
+        '<span class="text-[10px] '+c+' w-10 text-right">'+(ok||'…')+'</span></div>';
     }).join('');
   }catch(e){}
 }
@@ -885,13 +948,13 @@ async function learn(s){
   try{
     const r=await fetch('/api/'+s+'/learning');const d=await r.json();
     const st=d.streakAnalysis||{};
-    $(s+'-l').innerHTML='Tá»ng <b class="text-white/55">'+d.totalPredictions+'</b><br>ÄÃºng <b class="text-emerald-400">'+d.correctPredictions+'</b> Â· <b class="text-amber-400/90">'+d.overallAccuracy+'</b><br>Chuá»i <b class="text-white/55">'+(st.currentStreak||0)+'</b>'+(d.recentWrongStreak?'<br><span class="text-rose-400">Sai liÃªn tá»¥c '+d.recentWrongStreak+'</span>':'')+(d.patternMemorySize?'<br>Memory <b class="text-white/45">'+d.patternMemorySize+'</b>':'');
+    $(s+'-l').innerHTML='Tổng <b class="text-sky-100/70">'+d.totalPredictions+'</b><br>Đúng <b class="text-cyan-400">'+d.correctPredictions+'</b> · <b class="text-sky-300/80">'+d.overallAccuracy+'</b><br>Chuỗi <b class="text-sky-100/70">'+(st.currentStreak||0)+'</b>'+(d.recentWrongStreak?'<br><span class="text-rose-400/90">Sai liên tục '+d.recentWrongStreak+'</span>':'')+(d.patternMemorySize?'<br>Memory <b class="text-sky-200/50">'+d.patternMemorySize+'</b>':'');
     $(s+'-a').textContent=d.overallAccuracy;
     $(s+'-s').textContent=((st.currentStreak||0)>=0?'+':'')+(st.currentStreak||0);
   }catch(e){}
 }
 async function go(){await Promise.all([side('hu'),side('md5'),hist('hu'),hist('md5'),learn('hu'),learn('md5')])}
-go();setInterval(go,12000);
+go();setInterval(go,11000);
 </script>
 </body>
 </html>`);
@@ -901,13 +964,7 @@ loadL();
 loadH();
 
 app.listen(PORT, '0.0.0.0', () => {
-  console.log('');
-  console.log('ââââââââââââââââââââââââââââââââââââââââââââ');
-  console.log('  PHáº M KHÃI â¢ VIP Adaptive Memory Engine');
-  console.log('  http://0.0.0.0:' + PORT);
-  console.log('  Pattern Memory + Streak VIP + Dice Deep');
-  console.log('  CÃ ng treo lÃ¢u cÃ ng há»c cÃ ng khÃ´n');
-  console.log('ââââââââââââââââââââââââââââââââââââââââââââ');
-  setTimeout(autoRun, 2000);
+  console.log('PHẠM KHÔI VIP BlueBlack Engine → http://0.0.0.0:' + PORT);
+  setTimeout(autoRun, 1800);
   setInterval(autoRun, AUTO_INTERVAL);
 });
