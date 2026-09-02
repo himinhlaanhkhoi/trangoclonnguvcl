@@ -11,7 +11,7 @@ const LEARNING_FILE = 'phamkhoi.json';
 const HISTORY_FILE = 'phamkhoi1.json';
 
 let predictionHistory = { hu: [], md5: [] };
-const MAX_HISTORY = 250;
+const MAX_HISTORY = 105;
 const AUTO_INTERVAL = 14000;
 let lastProcessed = { hu: null, md5: null };
 let learningData = { hu: emptyL(), md5: emptyL() };
@@ -100,7 +100,7 @@ function transform(api) {
     .filter(i => i && i.id && Array.isArray(i.dices) && i.dices.length === 3 && i.resultTruyenThong)
     .map(i => ({
       Phien: i.id,
-      Ket_qua: i.resultTruyenThong === 'TAI' ? 'Tài' : 'Xỉu',
+      Ket_qua: i.resultTruyenThong === 'TAI' ? 'TÃ i' : 'Xá»u',
       Xuc_xac_1: i.dices[0],
       Xuc_xac_2: i.dices[1],
       Xuc_xac_3: i.dices[2],
@@ -131,21 +131,21 @@ async function fetchMd5() {
 function analyze(data, type) {
   if (!data || data.length < 18) {
     return {
-      prediction: 'Xỉu',
+      prediction: 'Xá»u',
       confidence: 53,
-      factors: ['Thiếu dữ liệu'],
-      reasons: ['Cần ≥18 phiên đã hoàn thành'],
+      factors: ['Thiáº¿u dá»¯ liá»u'],
+      reasons: ['Cáº§n â¥18 phiÃªn ÄÃ£ hoÃ n thÃ nh'],
       experts: {},
       agree: '-'
     };
   }
 
-  const R = data.map(d => d.Ket_qua === 'Tài' ? 1 : 0);
+  const R = data.map(d => d.Ket_qua === 'TÃ i' ? 1 : 0);
   const H = [...R].reverse();
   const dice = data.map(d => ({
     faces: [d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3],
     sum: d.Tong,
-    result: d.Ket_qua === 'Tài' ? 1 : 0
+    result: d.Ket_qua === 'TÃ i' ? 1 : 0
   }));
 
   const mem = learningData[type].patternMemory || {};
@@ -233,10 +233,10 @@ function analyze(data, type) {
       }
     }
     if (bestLen === 0) {
-      return { pred: R[0], conf: 0.52, weight: dynamicWeight(1.4, 'pattern'), details: ['Pattern yếu'], scoreT: 0.5, scoreX: 0.5 };
+      return { pred: R[0], conf: 0.52, weight: dynamicWeight(1.4, 'pattern'), details: ['Pattern yáº¿u'], scoreT: 0.5, scoreX: 0.5 };
     }
     const conf = 0.57 + Math.min(0.25, bestLen * 0.02) + Math.min(0.1, matches * 0.015) + memBoost * 0.08;
-    const details = ['Ptn' + bestLen + '→' + (next === 1 ? 'T' : 'X') + (memBoost > 0.3 ? '+Mem' : '')];
+    const details = ['Ptn' + bestLen + 'â' + (next === 1 ? 'T' : 'X') + (memBoost > 0.3 ? '+Mem' : '')];
     return {
       pred: next,
       conf: Math.min(0.87, conf),
@@ -264,32 +264,32 @@ function analyze(data, type) {
     if (streak === 2) {
       const w = 1.25;
       if (streakVal === 1) scoreT += w; else scoreX += w;
-      details.push('Bệt2');
+      details.push('Bá»t2');
     } else if (streak === 3) {
       const w = 1.55;
       if (streakVal === 1) scoreT += w; else scoreX += w;
-      details.push('Bệt3 theo');
+      details.push('Bá»t3 theo');
     } else if (streak === 4) {
       const w = 0.7;
       if (streakVal === 1) scoreT += w; else scoreX += w;
-      details.push('Bệt4 thận');
+      details.push('Bá»t4 tháº­n');
     } else if (streak === 5) {
       const w = 2.15;
       if (streakVal === 1) scoreX += w; else scoreT += w;
-      details.push('Bẻ bệt5');
+      details.push('Báº» bá»t5');
     } else if (streak >= 6) {
       const w = 2.6 + Math.min(1.3, (streak - 6) * 0.3);
       if (streakVal === 1) scoreX += w; else scoreT += w;
-      details.push('Bẻ bệt' + streak);
+      details.push('Báº» bá»t' + streak);
     }
     if (alt >= 5 && alt <= 7) {
       const w = 1.7;
       if (R[0] === 1) scoreX += w; else scoreT += w;
-      details.push('Đảo' + alt);
+      details.push('Äáº£o' + alt);
     } else if (alt >= 8) {
       const w = 1.15;
       if (R[0] === 1) scoreT += w; else scoreX += w;
-      details.push('Đứt đảo' + alt);
+      details.push('Äá»©t Äáº£o' + alt);
     }
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
@@ -306,7 +306,7 @@ function analyze(data, type) {
   function expertDice() {
     const recent = dice.slice(0, 30);
     if (recent.length < 12) {
-      return { pred: 0, conf: 0.52, weight: dynamicWeight(1.7, 'dice'), details: ['Dice thiếu'], scoreT: 0.5, scoreX: 0.5 };
+      return { pred: 0, conf: 0.52, weight: dynamicWeight(1.7, 'dice'), details: ['Dice thiáº¿u'], scoreT: 0.5, scoreX: 0.5 };
     }
     let high = 0, low = 0, totalF = 0;
     recent.forEach(d => {
@@ -336,28 +336,28 @@ function analyze(data, type) {
     let scoreT = 0, scoreX = 0;
     const details = [];
     if (avg12 >= 12.6) { scoreX += 2.25; details.push('Sum12 cao'); }
-    else if (avg12 <= 8.4) { scoreT += 2.25; details.push('Sum12 thấp'); }
-    else if (avg12 >= 11.7) { scoreX += 1.1; details.push('Sum12 hơi cao'); }
-    else if (avg12 <= 9.3) { scoreT += 1.1; details.push('Sum12 hơi thấp'); }
-    if (avg8 >= 13.2) { scoreX += 1.4; details.push('Sum8 rất cao'); }
-    else if (avg8 <= 7.8) { scoreT += 1.4; details.push('Sum8 rất thấp'); }
-    if (highRatio >= 0.60) { scoreX += 1.6; details.push('Mặt cao'); }
-    else if (lowRatio >= 0.60) { scoreT += 1.6; details.push('Mặt thấp'); }
+    else if (avg12 <= 8.4) { scoreT += 2.25; details.push('Sum12 tháº¥p'); }
+    else if (avg12 >= 11.7) { scoreX += 1.1; details.push('Sum12 hÆ¡i cao'); }
+    else if (avg12 <= 9.3) { scoreT += 1.1; details.push('Sum12 hÆ¡i tháº¥p'); }
+    if (avg8 >= 13.2) { scoreX += 1.4; details.push('Sum8 ráº¥t cao'); }
+    else if (avg8 <= 7.8) { scoreT += 1.4; details.push('Sum8 ráº¥t tháº¥p'); }
+    if (highRatio >= 0.60) { scoreX += 1.6; details.push('Máº·t cao'); }
+    else if (lowRatio >= 0.60) { scoreT += 1.6; details.push('Máº·t tháº¥p'); }
     if (consecHigh >= 3) {
       scoreX += 1.45 + (consecHigh - 3) * 0.25;
-      details.push('Cao liên' + consecHigh);
+      details.push('Cao liÃªn' + consecHigh);
     }
     if (consecLow >= 3) {
       scoreT += 1.45 + (consecLow - 3) * 0.25;
-      details.push('Thấp liên' + consecLow);
+      details.push('Tháº¥p liÃªn' + consecLow);
     }
     const lastSum = recent[0].sum;
-    if (lastSum >= 16) { scoreX += 1.2; details.push('Cực cao'); }
-    else if (lastSum <= 5) { scoreT += 1.2; details.push('Cực thấp'); }
+    if (lastSum >= 16) { scoreX += 1.2; details.push('Cá»±c cao'); }
+    else if (lastSum <= 5) { scoreT += 1.2; details.push('Cá»±c tháº¥p'); }
     const last16 = recent.slice(0, 16).map(d => d.result);
     const tai16 = last16.filter(x => x === 1).length;
-    if (tai16 >= 12) { scoreX += 1.55; details.push('LệchT mạnh'); }
-    else if (tai16 <= 4) { scoreT += 1.55; details.push('LệchX mạnh'); }
+    if (tai16 >= 12) { scoreX += 1.55; details.push('Lá»chT máº¡nh'); }
+    else if (tai16 <= 4) { scoreT += 1.55; details.push('Lá»chX máº¡nh'); }
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
     const dom = Math.abs(scoreT - scoreX) / total;
@@ -380,10 +380,10 @@ function analyze(data, type) {
       const ratio = tai / w;
       if (ratio >= 0.76) {
         scoreX += 1.3 * (w / 15);
-        details.push('LệchT' + w);
+        details.push('Lá»chT' + w);
       } else if (ratio <= 0.24) {
         scoreT += 1.3 * (w / 15);
-        details.push('LệchX' + w);
+        details.push('Lá»chX' + w);
       }
     });
     let bestSc = 0, cyclePred = null;
@@ -404,7 +404,7 @@ function analyze(data, type) {
       const w = 1.6 * bestSc;
       if (cyclePred === 1) scoreT += w;
       else scoreX += w;
-      details.push('Chu kỳ');
+      details.push('Chu ká»³');
     }
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
@@ -456,12 +456,12 @@ function analyze(data, type) {
       finalT += 4.8;
       finalX *= 0.28;
     }
-    factors.unshift('Đảo' + wrong + 'sai');
-    reasons.push('Sai liên tiếp ' + wrong + ' lần → đảo chiều mạnh');
+    factors.unshift('Äáº£o' + wrong + 'sai');
+    reasons.push('Sai liÃªn tiáº¿p ' + wrong + ' láº§n â Äáº£o chiá»u máº¡nh');
   } else if (wrong >= 2 && lastDir !== null) {
     if (lastDir === 1) finalX += 1.85;
     else finalT += 1.85;
-    factors.unshift('Nghiêng' + wrong);
+    factors.unshift('NghiÃªng' + wrong);
   }
 
   const finalPred = finalT >= finalX ? 1 : 0;
@@ -492,23 +492,23 @@ function analyze(data, type) {
   learningData[type].patternMemory = mem;
   learningData[type].lastPredDirection = finalPred;
 
-  if (d.details.length) reasons.push('Xúc xắc: ' + d.details.slice(0, 2).join(', '));
-  if (s.details.length) reasons.push('Cầu: ' + s.details[0]);
+  if (d.details.length) reasons.push('XÃºc xáº¯c: ' + d.details.slice(0, 2).join(', '));
+  if (s.details.length) reasons.push('Cáº§u: ' + s.details[0]);
   if (p.details.length) reasons.push('Pattern: ' + p.details[0]);
-  if (agreeCount >= 4) reasons.push('Đồng thuận ' + agreeCount + '/5 chuyên gia');
+  if (agreeCount >= 4) reasons.push('Äá»ng thuáº­n ' + agreeCount + '/5 chuyÃªn gia');
 
   return {
-    prediction: finalPred === 1 ? 'Tài' : 'Xỉu',
+    prediction: finalPred === 1 ? 'TÃ i' : 'Xá»u',
     confidence: conf,
     factors: [...new Set(factors)].slice(0, 6),
     reasons: reasons.slice(0, 4),
     agree: (finalT > finalX ? 'T' : 'X') + '(' + Math.round(dominance * 100) + '%)',
     experts: {
-      markov: m.pred === 1 ? 'Tài' : 'Xỉu',
-      pattern: p.pred === 1 ? 'Tài' : 'Xỉu',
-      streak: s.pred === 1 ? 'Tài' : 'Xỉu',
-      dice: d.pred === 1 ? 'Tài' : 'Xỉu',
-      balance: b.pred === 1 ? 'Tài' : 'Xỉu',
+      markov: m.pred === 1 ? 'TÃ i' : 'Xá»u',
+      pattern: p.pred === 1 ? 'TÃ i' : 'Xá»u',
+      streak: s.pred === 1 ? 'TÃ i' : 'Xá»u',
+      dice: d.pred === 1 ? 'TÃ i' : 'Xá»u',
+      balance: b.pred === 1 ? 'TÃ i' : 'Xá»u',
       agreement: agreeCount + '/5'
     }
   };
@@ -625,7 +625,7 @@ async function updateStatus(type) {
       if (r.ket_qua_du_doan) continue;
       const a = data.find(d => String(d.Phien) === String(r.Phien_hien_tai));
       if (a) {
-        r.ket_qua_du_doan = r.Du_doan === a.Ket_qua ? 'Đúng' : 'Sai';
+        r.ket_qua_du_doan = r.Du_doan === a.Ket_qua ? 'ÄÃºng' : 'Sai';
         changed = true;
       }
     }
@@ -645,7 +645,7 @@ async function autoRun() {
         saveToHist(type, next, r.prediction, r.confidence, data[0]);
         record(type, next, r.prediction, r.confidence, r.factors);
         lastProcessed[type] = next;
-        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ' → ' + r.prediction + ' (' + r.confidence + '%) | ' + (r.experts ? r.experts.agreement : ''));
+        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ' â ' + r.prediction + ' (' + r.confidence + '%) | ' + (r.experts ? r.experts.agreement : ''));
         saveH();
         saveL();
       }
@@ -660,7 +660,7 @@ async function autoRun() {
 async function handle(type, fn, req, res) {
   try {
     const data = await fn();
-    if (!data || !data.length) return res.status(500).json({ error: 'Không lấy được dữ liệu' });
+    if (!data || !data.length) return res.status(500).json({ error: 'KhÃ´ng láº¥y ÄÆ°á»£c dá»¯ liá»u' });
     await verify(type, data);
     const next = data[0].Phien + 1;
 
@@ -691,7 +691,7 @@ async function handle(type, fn, req, res) {
     });
   } catch (e) {
     console.error('handle', e.message);
-    res.status(500).json({ error: 'Lỗi server' });
+    res.status(500).json({ error: 'Lá»i server' });
   }
 }
 
@@ -699,7 +699,7 @@ app.get('/api/hu', (req, res) => handle('hu', fetchHu, req, res));
 app.get('/api/md5', (req, res) => handle('md5', fetchMd5, req, res));
 app.get('/api/hu/lichsu', async (req, res) => {
   await updateStatus('hu');
-  res.json({ type: 'Hũ', history: predictionHistory.hu, total: predictionHistory.hu.length });
+  res.json({ type: 'HÅ©', history: predictionHistory.hu, total: predictionHistory.hu.length });
 });
 app.get('/api/md5/lichsu', async (req, res) => {
   await updateStatus('md5');
@@ -709,7 +709,7 @@ app.get('/api/hu/learning', (req, res) => {
   const s = learningData.hu;
   const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : '0.00';
   res.json({
-    type: 'Hũ', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
+    type: 'HÅ©', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
     overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0,
     patternMemorySize: Object.keys(s.patternMemory || {}).length
   });
@@ -736,7 +736,7 @@ app.get('/', (req, res) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>Phạm Khôi • VIP Adaptive</title>
+<title>Pháº¡m KhÃ´i â¢ VIP Adaptive</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
@@ -760,90 +760,90 @@ body{background:#06060a;color:#f4f4f5;min-height:100vh;background-image:radial-g
     <div class="flex items-center gap-2.5">
       <div class="w-9 h-9 rounded-2xl bg-gradient-to-br from-amber-400 via-orange-500 to-rose-500 flex items-center justify-center text-[11px] font-black text-black shadow-lg shadow-amber-500/15">PK</div>
       <div>
-        <div class="font-bold text-[15px] leading-none tracking-tight">Phạm Khôi</div>
+        <div class="font-bold text-[15px] leading-none tracking-tight">Pháº¡m KhÃ´i</div>
         <div class="text-[10px] text-white/28 mt-0.5 font-medium">VIP Adaptive Memory</div>
       </div>
     </div>
     <div class="flex items-center gap-2.5">
       <span id="clock" class="text-[10px] text-white/18 mono tabular-nums"></span>
-      <button onclick="go()" class="text-[11px] px-3 py-1.5 rounded-xl bg-white/[0.035] hover:bg-white/[0.07] active:scale-95 transition font-medium border border-white/[0.05]">Làm mới</button>
+      <button onclick="go()" class="text-[11px] px-3 py-1.5 rounded-xl bg-white/[0.035] hover:bg-white/[0.07] active:scale-95 transition font-medium border border-white/[0.05]">LÃ m má»i</button>
     </div>
   </div>
   <div class="space-y-3 mb-5">
     <div id="c-hu" class="glass p-4 transition-all duration-500">
       <div class="flex items-center justify-between mb-3">
-        <div class="flex items-center gap-2"><span class="dot bg-emerald-400"></span><span class="text-[12px] font-semibold text-white/55">Hũ</span></div>
-        <span id="hu-p" class="text-[10px] text-white/22 mono">#—</span>
+        <div class="flex items-center gap-2"><span class="dot bg-emerald-400"></span><span class="text-[12px] font-semibold text-white/55">HÅ©</span></div>
+        <span id="hu-p" class="text-[10px] text-white/22 mono">#â</span>
       </div>
       <div class="text-center py-1">
-        <div id="hu-d" class="text-[34px] font-extrabold tracking-tight leading-none">—</div>
-        <div id="hu-c" class="text-[17px] font-bold text-amber-400/90 mt-1.5">—%</div>
+        <div id="hu-d" class="text-[34px] font-extrabold tracking-tight leading-none">â</div>
+        <div id="hu-c" class="text-[17px] font-bold text-amber-400/90 mt-1.5">â%</div>
         <div class="bar mt-2.5 mx-auto max-w-[130px]"><div id="hu-bar" class="bg-gradient-to-r from-amber-500 to-orange-400" style="width:0%"></div></div>
       </div>
       <div class="flex justify-center gap-5 text-[11px] text-white/28 mt-2 mb-1.5">
-        <span>XX <b id="hu-x" class="text-white/55 mono font-medium">—</b></span>
-        <span>Tổng <b id="hu-t" class="text-white/55 font-medium">—</b></span>
+        <span>XX <b id="hu-x" class="text-white/55 mono font-medium">â</b></span>
+        <span>Tá»ng <b id="hu-t" class="text-white/55 font-medium">â</b></span>
       </div>
       <div id="hu-f" class="flex flex-wrap gap-1.5 justify-center min-h-[20px] mb-1.5"></div>
       <div id="hu-r" class="text-[10px] text-white/30 text-center mb-1.5 leading-snug px-1"></div>
       <div id="hu-e" class="text-[10px] text-white/22 text-center mb-2 mono"></div>
       <div class="grid grid-cols-3 gap-1.5 pt-2.5 border-t border-white/[0.045] text-center text-[10px]">
-        <div><div class="text-white/22 mb-0.5">Đúng</div><div id="hu-a" class="font-bold text-emerald-400 text-[12px]">—</div></div>
-        <div><div class="text-white/22 mb-0.5">Chuỗi</div><div id="hu-s" class="font-bold text-[12px]">—</div></div>
-        <div><div class="text-white/22 mb-0.5">Phiên</div><div id="hu-n" class="font-bold text-amber-400/70 text-[12px]">#—</div></div>
+        <div><div class="text-white/22 mb-0.5">ÄÃºng</div><div id="hu-a" class="font-bold text-emerald-400 text-[12px]">â</div></div>
+        <div><div class="text-white/22 mb-0.5">Chuá»i</div><div id="hu-s" class="font-bold text-[12px]">â</div></div>
+        <div><div class="text-white/22 mb-0.5">PhiÃªn</div><div id="hu-n" class="font-bold text-amber-400/70 text-[12px]">#â</div></div>
       </div>
     </div>
     <div id="c-md5" class="glass p-4 transition-all duration-500">
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2"><span class="dot bg-violet-400"></span><span class="text-[12px] font-semibold text-white/55">MD5</span></div>
-        <span id="md5-p" class="text-[10px] text-white/22 mono">#—</span>
+        <span id="md5-p" class="text-[10px] text-white/22 mono">#â</span>
       </div>
       <div class="text-center py-1">
-        <div id="md5-d" class="text-[34px] font-extrabold tracking-tight leading-none">—</div>
-        <div id="md5-c" class="text-[17px] font-bold text-amber-400/90 mt-1.5">—%</div>
+        <div id="md5-d" class="text-[34px] font-extrabold tracking-tight leading-none">â</div>
+        <div id="md5-c" class="text-[17px] font-bold text-amber-400/90 mt-1.5">â%</div>
         <div class="bar mt-2.5 mx-auto max-w-[130px]"><div id="md5-bar" class="bg-gradient-to-r from-violet-500 to-fuchsia-400" style="width:0%"></div></div>
       </div>
       <div class="flex justify-center gap-5 text-[11px] text-white/28 mt-2 mb-1.5">
-        <span>XX <b id="md5-x" class="text-white/55 mono font-medium">—</b></span>
-        <span>Tổng <b id="md5-t" class="text-white/55 font-medium">—</b></span>
+        <span>XX <b id="md5-x" class="text-white/55 mono font-medium">â</b></span>
+        <span>Tá»ng <b id="md5-t" class="text-white/55 font-medium">â</b></span>
       </div>
       <div id="md5-f" class="flex flex-wrap gap-1.5 justify-center min-h-[20px] mb-1.5"></div>
       <div id="md5-r" class="text-[10px] text-white/30 text-center mb-1.5 leading-snug px-1"></div>
       <div id="md5-e" class="text-[10px] text-white/22 text-center mb-2 mono"></div>
       <div class="grid grid-cols-3 gap-1.5 pt-2.5 border-t border-white/[0.045] text-center text-[10px]">
-        <div><div class="text-white/22 mb-0.5">Đúng</div><div id="md5-a" class="font-bold text-emerald-400 text-[12px]">—</div></div>
-        <div><div class="text-white/22 mb-0.5">Chuỗi</div><div id="md5-s" class="font-bold text-[12px]">—</div></div>
-        <div><div class="text-white/22 mb-0.5">Phiên</div><div id="md5-n" class="font-bold text-amber-400/70 text-[12px]">#—</div></div>
+        <div><div class="text-white/22 mb-0.5">ÄÃºng</div><div id="md5-a" class="font-bold text-emerald-400 text-[12px]">â</div></div>
+        <div><div class="text-white/22 mb-0.5">Chuá»i</div><div id="md5-s" class="font-bold text-[12px]">â</div></div>
+        <div><div class="text-white/22 mb-0.5">PhiÃªn</div><div id="md5-n" class="font-bold text-amber-400/70 text-[12px]">#â</div></div>
       </div>
     </div>
   </div>
   <div class="space-y-3 mb-5">
     <div class="glass p-3.5">
-      <div class="text-[11px] font-semibold text-white/38 mb-2 flex items-center gap-1.5"><span class="w-1 h-3 rounded-full bg-emerald-400/55"></span>Lịch sử Hũ</div>
+      <div class="text-[11px] font-semibold text-white/38 mb-2 flex items-center gap-1.5"><span class="w-1 h-3 rounded-full bg-emerald-400/55"></span>Lá»ch sá»­ HÅ©</div>
       <div id="hu-h" class="space-y-0 max-h-44 overflow-y-auto text-[11px]"></div>
     </div>
     <div class="glass p-3.5">
-      <div class="text-[11px] font-semibold text-white/38 mb-2 flex items-center gap-1.5"><span class="w-1 h-3 rounded-full bg-violet-400/55"></span>Lịch sử MD5</div>
+      <div class="text-[11px] font-semibold text-white/38 mb-2 flex items-center gap-1.5"><span class="w-1 h-3 rounded-full bg-violet-400/55"></span>Lá»ch sá»­ MD5</div>
       <div id="md5-h" class="space-y-0 max-h-44 overflow-y-auto text-[11px]"></div>
     </div>
   </div>
   <div class="grid grid-cols-2 gap-2.5 mb-5">
     <div class="glass p-3">
-      <div class="text-[10px] font-semibold text-white/32 mb-1.5">Thống kê Hũ</div>
+      <div class="text-[10px] font-semibold text-white/32 mb-1.5">Thá»ng kÃª HÅ©</div>
       <div id="hu-l" class="text-[11px] text-white/32 space-y-0.5 leading-relaxed"></div>
     </div>
     <div class="glass p-3">
-      <div class="text-[10px] font-semibold text-white/32 mb-1.5">Thống kê MD5</div>
+      <div class="text-[10px] font-semibold text-white/32 mb-1.5">Thá»ng kÃª MD5</div>
       <div id="md5-l" class="text-[11px] text-white/32 space-y-0.5 leading-relaxed"></div>
     </div>
   </div>
-  <div class="text-center text-[10px] text-white/12 pb-4 tracking-wide">Phạm Khôi • VIP Adaptive Memory Engine</div>
+  <div class="text-center text-[10px] text-white/12 pb-4 tracking-wide">Pháº¡m KhÃ´i â¢ VIP Adaptive Memory Engine</div>
 <script>
 const $=id=>document.getElementById(id);
 const tick=()=>$('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour12:false});
 setInterval(tick,1000);tick();
-const pc=p=>p==='Tài'?'tai':p==='Xỉu'?'xiu':'';
-const gc=p=>p==='Tài'?'glow-t':p==='Xỉu'?'glow-x':'';
+const pc=p=>p==='TÃ i'?'tai':p==='Xá»u'?'xiu':'';
+const gc=p=>p==='TÃ i'?'glow-t':p==='Xá»u'?'glow-x':'';
 async function side(s){
   try{
     const r=await fetch('/api/'+s);const d=await r.json();if(d.error)return;
@@ -855,13 +855,13 @@ async function side(s){
     const confNum=parseInt(d.Do_tin_cay)||0;
     $(s+'-bar').style.width=confNum+'%';
     $(s+'-x').textContent=d.Xuc_xac_1+' '+d.Xuc_xac_2+' '+d.Xuc_xac_3;
-    $(s+'-t').textContent=d.Tong+' · '+d.Ket_qua;
+    $(s+'-t').textContent=d.Tong+' Â· '+d.Ket_qua;
     $('c-'+s).className='glass p-4 transition-all duration-500 '+gc(d.Du_doan);
     $(s+'-f').innerHTML=(d.factors||[]).slice(0,5).map(f=>'<span class="chip">'+f+'</span>').join('');
-    $(s+'-r').textContent=(d.reasons||[]).slice(0,2).join(' • ')||'';
+    $(s+'-r').textContent=(d.reasons||[]).slice(0,2).join(' â¢ ')||'';
     if(d.experts){
       const e=d.experts;
-      $(s+'-e').textContent='M:'+e.markov+' P:'+e.pattern+' S:'+e.streak+' D:'+e.dice+' B:'+e.balance+' · '+e.agreement;
+      $(s+'-e').textContent='M:'+e.markov+' P:'+e.pattern+' S:'+e.streak+' D:'+e.dice+' B:'+e.balance+' Â· '+e.agreement;
     }else $(s+'-e').textContent='';
   }catch(e){}
 }
@@ -869,15 +869,15 @@ async function hist(s){
   try{
     const r=await fetch('/api/'+s+'/lichsu');const d=await r.json();
     const b=$(s+'-h');
-    if(!d.history||!d.history.length){b.innerHTML='<div class="text-white/12 text-center py-4 text-[11px]">Chưa có dữ liệu</div>';return}
+    if(!d.history||!d.history.length){b.innerHTML='<div class="text-white/12 text-center py-4 text-[11px]">ChÆ°a cÃ³ dá»¯ liá»u</div>';return}
     b.innerHTML=d.history.slice(0,16).map(h=>{
       const ok=h.ket_qua_du_doan||'';
-      const c=ok.includes('Đúng')?'text-emerald-400':ok.includes('Sai')?'text-rose-400':'text-white/18';
+      const c=ok.includes('ÄÃºng')?'text-emerald-400':ok.includes('Sai')?'text-rose-400':'text-white/18';
       return '<div class="flex items-center justify-between py-[5px] border-b border-white/[0.03] last:border-0">'+
         '<span class="mono text-[10px] text-white/22 w-14">#'+h.Phien_hien_tai+'</span>'+
         '<span class="font-semibold '+pc(h.Du_doan)+' w-10 text-center">'+h.Du_doan+'</span>'+
         '<span class="text-[10px] text-white/28 w-10 text-center">'+h.Do_tin_cay+'</span>'+
-        '<span class="text-[10px] '+c+' w-10 text-right">'+(ok||'…')+'</span></div>';
+        '<span class="text-[10px] '+c+' w-10 text-right">'+(ok||'â¦')+'</span></div>';
     }).join('');
   }catch(e){}
 }
@@ -885,7 +885,7 @@ async function learn(s){
   try{
     const r=await fetch('/api/'+s+'/learning');const d=await r.json();
     const st=d.streakAnalysis||{};
-    $(s+'-l').innerHTML='Tổng <b class="text-white/55">'+d.totalPredictions+'</b><br>Đúng <b class="text-emerald-400">'+d.correctPredictions+'</b> · <b class="text-amber-400/90">'+d.overallAccuracy+'</b><br>Chuỗi <b class="text-white/55">'+(st.currentStreak||0)+'</b>'+(d.recentWrongStreak?'<br><span class="text-rose-400">Sai liên tục '+d.recentWrongStreak+'</span>':'')+(d.patternMemorySize?'<br>Memory <b class="text-white/45">'+d.patternMemorySize+'</b>':'');
+    $(s+'-l').innerHTML='Tá»ng <b class="text-white/55">'+d.totalPredictions+'</b><br>ÄÃºng <b class="text-emerald-400">'+d.correctPredictions+'</b> Â· <b class="text-amber-400/90">'+d.overallAccuracy+'</b><br>Chuá»i <b class="text-white/55">'+(st.currentStreak||0)+'</b>'+(d.recentWrongStreak?'<br><span class="text-rose-400">Sai liÃªn tá»¥c '+d.recentWrongStreak+'</span>':'')+(d.patternMemorySize?'<br>Memory <b class="text-white/45">'+d.patternMemorySize+'</b>':'');
     $(s+'-a').textContent=d.overallAccuracy;
     $(s+'-s').textContent=((st.currentStreak||0)>=0?'+':'')+(st.currentStreak||0);
   }catch(e){}
@@ -902,12 +902,12 @@ loadH();
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log('');
-  console.log('════════════════════════════════════════════');
-  console.log('  PHẠM KHÔI • VIP Adaptive Memory Engine');
+  console.log('ââââââââââââââââââââââââââââââââââââââââââââ');
+  console.log('  PHáº M KHÃI â¢ VIP Adaptive Memory Engine');
   console.log('  http://0.0.0.0:' + PORT);
   console.log('  Pattern Memory + Streak VIP + Dice Deep');
-  console.log('  Càng treo lâu càng học càng khôn');
-  console.log('════════════════════════════════════════════');
+  console.log('  CÃ ng treo lÃ¢u cÃ ng há»c cÃ ng khÃ´n');
+  console.log('ââââââââââââââââââââââââââââââââââââââââââââ');
   setTimeout(autoRun, 2000);
   setInterval(autoRun, AUTO_INTERVAL);
 });
