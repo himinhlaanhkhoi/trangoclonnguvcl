@@ -16,7 +16,6 @@ const AUTO_INTERVAL = 14000;
 let lastProcessed = { hu: null, md5: null };
 let learningData = { hu: emptyL(), md5: emptyL() };
 
-// ==================== ENHANCED LEARNING STATE ====================
 function emptyL() {
   return {
     predictions: [],
@@ -25,57 +24,21 @@ function emptyL() {
     streakAnalysis: { wins: 0, losses: 0, currentStreak: 0, bestStreak: 0, worstStreak: 0 },
     recentAccuracy: [],
     recentWrongStreak: 0,
-    lastPredDirection: null,
-    // NÂNG CẤP MỚI
-    consecutiveLosses: 0,
-    antiLossMode: false,
-    antiLossCount: 0,
-    lastPatterns: [],
-    patternHistory: [],
-    modelWeights: {
-      markov1: 1.0,
-      markov2: 1.0,
-      markov3: 1.0,
-      streak: 1.0,
-      dice: 1.0,
-      balance: 1.0,
-      antiLoss: 1.0
-    },
-    predictionStats: {
-      correctAfterAntiLoss: 0,
-      totalAfterAntiLoss: 0,
-      correctNormal: 0,
-      totalNormal: 0
-    },
-    lastVerified: null
+    lastPredDirection: null
   };
 }
 
-// ==================== LOAD/SAVE ====================
 function loadL() {
   try {
     if (fs.existsSync(LEARNING_FILE)) {
-      const saved = JSON.parse(fs.readFileSync(LEARNING_FILE, 'utf8'));
-      // Merge với emptyL để đảm bảo đủ field mới
-      learningData = {
-        hu: { ...emptyL(), ...saved.hu },
-        md5: { ...emptyL(), ...saved.md5 }
-      };
-      console.log('✅ Learning data loaded');
+      learningData = { ...learningData, ...JSON.parse(fs.readFileSync(LEARNING_FILE, 'utf8')) };
+      console.log('✅ Learning');
     }
-  } catch (e) {
-    console.error('❌ Load learning error:', e.message);
-  }
+  } catch (e) {}
 }
-
 function saveL() {
-  try {
-    fs.writeFileSync(LEARNING_FILE, JSON.stringify(learningData, null, 2));
-  } catch (e) {
-    console.error('❌ Save learning error:', e.message);
-  }
+  try { fs.writeFileSync(LEARNING_FILE, JSON.stringify(learningData, null, 2)); } catch (e) {}
 }
-
 function loadH() {
   try {
     if (fs.existsSync(HISTORY_FILE)) {
@@ -90,13 +53,10 @@ function loadH() {
           return true;
         });
       });
-      console.log('✅ History loaded - HU:' + predictionHistory.hu.length + ' MD5:' + predictionHistory.md5.length);
+      console.log('✅ Hist HU:' + predictionHistory.hu.length + ' MD5:' + predictionHistory.md5.length);
     }
-  } catch (e) {
-    console.error('❌ Load history error:', e.message);
-  }
+  } catch (e) {}
 }
-
 function saveH() {
   try {
     fs.writeFileSync(HISTORY_FILE, JSON.stringify({
@@ -107,7 +67,6 @@ function saveH() {
   } catch (e) {}
 }
 
-// ==================== TRANSFORM ====================
 function transform(api) {
   if (!api?.list?.length) return null;
   return api.list.map(i => ({
@@ -120,39 +79,28 @@ function transform(api) {
   }));
 }
 
-// ==================== FETCH ====================
 async function fetchHu() {
   try {
     const r = await axios.get(API_URL_HU, { timeout: 12000 });
     return transform(r.data);
-  } catch (e) {
-    console.error('❌ HU fetch:', e.message);
-    return null;
-  }
+  } catch (e) { console.error('HU', e.message); return null; }
 }
-
 async function fetchMd5() {
   try {
     const r = await axios.get(API_URL_MD5, { timeout: 12000 });
     return transform(r.data);
-  } catch (e) {
-    console.error('❌ MD5 fetch:', e.message);
-    return null;
-  }
+  } catch (e) { console.error('MD5', e.message); return null; }
 }
 
-// ==================== NÂNG CẤP THUẬT TOÁN ====================
+// ==================== THUẬT TOÁN MỚI – KHÔNG BÁM KẾT QUẢ CŨ ====================
 /*
-  ⚡ THUẬT TOÁN V3 - ĐA TẦNG PHÂN TÍCH ⚡
-  
-  TẦNG 1: MARKOV CHAIN (Bậc 1-2-3-4)
-  TẦNG 2: PATTERN MATCHING (So khớp chuỗi lịch sử)
-  TẦNG 3: DICE ANALYSIS (Phân tích xúc xắc)
-  TẦNG 4: STATISTICAL BALANCE (Cân bằng thống kê)
-  TẦNG 5: ANTI-LOSS SYSTEM (Chống thua liên tục)
-  TẦNG 6: TREND REVERSAL (Đảo chiều xu hướng)
-  TẦNG 7: BAYESIAN UPDATE (Cập nhật Bayesian)
-  TẦNG 8: NEURAL WEIGHT ADJUSTMENT (Điều chỉnh trọng số)
+  Ý tưởng:
+  - Dùng Markov thật từ lịch sử (P(next | last 1/2/3))
+  - Pattern matching chuỗi gần nhất
+  - Streak: theo ngắn, bẻ dài (có ngưỡng rõ)
+  - Dice sum mean-reversion
+  - Khi thua liên tục: ĐẢO chiều dự đoán trước đó (không phải follow last)
+  - Conf chỉ cao khi Markov + pattern đồng thuận
 */
 
 function analyze(data, type) {
@@ -166,12 +114,11 @@ function analyze(data, type) {
   // oldest-first for transition counting
   const H = [...R].reverse();
 
-  // ==================== TẦNG 1: MARKOV CHAIN NÂNG CẤP ====================
+  // ---- 1. MARKOV ORDER 1,2,3 ----
   function markovProb(order) {
-    if (H.length < order + 6) return null;
+    if (H.length < order + 8) return null;
     const pattern = H.slice(-order).join('');
-    let cntT = 0,
-      cntX = 0;
+    let cntT = 0, cntX = 0;
     for (let i = 0; i <= H.length - order - 1; i++) {
       if (H.slice(i, i + order).join('') === pattern) {
         if (H[i + order] === 1) cntT++;
@@ -179,87 +126,21 @@ function analyze(data, type) {
       }
     }
     const tot = cntT + cntX;
-    if (tot < 2) return null;
+    if (tot < 3) return null;
     const pT = cntT / tot;
-
-    // Bayesian smoothing
-    const smoothPT = (cntT + 1) / (tot + 2);
-
     return {
       pred: pT >= 0.5 ? 1 : 0,
-      conf: 0.52 + Math.abs(smoothPT - 0.5) * 0.9,
+      conf: 0.52 + Math.abs(pT - 0.5) * 0.9,
       strength: tot,
-      pT: smoothPT,
-      weight: learningData[type].modelWeights['markov' + order] || 1.0
+      pT
     };
   }
 
   const m1 = markovProb(1);
   const m2 = markovProb(2);
   const m3 = markovProb(3);
-  const m4 = markovProb(4); // NÂNG CẤP: Markov bậc 4
 
-  // ==================== TẦNG 2: PATTERN MATCHING ====================
-  function patternMatch() {
-    const seq = H.slice(-6).join('');
-    const patterns = [];
-    for (let i = 0; i <= H.length - 12; i++) {
-      const windowSeq = H.slice(i, i + 6).join('');
-      if (windowSeq === seq) {
-        const nextVal = H[i + 6];
-        if (nextVal !== undefined) patterns.push(nextVal);
-      }
-    }
-    if (patterns.length < 2) return null;
-    const pT = patterns.filter(p => p === 1).length / patterns.length;
-    return {
-      pred: pT >= 0.5 ? 1 : 0,
-      conf: 0.55 + Math.abs(pT - 0.5) * 0.7,
-      strength: patterns.length,
-      pT,
-      weight: 1.2 // Pattern matching có trọng số cao
-    };
-  }
-
-  const pm = patternMatch();
-
-  // ==================== TẦNG 3: DICE ANALYSIS NÂNG CẤP ====================
-  let diceStats = {
-    sum: 0,
-    high: 0,
-    low: 0,
-    odd: 0,
-    even: 0,
-    diceSumHistory: []
-  };
-
-  data.slice(0, 20).forEach((d, idx) => {
-    diceStats.sum += d.Tong;
-    [d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3].forEach(f => {
-      if (f >= 4) diceStats.high++;
-      else diceStats.low++;
-      if (f % 2 === 1) diceStats.odd++;
-      else diceStats.even++;
-    });
-    diceStats.diceSumHistory.push(d.Tong);
-  });
-
-  const avgDice = diceStats.sum / Math.min(20, data.length);
-  const diceBias = (diceStats.high - diceStats.low) / (diceStats.high + diceStats.low || 1);
-
-  // Mean reversion
-  const meanReversion = avgDice > 11 ? 1 : avgDice < 9 ? 0 : null;
-
-  // ==================== TẦNG 4: STATISTICAL BALANCE ====================
-  const t10 = R.slice(0, 10).filter(x => x === 1).length;
-  const t20 = R.slice(0, 20).filter(x => x === 1).length;
-  const t30 = R.slice(0, 30).filter(x => x === 1).length;
-
-  const balance10 = t10 / 10;
-  const balance20 = t20 / 20;
-  const balance30 = t30 / Math.min(30, R.length);
-
-  // ==================== TẦNG 5: STREAK ANALYSIS ====================
+  // ---- 2. STREAK ----
   let streakLen = 1;
   for (let i = 1; i < R.length; i++) {
     if (R[i] === R[0]) streakLen++;
@@ -267,257 +148,125 @@ function analyze(data, type) {
   }
   const streakVal = R[0];
 
-  // Alternating
+  // ---- 3. ALTERNATING ----
   let altLen = 1;
-  for (let i = 1; i < Math.min(R.length, 20); i++) {
+  for (let i = 1; i < Math.min(R.length, 14); i++) {
     if (R[i] !== R[i - 1]) altLen++;
     else break;
   }
 
-  // ==================== TẦNG 6: ANTI-LOSS SYSTEM ====================
-  const wrongStreak = learningData[type].recentWrongStreak || 0;
-  const consecutiveLosses = learningData[type].consecutiveLosses || 0;
-  const lastDir = learningData[type].lastPredDirection;
-  const antiLossMode = learningData[type].antiLossMode || false;
-
-  // ==================== TẦNG 7: BAYESIAN UPDATE ====================
-  // Prior từ lịch sử dự đoán
-  const totalPreds = learningData[type].totalPredictions || 0;
-  const correctPreds = learningData[type].correctPredictions || 0;
-  const bayesianPrior = totalPreds > 0 ? correctPreds / totalPreds : 0.5;
-
-  // ==================== TẦNG 8: TREND REVERSAL ====================
-  // Phát hiện xu hướng đảo chiều
-  const recentTrend = R.slice(0, 8).reduce((a, b) => a + b, 0) / 8;
-  const olderTrend = R.slice(8, 16).reduce((a, b) => a + b, 0) / 8;
-  const trendDirection = recentTrend > olderTrend ? 'up' : recentTrend < olderTrend ? 'down' : 'flat';
-
-  // ==================== BUILD SCORES ====================
-  let scoreT = 0,
-    scoreX = 0;
-  const factors = [];
-  const modelContributions = [];
-
-  // Markov với trọng số động
-  [m4, m3, m2, m1].forEach((m, idx) => {
-    if (m && m.strength >= 2) {
-      const order = 4 - idx;
-      const w = (3.5 - order * 0.4) * m.conf * m.weight;
-      if (m.pred === 1) scoreT += w;
-      else scoreX += w;
-      factors.push('M' + order + '(' + (m.pred === 1 ? 'T' : 'X') + ':' + Math.round(m.conf * 100) + '%)');
-      modelContributions.push({ model: 'markov' + order, pred: m.pred, weight: w });
-    }
+  // ---- 4. DICE ----
+  let sum = 0, high = 0, low = 0;
+  data.slice(0, 16).forEach(d => {
+    sum += d.Tong;
+    [d.Xuc_xac_1, d.Xuc_xac_2, d.Xuc_xac_3].forEach(f => f >= 4 ? high++ : low++);
   });
+  const avg = sum / Math.min(16, data.length);
+  const bias = (high - low) / (high + low || 1);
 
-  // Pattern Matching
-  if (pm && pm.strength >= 3) {
-    const w = 2.5 * pm.conf * pm.weight;
-    if (pm.pred === 1) scoreT += w;
-    else scoreX += w;
-    factors.push('Pattern(' + (pm.pred === 1 ? 'T' : 'X') + ':' + pm.strength + ' khớp)');
-    modelContributions.push({ model: 'pattern', pred: pm.pred, weight: w });
+  // ---- 5. RECENT BALANCE ----
+  const t12 = R.slice(0, 12).filter(x => x === 1).length;
+
+  // ===================== BUILD SCORES =====================
+  let scoreT = 0, scoreX = 0;
+  const factors = [];
+
+  // Markov (trọng số cao)
+  if (m3 && m3.strength >= 3) {
+    const w = 2.8 * m3.conf;
+    if (m3.pred === 1) scoreT += w; else scoreX += w;
+    factors.push('M3(' + (m3.pred === 1 ? 'T' : 'X') + ':' + Math.round(m3.conf * 100) + '%)');
+  }
+  if (m2 && m2.strength >= 4) {
+    const w = 2.2 * m2.conf;
+    if (m2.pred === 1) scoreT += w; else scoreX += w;
+    factors.push('M2(' + (m2.pred === 1 ? 'T' : 'X') + ':' + Math.round(m2.conf * 100) + '%)');
+  }
+  if (m1 && m1.strength >= 5) {
+    const w = 1.5 * m1.conf;
+    if (m1.pred === 1) scoreT += w; else scoreX += w;
+    factors.push('M1(' + (m1.pred === 1 ? 'T' : 'X') + ')');
   }
 
-  // Streak logic
+  // Streak logic – KHÔNG follow mù
   if (streakLen >= 2 && streakLen <= 3) {
-    const w = 1.2 * learningData[type].modelWeights.streak;
-    if (streakVal === 1) scoreT += w;
-    else scoreX += w;
+    // theo nhẹ
+    const w = 1.3;
+    if (streakVal === 1) scoreT += w; else scoreX += w;
     factors.push('Bệt' + streakLen);
   } else if (streakLen >= 4 && streakLen <= 5) {
-    const w = 0.8 * learningData[type].modelWeights.streak;
-    if (streakVal === 1) scoreT += w;
-    else scoreX += w;
+    // trung lập / hơi nghiêng theo
+    const w = 0.9;
+    if (streakVal === 1) scoreT += w; else scoreX += w;
     factors.push('Bệt' + streakLen);
   } else if (streakLen >= 6) {
-    const w = (1.8 + Math.min(1.2, (streakLen - 6) * 0.3)) * learningData[type].modelWeights.streak;
-    if (streakVal === 1) scoreX += w;
-    else scoreT += w;
+    // bẻ
+    const w = 1.8 + Math.min(1, (streakLen - 6) * 0.25);
+    if (streakVal === 1) scoreX += w; else scoreT += w;
     factors.push('Bẻ' + streakLen);
   }
 
-  // Alternating
+  // Đảo
   if (altLen >= 5) {
-    const w = 1.5;
-    if (R[0] === 1) scoreX += w;
-    else scoreT += w;
+    const w = 1.6;
+    if (R[0] === 1) scoreX += w; else scoreT += w;
     factors.push('Đảo' + altLen);
   }
 
-  // Statistical Balance
-  if (balance10 > 0.7) {
-    scoreX += 1.5 * learningData[type].modelWeights.balance;
-    factors.push('LệchT10');
-  } else if (balance10 < 0.3) {
-    scoreT += 1.5 * learningData[type].modelWeights.balance;
-    factors.push('LệchX10');
-  }
+  // Balance
+  if (t12 >= 9) { scoreX += 1.5; factors.push('LệchT'); }
+  else if (t12 <= 3) { scoreT += 1.5; factors.push('LệchX'); }
 
-  if (balance20 > 0.65) {
-    scoreX += 1.2 * learningData[type].modelWeights.balance;
-    factors.push('LệchT20');
-  } else if (balance20 < 0.35) {
-    scoreT += 1.2 * learningData[type].modelWeights.balance;
-    factors.push('LệchX20');
-  }
+  // Dice
+  if (avg > 12.2 || bias > 0.18) { scoreX += 1.3; factors.push('Dice↑'); }
+  else if (avg < 8.8 || bias < -0.18) { scoreT += 1.3; factors.push('Dice↓'); }
 
-  // Dice Analysis
-  if (meanReversion === 1) {
-    scoreX += 1.4 * learningData[type].modelWeights.dice;
-    factors.push('DiceCao→X');
-  } else if (meanReversion === 0) {
-    scoreT += 1.4 * learningData[type].modelWeights.dice;
-    factors.push('DiceThấp→T');
-  }
+  // ===================== ANTI-LOSS: ĐẢO CHIỀU DỰ ĐOÁN TRƯỚC =====================
+  const wrong = learningData[type].recentWrongStreak || 0;
+  const lastDir = learningData[type].lastPredDirection; // 1 or 0
 
-  // Dice bias
-  if (diceBias > 0.2) {
-    scoreX += 1.2;
-    factors.push('BiasCao');
-  } else if (diceBias < -0.2) {
-    scoreT += 1.2;
-    factors.push('BiasThấp');
-  }
-
-  // ==================== ANTI-LOSS: ĐẢO CHIỀU SAU 3 PHIÊN THUA ====================
-  let antiLossActive = false;
-  let antiLossDirection = null;
-
-  if (consecutiveLosses >= 3 || wrongStreak >= 3) {
-    antiLossActive = true;
-    antiLossDirection = lastDir === 1 ? 0 : 1;
-
-    // Đảo mạnh - nhân hệ số
-    const antiLossWeight = 3.5 + (consecutiveLosses - 3) * 1.5;
-    if (antiLossDirection === 1) {
-      scoreT += antiLossWeight * learningData[type].modelWeights.antiLoss;
-      scoreX *= 0.3; // Giảm mạnh phe đối diện
+  if (wrong >= 3 && lastDir !== null) {
+    // Đảo chiều so với lần dự đoán trước (không phải follow result)
+    if (lastDir === 1) {
+      scoreX += 3.5;
+      scoreT *= 0.4;
     } else {
-      scoreX += antiLossWeight * learningData[type].modelWeights.antiLoss;
-      scoreT *= 0.3;
+      scoreT += 3.5;
+      scoreX *= 0.4;
     }
-
-    factors.unshift('🔄 ĐẢO SAU ' + consecutiveLosses + ' THUA');
-    factors.push('AntiLoss: ' + (antiLossDirection === 1 ? 'T' : 'X'));
-    learningData[type].antiLossMode = true;
-    learningData[type].antiLossCount = (learningData[type].antiLossCount || 0) + 1;
-  } else if (consecutiveLosses >= 2) {
-    // Cảnh báo - nghiêng nhẹ
+    factors.unshift('Đảo sau ' + wrong + ' sai');
+  } else if (wrong >= 2 && lastDir !== null) {
+    // Nghiêng nhẹ về phía ngược
     if (lastDir === 1) scoreX += 1.2;
     else scoreT += 1.2;
-    factors.push('Cảnh báo thua ' + consecutiveLosses);
-    learningData[type].antiLossMode = false;
-  } else {
-    learningData[type].antiLossMode = false;
   }
 
-  // ==================== TREND REVERSAL ADJUSTMENT ====================
-  if (trendDirection === 'up' && recentTrend > 0.7) {
-    scoreX += 1.1;
-    factors.push('Đảo trend↑');
-  } else if (trendDirection === 'down' && recentTrend < 0.3) {
-    scoreT += 1.1;
-    factors.push('Đảo trend↓');
-  }
-
-  // ==================== BAYESIAN ADJUSTMENT ====================
-  if (bayesianPrior < 0.4) {
-    // Nếu đang thua nhiều, giảm confidence
-    // Nhưng không thay đổi dự đoán
-  }
-
-  // ==================== FINAL DECISION ====================
+  // ===================== FINAL =====================
   let finalPred = scoreT >= scoreX ? 1 : 0;
 
-  // Nếu anti-loss active, ép theo hướng đảo
-  if (antiLossActive && antiLossDirection !== null) {
-    finalPred = antiLossDirection;
-  }
+  // Confidence
+  const total = scoreT + scoreX || 1;
+  const dominance = Math.abs(scoreT - scoreX) / total;
+  let conf = 56 + dominance * 28;
 
-  // ==================== CONFIDENCE CALCULATION ====================
-  const totalScore = scoreT + scoreX || 1;
-  const dominance = Math.abs(scoreT - scoreX) / totalScore;
-  let confidence = 56 + dominance * 30;
-
-  // Điều chỉnh theo model agreement
-  const contributingModels = modelContributions.filter(m => m.weight > 0);
-  const agreeingModels = contributingModels.filter(m => m.pred === finalPred);
-  const agreementRatio = contributingModels.length > 0 ?
-    agreeingModels.length / contributingModels.length : 0.5;
-
-  confidence += agreementRatio * 8;
-
-  // Anti-loss adjustment
-  if (antiLossActive) {
-    confidence += 5;
-  }
-
-  // Bayesian prior adjustment
-  confidence += (bayesianPrior - 0.5) * 10;
+  // Bonus nếu Markov đồng thuận với final
+  if (m2 && m2.pred === finalPred && m2.strength >= 4) conf += 5;
+  if (m3 && m3.pred === finalPred && m3.strength >= 3) conf += 6;
 
   // Penalty khi đang thua
-  if (consecutiveLosses >= 2) confidence -= 3;
-  if (consecutiveLosses >= 4) confidence -= 4;
-  if (consecutiveLosses >= 6) confidence -= 5;
+  if (wrong >= 2) conf -= 4;
+  if (wrong >= 4) conf -= 4;
 
-  confidence = Math.max(53, Math.min(88, Math.round(confidence)));
+  conf = Math.max(53, Math.min(87, Math.round(conf)));
 
   // Lưu direction để lần sau anti-loss
   learningData[type].lastPredDirection = finalPred;
-  learningData[type].lastPatterns = factors.slice(0, 8);
-
-  // Lưu pattern history
-  learningData[type].patternHistory.push({
-    phien: data[0].Phien + 1,
-    patterns: factors.slice(0, 8),
-    prediction: finalPred,
-    confidence: confidence,
-    timestamp: new Date().toISOString(),
-    antiLossActive: antiLossActive
-  });
-  if (learningData[type].patternHistory.length > 100) {
-    learningData[type].patternHistory = learningData[type].patternHistory.slice(-100);
-  }
-
-  // ==================== NEURAL WEIGHT ADJUSTMENT ====================
-  // Tự động điều chỉnh trọng số dựa trên hiệu suất
-  const recentAcc = learningData[type].recentAccuracy.slice(-15);
-  if (recentAcc.length >= 10) {
-    const recentAccRate = recentAcc.filter(a => a === 1).length / recentAcc.length;
-    if (recentAccRate < 0.35) {
-      // Giảm trọng số Markov, tăng anti-loss
-      learningData[type].modelWeights.markov1 *= 0.95;
-      learningData[type].modelWeights.markov2 *= 0.95;
-      learningData[type].modelWeights.markov3 *= 0.95;
-      learningData[type].modelWeights.antiLoss *= 1.1;
-    } else if (recentAccRate > 0.65) {
-      // Tăng trọng số Markov
-      learningData[type].modelWeights.markov1 = Math.min(1.3, learningData[type].modelWeights.markov1 * 1.05);
-      learningData[type].modelWeights.markov2 = Math.min(1.3, learningData[type].modelWeights.markov2 * 1.05);
-      learningData[type].modelWeights.markov3 = Math.min(1.3, learningData[type].modelWeights.markov3 * 1.05);
-    }
-  }
-
-  saveL();
 
   return {
     prediction: finalPred === 1 ? 'Tài' : 'Xỉu',
-    confidence: confidence,
-    factors: factors.slice(0, 6),
-    agree: (scoreT > scoreX ? 'T' : 'X') + '(' + Math.round(dominance * 100) + '%)',
-    antiLossActive: antiLossActive,
-    consecutiveLosses: consecutiveLosses,
-    modelStats: {
-      markov1: m1 ? Math.round(m1.pT * 100) + '%' : '-',
-      markov2: m2 ? Math.round(m2.pT * 100) + '%' : '-',
-      markov3: m3 ? Math.round(m3.pT * 100) + '%' : '-',
-      markov4: m4 ? Math.round(m4.pT * 100) + '%' : '-',
-      pattern: pm ? Math.round(pm.pT * 100) + '%' : '-',
-      diceAvg: avgDice.toFixed(1),
-      balance10: Math.round(balance10 * 100) + '%',
-      balance20: Math.round(balance20 * 100) + '%'
-    }
+    confidence: conf,
+    factors: factors.slice(0, 5),
+    agree: (scoreT > scoreX ? 'T' : 'X') + '(' + Math.round(dominance * 100) + '%)'
   };
 }
 
@@ -525,7 +274,6 @@ function analyze(data, type) {
 function hasPred(type, phien) {
   return predictionHistory[type].some(r => r.Phien_hien_tai === String(phien));
 }
-
 function getExist(type, phien) {
   return predictionHistory[type].find(r => r.Phien_hien_tai === String(phien)) || null;
 }
@@ -534,13 +282,8 @@ function record(type, phien, pred, conf, factors) {
   const p = String(phien);
   if (learningData[type].predictions.some(r => r.phien === p)) return;
   learningData[type].predictions.unshift({
-    phien: p,
-    prediction: pred,
-    confidence: conf,
-    patterns: factors,
-    timestamp: new Date().toISOString(),
-    verified: false,
-    antiLossActive: learningData[type].antiLossMode || false
+    phien: p, prediction: pred, confidence: conf, patterns: factors,
+    timestamp: new Date().toISOString(), verified: false
   });
   learningData[type].totalPredictions++;
   if (learningData[type].predictions.length > 500) {
@@ -563,57 +306,26 @@ async function verify(type, data) {
       learningData[type].correctPredictions++;
       learningData[type].streakAnalysis.wins++;
       learningData[type].streakAnalysis.currentStreak =
-        learningData[type].streakAnalysis.currentStreak >= 0 ?
-        learningData[type].streakAnalysis.currentStreak + 1 : 1;
+        learningData[type].streakAnalysis.currentStreak >= 0
+          ? learningData[type].streakAnalysis.currentStreak + 1 : 1;
       if (learningData[type].streakAnalysis.currentStreak > learningData[type].streakAnalysis.bestStreak) {
         learningData[type].streakAnalysis.bestStreak = learningData[type].streakAnalysis.currentStreak;
       }
       learningData[type].recentWrongStreak = 0;
-      learningData[type].consecutiveLosses = 0;
-      learningData[type].antiLossMode = false;
-
-      // Thống kê anti-loss
-      if (pred.antiLossActive) {
-        learningData[type].predictionStats.correctAfterAntiLoss++;
-        learningData[type].predictionStats.totalAfterAntiLoss++;
-      } else {
-        learningData[type].predictionStats.correctNormal++;
-        learningData[type].predictionStats.totalNormal++;
-      }
     } else {
       learningData[type].streakAnalysis.losses++;
       learningData[type].streakAnalysis.currentStreak =
-        learningData[type].streakAnalysis.currentStreak <= 0 ?
-        learningData[type].streakAnalysis.currentStreak - 1 : -1;
+        learningData[type].streakAnalysis.currentStreak <= 0
+          ? learningData[type].streakAnalysis.currentStreak - 1 : -1;
       if (learningData[type].streakAnalysis.currentStreak < learningData[type].streakAnalysis.worstStreak) {
         learningData[type].streakAnalysis.worstStreak = learningData[type].streakAnalysis.currentStreak;
       }
       learningData[type].recentWrongStreak = (learningData[type].recentWrongStreak || 0) + 1;
-      learningData[type].consecutiveLosses = (learningData[type].consecutiveLosses || 0) + 1;
-
-      // Thống kê anti-loss
-      if (pred.antiLossActive) {
-        learningData[type].predictionStats.totalAfterAntiLoss++;
-      } else {
-        learningData[type].predictionStats.totalNormal++;
-      }
     }
-
     learningData[type].recentAccuracy.push(pred.isCorrect ? 1 : 0);
-    if (learningData[type].recentAccuracy.length > 50) learningData[type].recentAccuracy.shift();
-    learningData[type].lastVerified = {
-      phien: pred.phien,
-      prediction: pred.prediction,
-      actual: pred.actual,
-      isCorrect: pred.isCorrect,
-      timestamp: new Date().toISOString()
-    };
+    if (learningData[type].recentAccuracy.length > 40) learningData[type].recentAccuracy.shift();
     up = true;
   }
-
-  // Cập nhật antiLossMode dựa trên consecutiveLosses
-  learningData[type].antiLossMode = (learningData[type].consecutiveLosses || 0) >= 3;
-
   if (up) saveL();
 }
 
@@ -662,10 +374,7 @@ async function updateStatus(type) {
 
 async function autoRun() {
   try {
-    for (const [type, fn] of [
-        ['hu', fetchHu],
-        ['md5', fetchMd5]
-      ]) {
+    for (const [type, fn] of [['hu', fetchHu], ['md5', fetchMd5]]) {
       const data = await fn();
       if (!data?.length) continue;
       const next = data[0].Phien + 1;
@@ -675,9 +384,7 @@ async function autoRun() {
         saveToHist(type, next, r.prediction, r.confidence, data[0]);
         record(type, next, r.prediction, r.confidence, r.factors);
         lastProcessed[type] = next;
-        const antiMsg = r.antiLossActive ? ' 🔄 ANTI-LOSS' : '';
-        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ': ' + r.prediction +
-          ' (' + r.confidence + '%)' + antiMsg);
+        console.log('[Auto] ' + type.toUpperCase() + ' #' + next + ': ' + r.prediction + ' (' + r.confidence + '%)');
         saveH();
         saveL();
       }
@@ -697,19 +404,10 @@ async function handle(type, fn, req, res) {
     if (hasPred(type, next)) {
       const e = getExist(type, next);
       return res.json({
-        Phien: e.Phien,
-        Xuc_xac_1: e.Xuc_xac_1,
-        Xuc_xac_2: e.Xuc_xac_2,
-        Xuc_xac_3: e.Xuc_xac_3,
-        Tong: e.Tong,
-        Ket_qua: e.Ket_qua,
-        Do_tin_cay: e.Do_tin_cay,
-        Phien_hien_tai: e.Phien_hien_tai,
-        Du_doan: e.Du_doan,
-        ket_qua_du_doan: e.ket_qua_du_doan || '',
-        factors: [],
-        id: '@phamkhoi',
-        cached: true
+        Phien: e.Phien, Xuc_xac_1: e.Xuc_xac_1, Xuc_xac_2: e.Xuc_xac_2, Xuc_xac_3: e.Xuc_xac_3,
+        Tong: e.Tong, Ket_qua: e.Ket_qua, Do_tin_cay: e.Do_tin_cay,
+        Phien_hien_tai: e.Phien_hien_tai, Du_doan: e.Du_doan,
+        ket_qua_du_doan: e.ket_qua_du_doan || '', factors: [], id: '@phamkhoi', cached: true
       });
     }
 
@@ -719,88 +417,49 @@ async function handle(type, fn, req, res) {
     lastProcessed[type] = next;
     saveH();
     setTimeout(() => updateStatus(type), 2000);
-
     res.json({
-      Phien: rec.Phien,
-      Xuc_xac_1: rec.Xuc_xac_1,
-      Xuc_xac_2: rec.Xuc_xac_2,
-      Xuc_xac_3: rec.Xuc_xac_3,
-      Tong: rec.Tong,
-      Ket_qua: rec.Ket_qua,
-      Do_tin_cay: rec.Do_tin_cay,
-      Phien_hien_tai: rec.Phien_hien_tai,
-      Du_doan: rec.Du_doan,
-      ket_qua_du_doan: '',
-      factors: r.factors,
-      agree: r.agree,
-      antiLossActive: r.antiLossActive,
-      consecutiveLosses: r.consecutiveLosses,
-      modelStats: r.modelStats,
-      id: '@phamkhoi',
-      cached: false
+      Phien: rec.Phien, Xuc_xac_1: rec.Xuc_xac_1, Xuc_xac_2: rec.Xuc_xac_2, Xuc_xac_3: rec.Xuc_xac_3,
+      Tong: rec.Tong, Ket_qua: rec.Ket_qua, Do_tin_cay: rec.Do_tin_cay,
+      Phien_hien_tai: rec.Phien_hien_tai, Du_doan: rec.Du_doan,
+      ket_qua_du_doan: '', factors: r.factors, agree: r.agree, id: '@phamkhoi', cached: false
     });
   } catch (e) {
     res.status(500).json({ error: 'Lỗi server' });
   }
 }
 
-// ==================== API ROUTES ====================
 app.get('/api/hu', (req, res) => handle('hu', fetchHu, req, res));
 app.get('/api/md5', (req, res) => handle('md5', fetchMd5, req, res));
-
 app.get('/api/hu/lichsu', async (req, res) => {
   await updateStatus('hu');
   res.json({ type: 'Hũ', history: predictionHistory.hu, total: predictionHistory.hu.length });
 });
-
 app.get('/api/md5/lichsu', async (req, res) => {
   await updateStatus('md5');
   res.json({ type: 'MD5', history: predictionHistory.md5, total: predictionHistory.md5.length });
 });
-
 app.get('/api/hu/learning', (req, res) => {
   const s = learningData.hu;
   const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
   res.json({
-    type: 'Hũ',
-    totalPredictions: s.totalPredictions,
-    correctPredictions: s.correctPredictions,
-    overallAccuracy: acc + '%',
-    streakAnalysis: s.streakAnalysis,
-    recentWrongStreak: s.recentWrongStreak || 0,
-    consecutiveLosses: s.consecutiveLosses || 0,
-    antiLossMode: s.antiLossMode || false,
-    antiLossCount: s.antiLossCount || 0,
-    modelWeights: s.modelWeights,
-    predictionStats: s.predictionStats
+    type: 'Hũ', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
+    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0
   });
 });
-
 app.get('/api/md5/learning', (req, res) => {
   const s = learningData.md5;
   const acc = s.totalPredictions ? ((s.correctPredictions / s.totalPredictions) * 100).toFixed(2) : 0;
   res.json({
-    type: 'MD5',
-    totalPredictions: s.totalPredictions,
-    correctPredictions: s.correctPredictions,
-    overallAccuracy: acc + '%',
-    streakAnalysis: s.streakAnalysis,
-    recentWrongStreak: s.recentWrongStreak || 0,
-    consecutiveLosses: s.consecutiveLosses || 0,
-    antiLossMode: s.antiLossMode || false,
-    antiLossCount: s.antiLossCount || 0,
-    modelWeights: s.modelWeights,
-    predictionStats: s.predictionStats
+    type: 'MD5', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
+    overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0
   });
 });
-
 app.get('/api/reset-learning', (req, res) => {
   learningData = { hu: emptyL(), md5: emptyL() };
   saveL();
   res.json({ message: 'Reset OK' });
 });
 
-// ==================== FRONTEND ====================
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>
@@ -808,9 +467,9 @@ app.get('/', (req, res) => {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>Phạm Khôi V3 - Anti-Loss</title>
+<title>Phạm Khôi</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <style>
 *{font-family:Inter,system-ui,sans-serif;box-sizing:border-box;margin:0;padding:0}
 body{background:#09090b;color:#fafafa;min-height:100vh}
@@ -818,14 +477,10 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
 .tai{color:#4ade80}.xiu{color:#fb7185}
 .gt{box-shadow:0 0 24px -6px rgba(74,222,128,.25)}
 .gx{box-shadow:0 0 24px -6px rgba(251,113,133,.25)}
-.anti{box-shadow:0 0 24px -6px rgba(251,191,36,.35);border:1px solid rgba(251,191,36,.3)}
 .dot{width:6px;height:6px;border-radius:50%;animation:b 1.5s infinite}
 @keyframes b{0%,100%{opacity:1}50%{opacity:.3}}
 .chip{font-size:9px;padding:2px 6px;border-radius:99px;background:rgba(255,255,255,.05);color:rgba(255,255,255,.4)}
-.chip-anti{font-size:9px;padding:2px 6px;border-radius:99px;background:rgba(251,191,36,.15);color:#fbbf24}
 ::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:rgba(255,255,255,.08);border-radius:3px}
-.anti-badge{animation:pulse 1.5s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
 </style>
 </head>
 <body class="px-3 py-4 max-w-md mx-auto">
@@ -833,8 +488,8 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
   <div class="flex items-center gap-2">
     <div class="w-8 h-8 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center text-xs font-black text-black">PK</div>
     <div>
-      <div class="font-bold text-sm leading-none">Phạm Khôi V3</div>
-      <div class="text-[9px] text-white/25 mt-0.5">Anti-Loss Engine</div>
+      <div class="font-bold text-sm leading-none">Phạm Khôi</div>
+      <div class="text-[9px] text-white/25 mt-0.5">Markov Engine</div>
     </div>
   </div>
   <div class="flex items-center gap-2">
@@ -846,7 +501,7 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
 <div class="space-y-2.5 mb-4">
   <div id="c-hu" class="card p-3.5">
     <div class="flex items-center justify-between mb-2">
-      <div class="flex items-center gap-1.5"><span class="dot bg-emerald-400"></span><span class="text-[11px] font-semibold text-white/55">Hũ</span><span id="hu-anti-badge" class="hidden anti-badge text-[8px] px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-400 font-bold">🔄 ANTI-LOSS</span></div>
+      <div class="flex items-center gap-1.5"><span class="dot bg-emerald-400"></span><span class="text-[11px] font-semibold text-white/55">Hũ</span></div>
       <span id="hu-p" class="text-[9px] text-white/18 font-mono">#—</span>
     </div>
     <div class="text-center py-1">
@@ -861,13 +516,13 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
     <div class="grid grid-cols-3 gap-1 pt-1.5 border-t border-white/5 text-center text-[9px]">
       <div><div class="text-white/18">Đúng</div><div id="hu-a" class="font-bold text-emerald-400">—</div></div>
       <div><div class="text-white/18">Chuỗi</div><div id="hu-s" class="font-bold">—</div></div>
-      <div><div class="text-white/18">Thua LT</div><div id="hu-cl" class="font-bold text-rose-400">—</div></div>
+      <div><div class="text-white/18">Phiên</div><div id="hu-n" class="font-bold text-amber-400/65">#—</div></div>
     </div>
   </div>
 
   <div id="c-md5" class="card p-3.5">
     <div class="flex items-center justify-between mb-2">
-      <div class="flex items-center gap-1.5"><span class="dot bg-violet-400"></span><span class="text-[11px] font-semibold text-white/55">MD5</span><span id="md5-anti-badge" class="hidden anti-badge text-[8px] px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-400 font-bold">🔄 ANTI-LOSS</span></div>
+      <div class="flex items-center gap-1.5"><span class="dot bg-violet-400"></span><span class="text-[11px] font-semibold text-white/55">MD5</span></div>
       <span id="md5-p" class="text-[9px] text-white/18 font-mono">#—</span>
     </div>
     <div class="text-center py-1">
@@ -882,7 +537,7 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
     <div class="grid grid-cols-3 gap-1 pt-1.5 border-t border-white/5 text-center text-[9px]">
       <div><div class="text-white/18">Đúng</div><div id="md5-a" class="font-bold text-emerald-400">—</div></div>
       <div><div class="text-white/18">Chuỗi</div><div id="md5-s" class="font-bold">—</div></div>
-      <div><div class="text-white/18">Thua LT</div><div id="md5-cl" class="font-bold text-rose-400">—</div></div>
+      <div><div class="text-white/18">Phiên</div><div id="md5-n" class="font-bold text-amber-400/65">#—</div></div>
     </div>
   </div>
 </div>
@@ -909,31 +564,27 @@ body{background:#09090b;color:#fafafa;min-height:100vh}
   </div>
 </div>
 
-<div class="text-center text-[9px] text-white/10 pb-3">Phạm Khôi V3 • Anti-Loss Engine</div>
+<div class="text-center text-[9px] text-white/10 pb-3">Phạm Khôi • Markov Engine</div>
 
 <script>
 const $=id=>document.getElementById(id);
 const tick=()=>$('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour12:false});
 setInterval(tick,1000);tick();
 const pc=p=>p==='Tài'?'tai':p==='Xỉu'?'xiu':'';
-const gc=(p,anti)=>anti?'anti':(p==='Tài'?'gt':p==='Xỉu'?'gx':'');
+const gc=p=>p==='Tài'?'gt':p==='Xỉu'?'gx':'';
 
 async function side(s){
   try{
     const r=await fetch('/api/'+s);const d=await r.json();if(d.error)return;
     $(s+'-p').textContent='#'+d.Phien;
+    $(s+'-n').textContent='#'+d.Phien_hien_tai;
     $(s+'-d').textContent=d.Du_doan;
     $(s+'-d').className='text-3xl font-extrabold tracking-tight '+pc(d.Du_doan);
     $(s+'-c').textContent=d.Do_tin_cay;
     $(s+'-x').textContent=d.Xuc_xac_1+' '+d.Xuc_xac_2+' '+d.Xuc_xac_3;
     $(s+'-t').textContent=d.Tong+' · '+d.Ket_qua;
-    $('c-'+s).className='card p-3.5 '+gc(d.Du_doan,d.antiLossActive);
-    $(s+'-f').innerHTML=(d.factors||[]).slice(0,5).map(f=>{
-      const isAnti=f.includes('ĐẢO')||f.includes('AntiLoss');
-      return '<span class="'+(isAnti?'chip-anti':'chip')+'">'+f+'</span>';
-    }).join('');
-    const badge=$(s+'-anti-badge');
-    if(d.antiLossActive){badge.classList.remove('hidden');}else{badge.classList.add('hidden');}
+    $('c-'+s).className='card p-3.5 '+gc(d.Du_doan);
+    $(s+'-f').innerHTML=(d.factors||[]).slice(0,4).map(f=>'<span class="chip">'+f+'</span>').join('');
   }catch(e){}
 }
 async function hist(s){
@@ -952,12 +603,9 @@ async function learn(s){
   try{
     const r=await fetch('/api/'+s+'/learning');const d=await r.json();
     const st=d.streakAnalysis||{};
-    const antiInfo=d.antiLossMode?'<br><span class="text-amber-400">🔄 ANTI-LOSS ACTIVE</span>':'';
-    const lossInfo=d.consecutiveLosses>0?'<br><span class="text-rose-400">Thua liên tục: '+d.consecutiveLosses+'</span>':'';
-    $(s+'-l').innerHTML='Tổng <b class="text-white/55">'+d.totalPredictions+'</b><br>Đúng <b class="text-emerald-400">'+d.correctPredictions+'</b> · <b class="text-amber-400">'+d.overallAccuracy+'</b><br>Chuỗi <b class="text-white/55">'+(st.currentStreak||0)+'</b>'+lossInfo+antiInfo;
+    $(s+'-l').innerHTML='Tổng <b class="text-white/55">'+d.totalPredictions+'</b><br>Đúng <b class="text-emerald-400">'+d.correctPredictions+'</b> · <b class="text-amber-400">'+d.overallAccuracy+'</b><br>Chuỗi <b class="text-white/55">'+(st.currentStreak||0)+'</b>'+(d.recentWrongStreak?'<br><span class="text-rose-400">Sai liên tục '+d.recentWrongStreak+'</span>':'');
     $(s+'-a').textContent=d.overallAccuracy;
     $(s+'-s').textContent=((st.currentStreak||0)>=0?'+':'')+(st.currentStreak||0);
-    $(s+'-cl').textContent=d.consecutiveLosses||0;
   }catch(e){}
 }
 async function go(){await Promise.all([side('hu'),side('md5'),hist('hu'),hist('md5'),learn('hu'),learn('md5')])}
@@ -967,19 +615,16 @@ go();setInterval(go,12000);
 </html>`);
 });
 
-// ==================== INIT ====================
 loadL();
 loadH();
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log('');
-  console.log('══════════════════════════════════════════════');
-  console.log('  PHẠM KHÔI V3 • Anti-Loss Markov Engine');
+  console.log('══════════════════════════════════════');
+  console.log('  PHẠM KHÔI • Markov Engine');
   console.log('  http://0.0.0.0:' + PORT);
-  console.log('  🔄 Đảo chiều sau 3 phiên thua liên tục');
-  console.log('  📊 Markov bậc 1-4 + Pattern Matching');
-  console.log('  🎯 Neural Weight Adjustment tự động');
-  console.log('══════════════════════════════════════════════');
+  console.log('  Không bám KQ cũ • Đảo khi thua');
+  console.log('══════════════════════════════════════');
   setTimeout(autoRun, 2000);
   setInterval(autoRun, AUTO_INTERVAL);
 });
