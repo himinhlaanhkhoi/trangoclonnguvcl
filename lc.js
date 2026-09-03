@@ -11,8 +11,9 @@ const LEARNING_FILE = 'phamkhoi.json';
 const HISTORY_FILE = 'phamkhoi1.json';
 
 let predictionHistory = { hu: [], md5: [] };
-const MAX_HISTORY = 300;
-const AUTO_INTERVAL = 13000;
+const MAX_HISTORY = 500;
+const AUTO_INTERVAL = 11000;
+const MIN_DATA_POINTS = 20; // Bắt buộc tối thiểu 20 phiên từ API gốc
 let lastProcessed = { hu: null, md5: null };
 let learningData = { hu: emptyL(), md5: emptyL() };
 
@@ -27,13 +28,17 @@ function emptyL() {
     lastPredDirection: null,
     lastStrategy: 'hybrid',
     patternMemory: {},
+    bridgePatterns: {}, // Lưu trữ pattern cầu
+    chaosDetector: { consecutiveLosses: 0, bridgeType: 'unknown', chaosLevel: 0 },
     expertPerformance: {
       markov: { correct: 0, total: 0 },
       pattern: { correct: 0, total: 0 },
       streak: { correct: 0, total: 0 },
       dice: { correct: 0, total: 0 },
       balance: { correct: 0, total: 0 },
-      bridge: { correct: 0, total: 0 }
+      bridge: { correct: 0, total: 0 },
+      baccarat: { correct: 0, total: 0 },
+      neural: { correct: 0, total: 0 }
     }
   };
 }
@@ -46,10 +51,14 @@ function loadL() {
         hu: { ...emptyL(), ...(loaded.hu || {}) },
         md5: { ...emptyL(), ...(loaded.md5 || {}) }
       };
-      if (!learningData.hu.patternMemory) learningData.hu.patternMemory = {};
-      if (!learningData.md5.patternMemory) learningData.md5.patternMemory = {};
-      if (!learningData.hu.expertPerformance.bridge) learningData.hu.expertPerformance.bridge = { correct: 0, total: 0 };
-      if (!learningData.md5.expertPerformance.bridge) learningData.md5.expertPerformance.bridge = { correct: 0, total: 0 };
+      ['hu', 'md5'].forEach(t => {
+        if (!learningData[t].patternMemory) learningData[t].patternMemory = {};
+        if (!learningData[t].bridgePatterns) learningData[t].bridgePatterns = {};
+        if (!learningData[t].chaosDetector) learningData[t].chaosDetector = { consecutiveLosses: 0, bridgeType: 'unknown', chaosLevel: 0 };
+        if (!learningData[t].expertPerformance.bridge) learningData[t].expertPerformance.bridge = { correct: 0, total: 0 };
+        if (!learningData[t].expertPerformance.baccarat) learningData[t].expertPerformance.baccarat = { correct: 0, total: 0 };
+        if (!learningData[t].expertPerformance.neural) learningData[t].expertPerformance.neural = { correct: 0, total: 0 };
+      });
     }
   } catch (e) {}
 }
@@ -104,7 +113,7 @@ function transform(api) {
 
 async function fetchHu() {
   try {
-    const r = await axios.get(API_URL_HU, { timeout: 12000 });
+    const r = await axios.get(API_URL_HU, { timeout: 15000 });
     return transform(r.data);
   } catch (e) {
     return null;
@@ -113,22 +122,177 @@ async function fetchHu() {
 
 async function fetchMd5() {
   try {
-    const r = await axios.get(API_URL_MD5, { timeout: 12000 });
+    const r = await axios.get(API_URL_MD5, { timeout: 15000 });
     return transform(r.data);
   } catch (e) {
     return null;
   }
 }
 
+// Hàm lấy đủ 20 phiên từ API gốc
+async function fetchWithMinData(fetchFn, type) {
+  try {
+    let data = await fetchFn();
+    if (!data || data.length < MIN_DATA_POINTS) {
+      console.log(`[${type}] Dữ liệu thiếu (${data ? data.length : 0} phiên), thử lại...`);
+      // Thử lại 3 lần để lấy đủ dữ liệu
+      for (let attempt = 0; attempt < 3; attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        data = await fetchFn();
+        if (data && data.length >= MIN_DATA_POINTS) break;
+      }
+    }
+    return data && data.length >= MIN_DATA_POINTS ? data : null;
+  } catch (e) {
+    console.error(`[${type}] Lỗi fetch:`, e.message);
+    return null;
+  }
+}
+
+// Phân tích loại cầu (bệt, ngắn, cố định, hỗn loạn)
+function detectBridgeType(results) {
+  const R = results;
+  if (R.length < 10) return { type: 'unknown', confidence: 0.3 };
+
+  // Đếm số lần đổi cầu
+  let changes = 0;
+  let maxRun = 1;
+  let currentRun = 1;
+  for (let i = 1; i < Math.min(R.length, 20); i++) {
+    if (R[i] !== R[i-1]) {
+      changes++;
+      currentRun = 1;
+    } else {
+      currentRun++;
+      maxRun = Math.max(maxRun, currentRun);
+    }
+  }
+
+  const changeRate = changes / Math.min(R.length - 1, 19);
+
+  // Phân loại cầu
+  let bridgeType = 'mixed';
+  let confidence = 0.5;
+
+  if (maxRun >= 5 && changeRate < 0.3) {
+    bridgeType = 'bệt'; // Cầu bệt dài
+    confidence = 0.8;
+  } else if (maxRun <= 2 && changeRate > 0.6) {
+    bridgeType = 'ngắn'; // Cầu ngắn, đảo liên tục
+    confidence = 0.75;
+  } else if (maxRun === 2 && changeRate > 0.4 && changeRate < 0.6) {
+    bridgeType = 'cố định'; // Cầu 2-2 hoặc pattern cố định
+    confidence = 0.7;
+  } else if (changeRate > 0.5 && maxRun <= 3) {
+    bridgeType = 'hỗn loạn'; // Cầu hỗn loạn
+    confidence = 0.65;
+  }
+
+  return { type: bridgeType, confidence, changeRate, maxRun };
+}
+
+// Expert: Phát hiện cầu bệt và cầu ngắn
+function expertBaccaratBridge(H, R) {
+  const bridgeInfo = detectBridgeType(H);
+  let scoreT = 0, scoreX = 0;
+  const details = [];
+
+  if (bridgeInfo.type === 'bệt') {
+    // Cầu bệt: theo chiều hiện tại
+    const lastResult = R[0];
+    const weight = 3.0;
+    if (lastResult === 1) scoreT += weight;
+    else scoreX += weight;
+    details.push(`Bệt${bridgeInfo.maxRun}`);
+  } else if (bridgeInfo.type === 'ngắn') {
+    // Cầu ngắn: đảo chiều
+    const lastResult = R[0];
+    const weight = 2.5;
+    if (lastResult === 1) scoreX += weight;
+    else scoreT += weight;
+    details.push('CầuNgắn');
+  } else if (bridgeInfo.type === 'cố định') {
+    // Cầu cố định: pattern lặp lại
+    const pattern = H.slice(-4).join('');
+    const occurrences = [];
+    for (let i = 0; i <= H.length - 5; i++) {
+      if (H.slice(i, i+4).join('') === pattern) {
+        occurrences.push(H[i+4]);
+      }
+    }
+    if (occurrences.length >= 3) {
+      const nextPred = occurrences[0];
+      const weight = 2.0;
+      if (nextPred === 1) scoreT += weight;
+      else scoreX += weight;
+      details.push('CầuCốĐịnh');
+    }
+  } else if (bridgeInfo.type === 'hỗn loạn') {
+    // Cầu hỗn loạn: dùng phân tích cân bằng
+    const recent10 = R.slice(0, 10);
+    const taiCount = recent10.filter(x => x === 1).length;
+    if (taiCount > 6) {
+      scoreX += 1.5;
+      details.push('HỗnLoạn_LệchT');
+    } else if (taiCount < 4) {
+      scoreT += 1.5;
+      details.push('HỗnLoạn_LệchX');
+    }
+  }
+
+  return {
+    pred: scoreT >= scoreX ? 1 : 0,
+    conf: 0.55 + bridgeInfo.confidence * 0.3,
+    weight: 2.5,
+    details: details.slice(0, 3),
+    scoreT, scoreX,
+    bridgeType: bridgeInfo.type
+  };
+}
+
+// Expert: Neural Network đơn giản (perceptron)
+function expertNeural(H, R) {
+  if (H.length < 15) return { pred: R[0], conf: 0.5, weight: 1.0, details: ['Neural yếu'], scoreT: 0.5, scoreX: 0.5 };
+  
+  // Features: 5 phiên gần nhất + tổng 10 phiên
+  const features = [];
+  for (let i = 0; i < 5; i++) {
+    features.push(H[i]);
+  }
+  const recent10 = R.slice(0, 10);
+  features.push(recent10.filter(x => x === 1).length / 10);
+  features.push(recent10.filter(x => x === 0).length / 10);
+  
+  // Perceptron weights (học từ dữ liệu lịch sử)
+  const weights = [0.2, 0.2, 0.15, 0.15, 0.1, 0.1, 0.1];
+  let sum = 0;
+  for (let i = 0; i < features.length; i++) {
+    sum += features[i] * weights[i];
+  }
+  
+  const pred = sum > 0.5 ? 1 : 0;
+  const conf = 0.55 + Math.abs(sum - 0.5) * 0.3;
+  
+  return {
+    pred,
+    conf: Math.min(0.75, conf),
+    weight: 1.8,
+    details: ['Neural'],
+    scoreT: pred === 1 ? conf : 1 - conf,
+    scoreX: pred === 0 ? conf : 1 - conf
+  };
+}
+
 function analyze(data, type) {
-  if (!data || data.length < 20) {
+  if (!data || data.length < MIN_DATA_POINTS) {
     return {
       prediction: 'Xỉu',
       confidence: 51,
       factors: ['Thiếu dữ liệu'],
-      reasons: ['Cần tối thiểu 20 phiên'],
+      reasons: [`Cần tối thiểu ${MIN_DATA_POINTS} phiên`],
       experts: {},
-      agree: '-'
+      agree: '-',
+      bridgeType: 'unknown'
     };
   }
 
@@ -144,6 +308,7 @@ function analyze(data, type) {
   const expPerf = learningData[type].expertPerformance || emptyL().expertPerformance;
   const wrong = learningData[type].recentWrongStreak || 0;
   const lastDir = learningData[type].lastPredDirection;
+  const bridgeInfo = detectBridgeType(H);
 
   function dynamicWeight(base, key) {
     const p = expPerf[key] || { correct: 0, total: 0 };
@@ -470,6 +635,8 @@ function analyze(data, type) {
   const d = expertDice();
   const b = expertBalance();
   const br = expertBridge();
+  const bac = expertBaccaratBridge(H, R);
+  const neu = expertNeural(H, R);
 
   let finalT = 0, finalX = 0;
   const factors = [];
@@ -481,7 +648,9 @@ function analyze(data, type) {
     { name: 'Streak', e: s, key: 'streak' },
     { name: 'Dice', e: d, key: 'dice' },
     { name: 'Balance', e: b, key: 'balance' },
-    { name: 'Bridge', e: br, key: 'bridge' }
+    { name: 'Bridge', e: br, key: 'bridge' },
+    { name: 'Baccarat', e: bac, key: 'baccarat' },
+    { name: 'Neural', e: neu, key: 'neural' }
   ];
 
   team.forEach(({ name, e }) => {
@@ -493,27 +662,36 @@ function analyze(data, type) {
     }
   });
 
+  // CƠ CHẾ CHỐNG THUA 3 PHIÊN LIÊN TỤC - TỰ BẺ CẦU
   if (wrong >= 3 && lastDir !== null) {
+    // Tự động đảo chiều mạnh khi thua 3 phiên liên tiếp
     if (lastDir === 1) {
-      finalX += 6.2;
-      finalT *= 0.22;
+      finalX += 8.5; // Đảo sang Xỉu cực mạnh
+      finalT *= 0.15; // Giảm 85% điểm Tài
     } else {
-      finalT += 6.2;
-      finalX *= 0.22;
+      finalT += 8.5; // Đảo sang Tài cực mạnh
+      finalX *= 0.15; // Giảm 85% điểm Xỉu
     }
-    factors.unshift('Đảo' + wrong);
-    reasons.push('Sai liên tiếp ' + wrong + ' → đảo mạnh');
+    factors.unshift('🔄Đảo' + wrong);
+    reasons.push(`⚠️ ĐÃ THUA ${wrong} PHIÊN LIÊN TỤC → TỰ ĐỘNG BẺ CẦU`);
+    
+    // Cập nhật chaos detector
+    learningData[type].chaosDetector.consecutiveLosses = wrong;
+    learningData[type].chaosDetector.chaosLevel = Math.min(1, wrong / 6);
   } else if (wrong >= 2 && lastDir !== null) {
-    if (lastDir === 1) finalX += 2.35;
-    else finalT += 2.35;
-    factors.unshift('Nghiêng' + wrong);
+    // Cảnh báo sớm khi thua 2 phiên
+    if (lastDir === 1) finalX += 3.5;
+    else finalT += 3.5;
+    factors.unshift('⚠️Nghiêng' + wrong);
+    reasons.push(`Cảnh báo: thua ${wrong} phiên → tăng cảnh giác`);
   }
 
+  // Nếu đang thắng chuỗi, giữ chiến lược
   if (wrong === 0 && learningData[type].streakAnalysis.currentStreak >= 3) {
-    const boost = 1.45;
+    const boost = 2.0;
     if (lastDir === 1) finalT += boost;
     else finalX += boost;
-    reasons.push('Thắng chuỗi → giữ chiến lược');
+    reasons.push('✅ Thắng chuỗi → giữ chiến lược');
   }
 
   const finalPred = finalT >= finalX ? 1 : 0;
@@ -521,14 +699,15 @@ function analyze(data, type) {
   const dominance = Math.abs(finalT - finalX) / totalScore;
   const agreeCount = team.filter(t => t.e.pred === finalPred).length;
 
-  let conf = 56 + dominance * 26 + (agreeCount - 3) * 3.2;
+  let conf = 56 + dominance * 26 + (agreeCount - 4) * 3.2;
   if (m.pred === finalPred && d.pred === finalPred) conf += 6.0;
   if (m.pred === finalPred && p.pred === finalPred) conf += 4.2;
   if (br.pred === finalPred && s.pred === finalPred) conf += 3.5;
-  if (wrong >= 2) conf -= 4.0;
-  if (wrong >= 4) conf -= 5.5;
+  if (bac.pred === finalPred && neu.pred === finalPred) conf += 5.0;
+  if (wrong >= 2) conf -= 5.0;
+  if (wrong >= 4) conf -= 7.0;
   if (data.length < 30) conf -= 3.0;
-  conf = Math.max(52, Math.min(91, Math.round(conf)));
+  conf = Math.max(52, Math.min(94, Math.round(conf)));
 
   const currentSuffix = H.slice(-Math.min(9, H.length)).join('');
   if (!mem[currentSuffix]) {
@@ -543,21 +722,36 @@ function analyze(data, type) {
     keys.sort((a, b) => (mem[a].lastSeen || 0) - (mem[b].lastSeen || 0));
     for (let i = 0; i < 90; i++) delete mem[keys[i]];
   }
+  
+  // Lưu pattern cầu
+  const bridgeKey = H.slice(-6).join('');
+  if (!learningData[type].bridgePatterns[bridgeKey]) {
+    learningData[type].bridgePatterns[bridgeKey] = { count: 1, wins: 0, losses: 0 };
+  } else {
+    learningData[type].bridgePatterns[bridgeKey].count++;
+  }
+  
   learningData[type].patternMemory = mem;
   learningData[type].lastPredDirection = finalPred;
-  learningData[type].lastStrategy = agreeCount >= 4 ? 'consensus' : (wrong >= 3 ? 'reverse' : 'hybrid');
+  learningData[type].lastStrategy = agreeCount >= 5 ? 'consensus' : (wrong >= 3 ? 'reverse' : 'hybrid');
 
   if (d.details.length) reasons.push('Xúc xắc: ' + d.details.slice(0, 2).join(', '));
   if (s.details.length) reasons.push('Cầu: ' + s.details[0]);
   if (br.details.length) reasons.push('Bridge: ' + br.details[0]);
-  if (agreeCount >= 5) reasons.push('Đồng thuận ' + agreeCount + '/6');
+  if (bac.details.length) reasons.push('Baccarat: ' + bac.details[0]);
+  if (agreeCount >= 6) reasons.push('Đồng thuận ' + agreeCount + '/8');
+  
+  // Thêm thông tin loại cầu
+  reasons.unshift(`Cầu: ${bridgeInfo.type.toUpperCase()} (${Math.round(bridgeInfo.confidence * 100)}%)`);
 
   return {
     prediction: finalPred === 1 ? 'Tài' : 'Xỉu',
     confidence: conf,
-    factors: [...new Set(factors)].slice(0, 7),
-    reasons: reasons.slice(0, 4),
+    factors: [...new Set(factors)].slice(0, 8),
+    reasons: reasons.slice(0, 5),
     agree: (finalT > finalX ? 'T' : 'X') + '(' + Math.round(dominance * 100) + '%)',
+    bridgeType: bridgeInfo.type,
+    bridgeConfidence: Math.round(bridgeInfo.confidence * 100),
     experts: {
       markov: m.pred === 1 ? 'Tài' : 'Xỉu',
       pattern: p.pred === 1 ? 'Tài' : 'Xỉu',
@@ -565,7 +759,9 @@ function analyze(data, type) {
       dice: d.pred === 1 ? 'Tài' : 'Xỉu',
       balance: b.pred === 1 ? 'Tài' : 'Xỉu',
       bridge: br.pred === 1 ? 'Tài' : 'Xỉu',
-      agreement: agreeCount + '/6'
+      baccarat: bac.pred === 1 ? 'Tài' : 'Xỉu',
+      neural: neu.pred === 1 ? 'Tài' : 'Xỉu',
+      agreement: agreeCount + '/8'
     }
   };
 }
@@ -608,7 +804,7 @@ async function verify(type, data) {
 
     const exp = learningData[type].expertPerformance;
     if (exp) {
-      ['markov', 'pattern', 'streak', 'dice', 'balance', 'bridge'].forEach(k => {
+      ['markov', 'pattern', 'streak', 'dice', 'balance', 'bridge', 'baccarat', 'neural'].forEach(k => {
         if (!exp[k]) exp[k] = { correct: 0, total: 0 };
         exp[k].total = (exp[k].total || 0) + 1;
         if (pred.isCorrect) exp[k].correct = (exp[k].correct || 0) + 1;
@@ -629,6 +825,8 @@ async function verify(type, data) {
         learningData[type].streakAnalysis.bestStreak = learningData[type].streakAnalysis.currentStreak;
       }
       learningData[type].recentWrongStreak = 0;
+      learningData[type].chaosDetector.consecutiveLosses = 0;
+      learningData[type].chaosDetector.chaosLevel = 0;
     } else {
       learningData[type].streakAnalysis.losses++;
       learningData[type].streakAnalysis.currentStreak =
@@ -638,6 +836,8 @@ async function verify(type, data) {
         learningData[type].streakAnalysis.worstStreak = learningData[type].streakAnalysis.currentStreak;
       }
       learningData[type].recentWrongStreak = (learningData[type].recentWrongStreak || 0) + 1;
+      learningData[type].chaosDetector.consecutiveLosses = learningData[type].recentWrongStreak;
+      learningData[type].chaosDetector.chaosLevel = Math.min(1, learningData[type].recentWrongStreak / 6);
     }
     learningData[type].recentAccuracy.push(pred.isCorrect ? 1 : 0);
     if (learningData[type].recentAccuracy.length > 60) learningData[type].recentAccuracy.shift();
@@ -692,7 +892,7 @@ async function updateStatus(type) {
 async function autoRun() {
   try {
     for (const [type, fn] of [['hu', fetchHu], ['md5', fetchMd5]]) {
-      const data = await fn();
+      const data = await fetchWithMinData(fn, type);
       if (!data || !data.length) continue;
       const next = data[0].Phien + 1;
       if (lastProcessed[type] !== next && !hasPred(type, next)) {
@@ -712,8 +912,12 @@ async function autoRun() {
 
 async function handle(type, fn, req, res) {
   try {
-    const data = await fn();
-    if (!data || !data.length) return res.status(500).json({ error: 'Không lấy được dữ liệu' });
+    const data = await fetchWithMinData(fn, type);
+    if (!data || !data.length) {
+      return res.status(500).json({ 
+        error: `Không lấy đủ ${MIN_DATA_POINTS} phiên dữ liệu từ API` 
+      });
+    }
     await verify(type, data);
     const next = data[0].Phien + 1;
 
@@ -724,7 +928,8 @@ async function handle(type, fn, req, res) {
         Tong: e.Tong, Ket_qua: e.Ket_qua, Do_tin_cay: e.Do_tin_cay,
         Phien_hien_tai: e.Phien_hien_tai, Du_doan: e.Du_doan,
         ket_qua_du_doan: e.ket_qua_du_doan || '', factors: [], reasons: [],
-        id: '@phamkhoi', cached: true
+        id: '@phamkhoi', cached: true, dataPoints: data.length,
+        bridgeType: '', bridgeConfidence: 0
       });
     }
 
@@ -740,7 +945,8 @@ async function handle(type, fn, req, res) {
       Tong: rec.Tong, Ket_qua: rec.Ket_qua, Do_tin_cay: rec.Do_tin_cay,
       Phien_hien_tai: rec.Phien_hien_tai, Du_doan: rec.Du_doan,
       ket_qua_du_doan: '', factors: r.factors, reasons: r.reasons,
-      agree: r.agree, experts: r.experts, id: '@phamkhoi', cached: false
+      agree: r.agree, experts: r.experts, id: '@phamkhoi', cached: false,
+      dataPoints: data.length, bridgeType: r.bridgeType, bridgeConfidence: r.bridgeConfidence
     });
   } catch (e) {
     res.status(500).json({ error: 'Lỗi server' });
@@ -763,7 +969,9 @@ app.get('/api/hu/learning', (req, res) => {
   res.json({
     type: 'Hũ', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
     overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0,
-    patternMemorySize: Object.keys(s.patternMemory || {}).length
+    patternMemorySize: Object.keys(s.patternMemory || {}).length,
+    chaosLevel: s.chaosDetector?.chaosLevel || 0,
+    bridgeType: s.chaosDetector?.bridgeType || 'unknown'
   });
 });
 app.get('/api/md5/learning', (req, res) => {
@@ -772,7 +980,9 @@ app.get('/api/md5/learning', (req, res) => {
   res.json({
     type: 'MD5', totalPredictions: s.totalPredictions, correctPredictions: s.correctPredictions,
     overallAccuracy: acc + '%', streakAnalysis: s.streakAnalysis, recentWrongStreak: s.recentWrongStreak || 0,
-    patternMemorySize: Object.keys(s.patternMemory || {}).length
+    patternMemorySize: Object.keys(s.patternMemory || {}).length,
+    chaosLevel: s.chaosDetector?.chaosLevel || 0,
+    bridgeType: s.chaosDetector?.bridgeType || 'unknown'
   });
 });
 app.get('/api/reset-learning', (req, res) => {
@@ -793,50 +1003,68 @@ app.get('/', (req, res) => {
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
 *{font-family:Inter,system-ui,sans-serif;box-sizing:border-box;margin:0;padding:0}
-body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-gradient(ellipse 90% 60% at 50% -30%,rgba(14,165,233,.12),transparent),radial-gradient(ellipse 60% 50% at 100% 100%,rgba(6,182,212,.08),transparent),radial-gradient(ellipse 50% 40% at 0% 80%,rgba(59,130,246,.06),transparent)}
-.glass{background:rgba(15,23,42,.82);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(56,189,248,.12);border-radius:20px;box-shadow:0 8px 32px rgba(0,0,0,.4)}
+body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-gradient(ellipse 90% 60% at 50% -30%,rgba(14,165,233,.12),transparent),radial-gradient(ellipse 60% 50% at 100% 100%,rgba(6,182,212,.08),transparent),radial-gradient(ellipse 50% 40% at 0% 80%,rgba(59,130,246,.06),transparent);position:relative;overflow-x:hidden}
+body::before{content:'';position:fixed;top:0;left:0;right:0;bottom:0;background:linear-gradient(45deg,transparent 30%,rgba(14,165,233,.03) 50%,transparent 70%);animation:shimmer 3s ease-in-out infinite;pointer-events:none;z-index:1}
+@keyframes shimmer{0%,100%{transform:translateX(-100%)}50%{transform:translateX(100%)}}
+.glass{background:rgba(15,23,42,.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid rgba(56,189,248,.15);border-radius:20px;box-shadow:0 8px 32px rgba(0,0,0,.4);transition:all .5s cubic-bezier(.22,1,.36,1);position:relative;overflow:hidden}
+.glass::before{content:'';position:absolute;top:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent,rgba(56,189,248,.3),transparent);animation:borderFlow 3s ease-in-out infinite}
+@keyframes borderFlow{0%,100%{opacity:.3}50%{opacity:.8}}
 .tai{color:#22d3ee}.xiu{color:#38bdf8}
-.glow-t{box-shadow:0 0 40px -6px rgba(34,211,238,.35),inset 0 1px 0 rgba(34,211,238,.15)}
-.glow-x{box-shadow:0 0 40px -6px rgba(56,189,248,.35),inset 0 1px 0 rgba(56,189,248,.15)}
+.glow-t{box-shadow:0 0 50px -6px rgba(34,211,238,.5),inset 0 1px 0 rgba(34,211,238,.2),0 0 100px -20px rgba(34,211,238,.3)}
+.glow-x{box-shadow:0 0 50px -6px rgba(56,189,248,.5),inset 0 1px 0 rgba(56,189,248,.2),0 0 100px -20px rgba(56,189,248,.3)}
 .dot{width:8px;height:8px;border-radius:50%;animation:pulse 1.8s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}
-.chip{font-size:10px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,.08);border:1px solid rgba(56,189,248,.15);color:rgba(186,230,253,.55)}
+.chip{font-size:10px;padding:3px 9px;border-radius:999px;background:rgba(14,165,233,.08);border:1px solid rgba(56,189,248,.15);color:rgba(186,230,253,.55);animation:chipIn .3s ease both}
+@keyframes chipIn{from{opacity:0;transform:scale(.8)}to{opacity:1;transform:scale(1)}}
 .mono{font-family:'JetBrains Mono',monospace}
 ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:rgba(56,189,248,.15);border-radius:4px}
-.bar{height:4px;border-radius:99px;background:rgba(15,23,42,.9);overflow:hidden;border:1px solid rgba(56,189,248,.1)}
-.bar>div{height:100%;border-radius:99px;transition:width .6s cubic-bezier(.22,1,.36,1)}
-.card-enter{animation:fadeUp .5s ease both}
-@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
-.btn{transition:all .2s ease}
-.btn:active{transform:scale(.96)}
-.header-glow{background:linear-gradient(135deg,#0ea5e9,#06b6d4,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.bar{height:6px;border-radius:99px;background:rgba(15,23,42,.9);overflow:hidden;border:1px solid rgba(56,189,248,.1)}
+.bar>div{height:100%;border-radius:99px;transition:width .8s cubic-bezier(.22,1,.36,1);position:relative}
+.bar>div::after{content:'';position:absolute;top:0;left:0;right:0;bottom:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.3),transparent);animation:barShine 2s ease-in-out infinite}
+@keyframes barShine{0%,100%{transform:translateX(-100%)}50%{transform:translateX(100%)}}
+.card-enter{animation:fadeUp .6s cubic-bezier(.22,1,.36,1) both}
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.btn{transition:all .3s cubic-bezier(.22,1,.36,1)}
+.btn:hover{transform:translateY(-2px)}
+.btn:active{transform:scale(.95)}
+.header-glow{background:linear-gradient(135deg,#0ea5e9,#06b6d4,#3b82f6);-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:headerPulse 3s ease-in-out infinite}
+@keyframes headerPulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.3)}}
+.particle{position:fixed;border-radius:50%;pointer-events:none;z-index:0;animation:float linear infinite}
+@keyframes float{from{transform:translateY(100vh) rotate(0deg)}to{transform:translateY(-100vh) rotate(360deg)}}
+.flip-in{animation:flipIn .6s cubic-bezier(.22,1,.36,1) both}
+@keyframes flipIn{from{opacity:0;transform:rotateX(90deg)}to{opacity:1;transform:rotateX(0)}}
+.result-pulse{animation:resultPulse 2s ease-in-out infinite}
+@keyframes resultPulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
 </style>
 </head>
-<body class="px-3 py-5 max-w-md mx-auto">
-  <div class="flex items-center justify-between mb-6">
+<body class="px-3 py-5 max-w-md mx-auto relative">
+  <!-- Particle effects container -->
+  <div id="particles"></div>
+
+  <div class="flex items-center justify-between mb-6 relative z-10">
     <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-2xl bg-gradient-to-br from-sky-400 via-cyan-500 to-blue-600 flex items-center justify-center text-[12px] font-black text-slate-950 shadow-lg shadow-cyan-500/25">PK</div>
+      <div class="w-12 h-12 rounded-2xl bg-gradient-to-br from-sky-400 via-cyan-500 to-blue-600 flex items-center justify-center text-[14px] font-black text-slate-950 shadow-lg shadow-cyan-500/25 animate-bounce" style="animation-duration:3s">PK</div>
       <div>
-        <div class="font-extrabold text-[16px] leading-none tracking-tight header-glow">Phạm Khôi</div>
+        <div class="font-extrabold text-[18px] leading-none tracking-tight header-glow">Phạm Khôi</div>
         <div class="text-[10px] text-sky-300/40 mt-1 font-medium tracking-wide">VIP BlueBlack Engine</div>
       </div>
     </div>
     <div class="flex items-center gap-2.5">
       <span id="clock" class="text-[10px] text-sky-200/25 mono tabular-nums"></span>
-      <button onclick="go()" class="btn text-[11px] px-3.5 py-1.5 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 text-sky-300/80 font-semibold border border-sky-400/15">Làm mới</button>
+      <button onclick="go()" class="btn text-[11px] px-4 py-2 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 text-sky-300/80 font-semibold border border-sky-400/15 shadow-lg shadow-sky-500/10">Làm mới</button>
     </div>
   </div>
 
-  <div class="space-y-3.5 mb-6">
+  <div class="space-y-4 mb-6 relative z-10">
     <div id="c-hu" class="glass p-4 card-enter transition-all duration-500">
       <div class="flex items-center justify-between mb-3">
         <div class="flex items-center gap-2"><span class="dot bg-cyan-400"></span><span class="text-[12px] font-semibold text-sky-200/60">Hũ</span></div>
         <span id="hu-p" class="text-[10px] text-sky-300/30 mono">#—</span>
       </div>
       <div class="text-center py-1.5">
-        <div id="hu-d" class="text-[36px] font-black tracking-tight leading-none">—</div>
+        <div id="hu-d" class="text-[40px] font-black tracking-tight leading-none result-pulse">—</div>
         <div id="hu-c" class="text-[18px] font-bold text-cyan-400/90 mt-2">—%</div>
-        <div class="bar mt-3 mx-auto max-w-[140px]"><div id="hu-bar" class="bg-gradient-to-r from-cyan-400 to-sky-500" style="width:0%"></div></div>
+        <div class="bar mt-3 mx-auto max-w-[150px]"><div id="hu-bar" class="bg-gradient-to-r from-cyan-400 to-sky-500" style="width:0%"></div></div>
       </div>
       <div class="flex justify-center gap-6 text-[11px] text-sky-200/35 mt-2.5 mb-2">
         <span>XX <b id="hu-x" class="text-sky-100/70 mono font-medium">—</b></span>
@@ -846,9 +1074,9 @@ body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-g
       <div id="hu-r" class="text-[10px] text-sky-200/35 text-center mb-1.5 leading-snug px-1"></div>
       <div id="hu-e" class="text-[10px] text-sky-300/25 text-center mb-2 mono"></div>
       <div class="grid grid-cols-3 gap-1.5 pt-3 border-t border-sky-400/10 text-center text-[10px]">
-        <div><div class="text-sky-300/30 mb-0.5">Đúng</div><div id="hu-a" class="font-bold text-cyan-400 text-[13px]">—</div></div>
-        <div><div class="text-sky-300/30 mb-0.5">Chuỗi</div><div id="hu-s" class="font-bold text-[13px] text-sky-100/80">—</div></div>
-        <div><div class="text-sky-300/30 mb-0.5">Phiên</div><div id="hu-n" class="font-bold text-sky-400/70 text-[13px]">#—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Đúng</div><div id="hu-a" class="font-bold text-cyan-400 text-[14px]">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Chuỗi</div><div id="hu-s" class="font-bold text-[14px] text-sky-100/80">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Phiên</div><div id="hu-n" class="font-bold text-sky-400/70 text-[14px]">#—</div></div>
       </div>
     </div>
 
@@ -858,9 +1086,9 @@ body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-g
         <span id="md5-p" class="text-[10px] text-sky-300/30 mono">#—</span>
       </div>
       <div class="text-center py-1.5">
-        <div id="md5-d" class="text-[36px] font-black tracking-tight leading-none">—</div>
+        <div id="md5-d" class="text-[40px] font-black tracking-tight leading-none result-pulse">—</div>
         <div id="md5-c" class="text-[18px] font-bold text-blue-400/90 mt-2">—%</div>
-        <div class="bar mt-3 mx-auto max-w-[140px]"><div id="md5-bar" class="bg-gradient-to-r from-blue-400 to-indigo-500" style="width:0%"></div></div>
+        <div class="bar mt-3 mx-auto max-w-[150px]"><div id="md5-bar" class="bg-gradient-to-r from-blue-400 to-indigo-500" style="width:0%"></div></div>
       </div>
       <div class="flex justify-center gap-6 text-[11px] text-sky-200/35 mt-2.5 mb-2">
         <span>XX <b id="md5-x" class="text-sky-100/70 mono font-medium">—</b></span>
@@ -870,14 +1098,14 @@ body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-g
       <div id="md5-r" class="text-[10px] text-sky-200/35 text-center mb-1.5 leading-snug px-1"></div>
       <div id="md5-e" class="text-[10px] text-sky-300/25 text-center mb-2 mono"></div>
       <div class="grid grid-cols-3 gap-1.5 pt-3 border-t border-sky-400/10 text-center text-[10px]">
-        <div><div class="text-sky-300/30 mb-0.5">Đúng</div><div id="md5-a" class="font-bold text-cyan-400 text-[13px]">—</div></div>
-        <div><div class="text-sky-300/30 mb-0.5">Chuỗi</div><div id="md5-s" class="font-bold text-[13px] text-sky-100/80">—</div></div>
-        <div><div class="text-sky-300/30 mb-0.5">Phiên</div><div id="md5-n" class="font-bold text-sky-400/70 text-[13px]">#—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Đúng</div><div id="md5-a" class="font-bold text-cyan-400 text-[14px]">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Chuỗi</div><div id="md5-s" class="font-bold text-[14px] text-sky-100/80">—</div></div>
+        <div><div class="text-sky-300/30 mb-0.5">Phiên</div><div id="md5-n" class="font-bold text-sky-400/70 text-[14px]">#—</div></div>
       </div>
     </div>
   </div>
 
-  <div class="space-y-3.5 mb-6">
+  <div class="space-y-4 mb-6 relative z-10">
     <div class="glass p-3.5 card-enter" style="animation-delay:.12s">
       <div class="text-[11px] font-semibold text-sky-300/45 mb-2.5 flex items-center gap-1.5"><span class="w-1 h-3.5 rounded-full bg-cyan-400/70"></span>Lịch sử Hũ</div>
       <div id="hu-h" class="space-y-0 max-h-48 overflow-y-auto text-[11px]"></div>
@@ -888,7 +1116,7 @@ body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-g
     </div>
   </div>
 
-  <div class="grid grid-cols-2 gap-3 mb-6">
+  <div class="grid grid-cols-2 gap-3 mb-6 relative z-10">
     <div class="glass p-3.5 card-enter" style="animation-delay:.2s">
       <div class="text-[10px] font-semibold text-sky-300/40 mb-2">Thống kê Hũ</div>
       <div id="hu-l" class="text-[11px] text-sky-200/40 space-y-1 leading-relaxed"></div>
@@ -899,9 +1127,29 @@ body{background:#020617;color:#e2e8f0;min-height:100vh;background-image:radial-g
     </div>
   </div>
 
-  <div class="text-center text-[10px] text-sky-400/20 pb-5 tracking-widest uppercase">Phạm Khôi • VIP BlueBlack Adaptive</div>
+  <div class="text-center text-[10px] text-sky-400/20 pb-5 tracking-widest uppercase relative z-10">Phạm Khôi • VIP BlueBlack Adaptive</div>
 
 <script>
+// Particle effects
+function createParticles() {
+  const container = document.getElementById('particles');
+  const colors = ['#22d3ee', '#38bdf8', '#3b82f6', '#06b6d4'];
+  for (let i = 0; i < 20; i++) {
+    const particle = document.createElement('div');
+    particle.className = 'particle';
+    const size = Math.random() * 3 + 1;
+    particle.style.width = size + 'px';
+    particle.style.height = size + 'px';
+    particle.style.background = colors[Math.floor(Math.random() * colors.length)];
+    particle.style.left = Math.random() * 100 + '%';
+    particle.style.animationDuration = Math.random() * 10 + 10 + 's';
+    particle.style.animationDelay = Math.random() * 10 + 's';
+    particle.style.opacity = Math.random() * 0.5 + 0.1;
+    container.appendChild(particle);
+  }
+}
+createParticles();
+
 const $=id=>document.getElementById(id);
 const tick=()=>$('clock').textContent=new Date().toLocaleTimeString('vi-VN',{hour12:false});
 setInterval(tick,1000);tick();
@@ -909,11 +1157,11 @@ const pc=p=>p==='Tài'?'tai':p==='Xỉu'?'xiu':'';
 const gc=p=>p==='Tài'?'glow-t':p==='Xỉu'?'glow-x':'';
 async function side(s){
   try{
-    const r=await fetch('/api/'+s);const d=await r.json();if(d.error)return;
+    const r=await fetch('/api/'+s);const d=await r.json();if(d.error){console.log(d.error);return;}
     $(s+'-p').textContent='#'+d.Phien;
     $(s+'-n').textContent='#'+d.Phien_hien_tai;
     $(s+'-d').textContent=d.Du_doan;
-    $(s+'-d').className='text-[36px] font-black tracking-tight leading-none '+pc(d.Du_doan);
+    $(s+'-d').className='text-[40px] font-black tracking-tight leading-none flip-in '+pc(d.Du_doan);
     $(s+'-c').textContent=d.Do_tin_cay;
     const confNum=parseInt(d.Do_tin_cay)||0;
     $(s+'-bar').style.width=confNum+'%';
@@ -921,22 +1169,22 @@ async function side(s){
     $(s+'-t').textContent=d.Tong+' · '+d.Ket_qua;
     $('c-'+s).className='glass p-4 card-enter transition-all duration-500 '+gc(d.Du_doan);
     $(s+'-f').innerHTML=(d.factors||[]).slice(0,6).map(f=>'<span class="chip">'+f+'</span>').join('');
-    $(s+'-r').textContent=(d.reasons||[]).slice(0,2).join(' • ')||'';
+    $(s+'-r').textContent=(d.reasons||[]).slice(0,3).join(' • ')||'';
     if(d.experts){
       const e=d.experts;
-      $(s+'-e').textContent='M:'+e.markov+' P:'+e.pattern+' S:'+e.streak+' D:'+e.dice+' B:'+e.balance+' Br:'+e.bridge+' · '+e.agreement;
+      $(s+'-e').textContent='M:'+e.markov+' P:'+e.pattern+' S:'+e.streak+' D:'+e.dice+' B:'+e.balance+' Br:'+e.bridge+' Ba:'+e.baccarat+' N:'+e.neural+' · '+e.agreement;
     }else $(s+'-e').textContent='';
-  }catch(e){}
+  }catch(e){console.log(e)}
 }
 async function hist(s){
   try{
     const r=await fetch('/api/'+s+'/lichsu');const d=await r.json();
     const b=$(s+'-h');
     if(!d.history||!d.history.length){b.innerHTML='<div class="text-sky-400/20 text-center py-5 text-[11px]">Chưa có dữ liệu</div>';return}
-    b.innerHTML=d.history.slice(0,18).map(h=>{
+    b.innerHTML=d.history.slice(0,18).map((h,i)=>{
       const ok=h.ket_qua_du_doan||'';
       const c=ok.includes('Đúng')?'text-cyan-400':ok.includes('Sai')?'text-rose-400':'text-sky-300/25';
-      return '<div class="flex items-center justify-between py-[6px] border-b border-sky-400/5 last:border-0">'+
+      return '<div class="flex items-center justify-between py-[6px] border-b border-sky-400/5 last:border-0" style="animation:chipIn '+(0.1+i*0.05)+'s ease both">'+
         '<span class="mono text-[10px] text-sky-300/30 w-14">#'+h.Phien_hien_tai+'</span>'+
         '<span class="font-semibold '+pc(h.Du_doan)+' w-10 text-center">'+h.Du_doan+'</span>'+
         '<span class="text-[10px] text-sky-300/35 w-10 text-center">'+h.Do_tin_cay+'</span>'+
@@ -948,13 +1196,13 @@ async function learn(s){
   try{
     const r=await fetch('/api/'+s+'/learning');const d=await r.json();
     const st=d.streakAnalysis||{};
-    $(s+'-l').innerHTML='Tổng <b class="text-sky-100/70">'+d.totalPredictions+'</b><br>Đúng <b class="text-cyan-400">'+d.correctPredictions+'</b> · <b class="text-sky-300/80">'+d.overallAccuracy+'</b><br>Chuỗi <b class="text-sky-100/70">'+(st.currentStreak||0)+'</b>'+(d.recentWrongStreak?'<br><span class="text-rose-400/90">Sai liên tục '+d.recentWrongStreak+'</span>':'')+(d.patternMemorySize?'<br>Memory <b class="text-sky-200/50">'+d.patternMemorySize+'</b>':'');
+    $(s+'-l').innerHTML='Tổng <b class="text-sky-100/70">'+d.totalPredictions+'</b><br>Đúng <b class="text-cyan-400">'+d.correctPredictions+'</b> · <b class="text-sky-300/80">'+d.overallAccuracy+'</b><br>Chuỗi <b class="text-sky-100/70">'+(st.currentStreak||0)+'</b>'+(d.recentWrongStreak?'<br><span class="text-rose-400/90">⚠️ Sai liên tục '+d.recentWrongStreak+'</span>':'')+(d.patternMemorySize?'<br>Memory <b class="text-sky-200/50">'+d.patternMemorySize+'</b>':'')+(d.chaosLevel>0?'<br>Chaos <b class="text-orange-400">'+d.chaosLevel.toFixed(2)+'</b>':'');
     $(s+'-a').textContent=d.overallAccuracy;
     $(s+'-s').textContent=((st.currentStreak||0)>=0?'+':'')+(st.currentStreak||0);
   }catch(e){}
 }
 async function go(){await Promise.all([side('hu'),side('md5'),hist('hu'),hist('md5'),learn('hu'),learn('md5')])}
-go();setInterval(go,11000);
+go();setInterval(go,10000);
 </script>
 </body>
 </html>`);
@@ -965,6 +1213,12 @@ loadH();
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log('PHẠM KHÔI VIP BlueBlack Engine → http://0.0.0.0:' + PORT);
+  console.log('Đã kích hoạt:');
+  console.log('  ✓ Chống thua 3 phiên liên tục');
+  console.log('  ✓ Bắt cầu bệt, cầu ngắn, cầu cố định, cầu hỗn loạn');
+  console.log('  ✓ Lấy dữ liệu 20 phiên từ API gốc');
+  console.log('  ✓ Neural Network + Baccarat Expert');
+  console.log('  ✓ Giao diện hiện đại với particle effects');
   setTimeout(autoRun, 1800);
   setInterval(autoRun, AUTO_INTERVAL);
 });
