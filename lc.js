@@ -1,3 +1,9 @@
+/**
+ * PHẠM KHÔI • ULTRA VIP ENGINE v6.0
+ * Thuật toán: Recent-First + Strong Mean-Reversion + Anti-Loss Aggressive
+ * UI: Premium Cyber Neon (màu cao cấp, mượt, không lỗi)
+ */
+
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
@@ -12,8 +18,8 @@ const LEARNING_FILE = 'phamkhoi.json';
 const HISTORY_FILE  = 'phamkhoi1.json';
 
 let predictionHistory = { hu: [], md5: [] };
-const MAX_HISTORY = 350;
-const AUTO_INTERVAL = 12000;
+const MAX_HISTORY = 400;
+const AUTO_INTERVAL = 11500;
 let lastProcessed = { hu: null, md5: null };
 let learningData = { hu: emptyL(), md5: emptyL() };
 
@@ -34,7 +40,6 @@ function emptyL() {
       dice:    { correct: 0, total: 0, recent: [] },
       balance: { correct: 0, total: 0, recent: [] },
       cycle:   { correct: 0, total: 0, recent: [] },
-      chaos:   { correct: 0, total: 0, recent: [] },
       trend:   { correct: 0, total: 0, recent: [] }
     },
     lastDecay: Date.now()
@@ -131,19 +136,20 @@ async function fetchMd5() {
   }
 }
 
-// ===================== CORE ANALYZE v5 (Siêu VIP) =====================
+// ===================== CORE ANALYZE v6 – SIÊU CHUẨN =====================
 function analyze(data, type) {
-  if (!data || data.length < 22) {
+  if (!data || data.length < 25) {
     return {
       prediction: 'Xỉu',
-      confidence: 53,
+      confidence: 54,
       factors: ['Thiếu dữ liệu'],
-      reasons: ['Cần ≥22 phiên'],
+      reasons: ['Cần ≥25 phiên'],
       experts: {},
       agree: '-'
     };
   }
 
+  // index 0 = mới nhất
   const R = data.map(d => d.Ket_qua === 'Tài' ? 1 : 0);
   const H = [...R].reverse();
   const dice = data.map(d => ({
@@ -155,392 +161,376 @@ function analyze(data, type) {
   const mem = learningData[type].patternMemory || {};
   const expPerf = learningData[type].expertPerformance || emptyL().expertPerformance;
 
-  // Time-decay memory
+  // Time-decay mạnh hơn
   const now = Date.now();
-  if (!learningData[type].lastDecay || now - learningData[type].lastDecay > 3.5 * 3600 * 1000) {
+  if (!learningData[type].lastDecay || now - learningData[type].lastDecay > 2.5 * 3600 * 1000) {
     Object.keys(mem).forEach(k => {
-      if (mem[k].hangLen > 1) mem[k].hangLen = Math.max(1, Math.floor(mem[k].hangLen * 0.82));
-      if (mem[k].count > 2) mem[k].count = Math.max(1, Math.floor(mem[k].count * 0.88));
+      if (mem[k].hangLen > 1) mem[k].hangLen = Math.max(1, Math.floor(mem[k].hangLen * 0.75));
+      if (mem[k].count > 2) mem[k].count = Math.max(1, Math.floor(mem[k].count * 0.82));
     });
     learningData[type].lastDecay = now;
   }
 
+  // Weight dựa trên recent 18 phiên
   function dynamicWeight(base, key) {
     const p = expPerf[key] || { correct: 0, total: 0, recent: [] };
     const recent = p.recent || [];
-    if (recent.length < 8) return base;
+    if (recent.length < 10) return base * 0.9;
     const recentAcc = recent.reduce((a, b) => a + b, 0) / recent.length;
-    let multiplier = 0.52 + recentAcc * 1.05;
-    if (recentAcc < 0.38) multiplier *= 0.50;
-    else if (recentAcc < 0.46) multiplier *= 0.72;
-    return base * multiplier;
+    let m = 0.45 + recentAcc * 1.15;
+    if (recentAcc < 0.40) m *= 0.45;
+    else if (recentAcc < 0.48) m *= 0.70;
+    return base * m;
   }
 
-  function expertMarkov() {
-    let scoreT = 0, scoreX = 0;
-    const details = [];
-    const orders = [
-      { o: 1, baseW: 1.20 },
-      { o: 2, baseW: 2.05 },
-      { o: 3, baseW: 2.65 },
-      { o: 4, baseW: 2.95 },
-      { o: 5, baseW: 3.15 }
-    ];
-    for (const { o, baseW } of orders) {
-      if (H.length < o + 22) continue;
-      const pat = H.slice(-o).join('');
-      let t = 0, x = 0;
-      const start = Math.max(0, H.length - 85);
-      for (let i = start; i <= H.length - o - 1; i++) {
-        if (H.slice(i, i + o).join('') === pat) {
-          if (H[i + o] === 1) t++; else x++;
-        }
-      }
-      const tot = t + x;
-      if (tot < 3) continue;
-      const pT = t / tot;
-      const conf = 0.55 + Math.abs(pT - 0.5) * 0.96;
-      const w = baseW * conf * Math.min(1.38, tot / 8);
-      if (pT >= 0.5) scoreT += w; else scoreX += w;
-      details.push('M' + o + ':' + (pT >= 0.5 ? 'T' : 'X') + '(' + Math.round(conf * 100) + '%)');
-    }
-    const pred = scoreT >= scoreX ? 1 : 0;
-    const total = scoreT + scoreX || 1;
-    const dom = Math.abs(scoreT - scoreX) / total;
-    return {
-      pred, conf: Math.min(0.92, 0.56 + dom * 0.43),
-      weight: dynamicWeight(2.95, 'markov'),
-      details: details.slice(0, 3), scoreT, scoreX
-    };
-  }
-
-  function expertPattern() {
-    let bestLen = 0, next = null, matches = 0, memBoost = 0;
-    for (let len = Math.min(13, H.length - 5); len >= 3; len--) {
-      const suffix = H.slice(-len).join('');
-      let t = 0, x = 0;
-      const start = Math.max(0, H.length - 95);
-      for (let i = start; i <= H.length - len - 1; i++) {
-        if (H.slice(i, i + len).join('') === suffix) {
-          if (H[i + len] === 1) t++; else x++;
-        }
-      }
-      const tot = t + x;
-      if (tot >= 2) {
-        bestLen = len;
-        next = t >= x ? 1 : 0;
-        matches = tot;
-        if (mem[suffix]) {
-          const m = mem[suffix];
-          memBoost = Math.min(2.3, (m.hangLen || 0) * 0.19 + (m.count || 0) * 0.12);
-          if (m.success > m.fail) memBoost += 0.50;
-        }
-        break;
-      }
-    }
-    if (bestLen === 0) {
-      return { pred: R[0], conf: 0.52, weight: dynamicWeight(1.50, 'pattern'), details: ['Pattern yếu'], scoreT: 0.5, scoreX: 0.5 };
-    }
-    const conf = 0.59 + Math.min(0.27, bestLen * 0.017) + Math.min(0.14, matches * 0.015) + memBoost * 0.09;
-    return {
-      pred: next,
-      conf: Math.min(0.91, conf),
-      weight: dynamicWeight(2.50 + memBoost * 0.55, 'pattern'),
-      details: ['Ptn' + bestLen + '→' + (next === 1 ? 'T' : 'X') + (memBoost > 0.4 ? '+Mem' : '')],
-      scoreT: next === 1 ? conf : 1 - conf,
-      scoreX: next === 0 ? conf : 1 - conf
-    };
-  }
-
+  // ---------- 1. STREAK (ưu tiên cao nhất – bẻ mạnh) ----------
   function expertStreak() {
     let streak = 1;
     for (let i = 1; i < R.length; i++) {
       if (R[i] === R[0]) streak++; else break;
     }
-    const streakVal = R[0];
+    const val = R[0];
+
     let alt = 1;
-    for (let i = 1; i < Math.min(R.length, 22); i++) {
+    for (let i = 1; i < Math.min(R.length, 18); i++) {
       if (R[i] !== R[i - 1]) alt++; else break;
     }
 
     let scoreT = 0, scoreX = 0;
     const details = [];
 
-    if (streak === 2) {
-      const w = 1.65; if (streakVal === 1) scoreT += w; else scoreX += w;
+    // Logic bẻ cực mạnh khi bệt dài
+    if (streak === 1) {
+      // không cộng
+    } else if (streak === 2) {
+      const w = 1.8; if (val === 1) scoreT += w; else scoreX += w;
       details.push('Bệt2 theo');
     } else if (streak === 3) {
-      const w = 2.40; if (streakVal === 1) scoreT += w; else scoreX += w;
+      const w = 2.6; if (val === 1) scoreT += w; else scoreX += w;
       details.push('Bệt3 theo');
     } else if (streak === 4) {
-      const w = 1.10; if (streakVal === 1) scoreT += w; else scoreX += w;
+      const w = 1.2; if (val === 1) scoreT += w; else scoreX += w;
       details.push('Bệt4 thận');
     } else if (streak === 5) {
-      const w = 3.35; if (streakVal === 1) scoreX += w; else scoreT += w;
+      const w = 3.8; if (val === 1) scoreX += w; else scoreT += w;
       details.push('Bẻ bệt5');
     } else if (streak >= 6) {
-      const w = 4.00 + Math.min(2.1, (streak - 6) * 0.48);
-      if (streakVal === 1) scoreX += w; else scoreT += w;
+      const w = 4.6 + Math.min(2.5, (streak - 6) * 0.55);
+      if (val === 1) scoreX += w; else scoreT += w;
       details.push('Bẻ bệt' + streak);
     }
 
-    if (alt >= 5 && alt <= 8) {
-      const w = 2.50; if (R[0] === 1) scoreX += w; else scoreT += w;
+    // Cầu đảo
+    if (alt >= 5 && alt <= 7) {
+      const w = 2.7; if (R[0] === 1) scoreX += w; else scoreT += w;
       details.push('Đảo' + alt);
-    } else if (alt >= 9) {
-      const w = 1.55; if (R[0] === 1) scoreT += w; else scoreX += w;
-      details.push('Đứt đảo' + alt);
+    } else if (alt >= 8) {
+      const w = 1.6; if (R[0] === 1) scoreT += w; else scoreX += w;
+      details.push('Đứt đảo');
     }
 
-    const last8 = R.slice(0, 8).join('');
-    if (['11001100', '00110011', '10101010', '01010101', '11100011', '00011100'].includes(last8)) {
-      const w = 2.25; if (R[0] === 1) scoreX += w; else scoreT += w;
+    // Cầu cố định ngắn
+    const last6 = R.slice(0, 6).join('');
+    if (['110011', '001100', '101010', '010101'].includes(last6)) {
+      const w = 2.4; if (R[0] === 1) scoreX += w; else scoreT += w;
       details.push('Cầu cố định');
-    }
-
-    const last4 = R.slice(0, 4).join('');
-    if (last4 === '1110' || last4 === '0001') {
-      const w = 1.85; if (R[0] === 1) scoreX += w; else scoreT += w;
-      details.push('Cầu 3-1');
     }
 
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
-    const conf = 0.57 + Math.abs(scoreT - scoreX) / total * 0.42;
+    const conf = 0.58 + Math.abs(scoreT - scoreX) / total * 0.40;
     return {
       pred, conf: Math.min(0.93, conf),
-      weight: dynamicWeight(2.65, 'streak'),
+      weight: dynamicWeight(3.10, 'streak'),
       details, scoreT, scoreX
     };
   }
 
+  // ---------- 2. DICE (ưu tiên gần) ----------
   function expertDice() {
-    const recent = dice.slice(0, 45);
-    if (recent.length < 20) {
-      return { pred: 0, conf: 0.52, weight: dynamicWeight(1.80, 'dice'), details: ['Dice thiếu'], scoreT: 0.5, scoreX: 0.5 };
+    const recent = dice.slice(0, 30);
+    if (recent.length < 18) {
+      return { pred: 0, conf: 0.53, weight: dynamicWeight(1.9, 'dice'), details: ['Dice thiếu'], scoreT: 0.5, scoreX: 0.5 };
     }
-
-    let high = 0, low = 0, totalF = 0;
-    recent.forEach(d => {
-      d.faces.forEach(f => {
-        if (f >= 1 && f <= 6) { totalF++; if (f >= 4) high++; else low++; }
-      });
-    });
-    const highRatio = high / (totalF || 1);
-    const lowRatio  = low  / (totalF || 1);
 
     const avg = arr => arr.reduce((a, b) => a + b, 0) / (arr.length || 1);
-    const avg25 = avg(recent.slice(0, 25).map(d => d.sum));
-    const avg16 = avg(recent.slice(0, 16).map(d => d.sum));
-    const avg10 = avg(recent.slice(0, 10).map(d => d.sum));
-    const avg6  = avg(recent.slice(0, 6).map(d => d.sum));
+    const avg20 = avg(recent.slice(0, 20).map(d => d.sum));
+    const avg12 = avg(recent.slice(0, 12).map(d => d.sum));
+    const avg8  = avg(recent.slice(0, 8).map(d => d.sum));
+    const avg5  = avg(recent.slice(0, 5).map(d => d.sum));
 
-    let consecHigh = 0, consecLow = 0;
-    for (let i = 0; i < Math.min(12, recent.length); i++) {
-      if (recent[i].sum >= 12) consecHigh++; else break;
+    let high = 0, low = 0, totF = 0;
+    recent.slice(0, 20).forEach(d => {
+      d.faces.forEach(f => {
+        if (f >= 1 && f <= 6) { totF++; if (f >= 4) high++; else low++; }
+      });
+    });
+    const highR = high / (totF || 1);
+
+    let consecH = 0, consecL = 0;
+    for (let i = 0; i < 10; i++) {
+      if (recent[i].sum >= 12) consecH++; else break;
     }
-    for (let i = 0; i < Math.min(12, recent.length); i++) {
-      if (recent[i].sum <= 9) consecLow++; else break;
+    for (let i = 0; i < 10; i++) {
+      if (recent[i].sum <= 9) consecL++; else break;
     }
 
     let scoreT = 0, scoreX = 0;
     const details = [];
 
-    if (avg25 >= 12.6) { scoreX += 2.80; details.push('Sum25 cao'); }
-    else if (avg25 <= 8.4) { scoreT += 2.80; details.push('Sum25 thấp'); }
-    else if (avg25 >= 11.8) { scoreX += 1.45; details.push('Sum25 hơi cao'); }
-    else if (avg25 <= 9.2) { scoreT += 1.45; details.push('Sum25 hơi thấp'); }
+    // Mean reversion mạnh trên sum
+    if (avg20 >= 12.7) { scoreX += 3.0; details.push('Sum20 cao'); }
+    else if (avg20 <= 8.3) { scoreT += 3.0; details.push('Sum20 thấp'); }
+    else if (avg20 >= 11.9) { scoreX += 1.5; details.push('Sum20 hơi cao'); }
+    else if (avg20 <= 9.1) { scoreT += 1.5; details.push('Sum20 hơi thấp'); }
 
-    if (avg16 >= 13.0) { scoreX += 1.90; details.push('Sum16 rất cao'); }
-    else if (avg16 <= 8.0) { scoreT += 1.90; details.push('Sum16 rất thấp'); }
+    if (avg12 >= 13.1) { scoreX += 2.1; details.push('Sum12 rất cao'); }
+    else if (avg12 <= 7.9) { scoreT += 2.1; details.push('Sum12 rất thấp'); }
 
-    if (avg10 >= 13.3) { scoreX += 1.70; details.push('Sum10 cực cao'); }
-    else if (avg10 <= 7.7) { scoreT += 1.70; details.push('Sum10 cực thấp'); }
+    if (avg8 >= 13.4) { scoreX += 1.7; details.push('Sum8 nóng'); }
+    else if (avg8 <= 7.6) { scoreT += 1.7; details.push('Sum8 lạnh'); }
 
-    if (avg6 >= 13.7) { scoreX += 1.40; details.push('Sum6 nóng'); }
-    else if (avg6 <= 7.3) { scoreT += 1.40; details.push('Sum6 lạnh'); }
+    if (avg5 >= 14.0) { scoreX += 1.4; details.push('Sum5 cực cao'); }
+    else if (avg5 <= 7.0) { scoreT += 1.4; details.push('Sum5 cực thấp'); }
 
-    if (highRatio >= 0.58) { scoreX += 2.05; details.push('Mặt cao'); }
-    else if (lowRatio >= 0.58) { scoreT += 2.05; details.push('Mặt thấp'); }
+    if (highR >= 0.60) { scoreX += 2.2; details.push('Mặt cao'); }
+    else if (highR <= 0.40) { scoreT += 2.2; details.push('Mặt thấp'); }
 
-    if (consecHigh >= 3) {
-      scoreX += 1.90 + (consecHigh - 3) * 0.35;
-      details.push('Cao liên' + consecHigh);
+    if (consecH >= 3) {
+      scoreX += 2.0 + (consecH - 3) * 0.4;
+      details.push('Cao liên' + consecH);
     }
-    if (consecLow >= 3) {
-      scoreT += 1.90 + (consecLow - 3) * 0.35;
-      details.push('Thấp liên' + consecLow);
+    if (consecL >= 3) {
+      scoreT += 2.0 + (consecL - 3) * 0.4;
+      details.push('Thấp liên' + consecL);
     }
 
-    const lastSum = recent[0].sum;
-    if (lastSum >= 16) { scoreX += 1.65; details.push('Cực cao'); }
-    else if (lastSum <= 5) { scoreT += 1.65; details.push('Cực thấp'); }
-    else if (lastSum >= 14) { scoreX += 0.95; details.push('Cao'); }
-    else if (lastSum <= 7) { scoreT += 0.95; details.push('Thấp'); }
+    const last = recent[0].sum;
+    if (last >= 16) { scoreX += 1.8; details.push('Cực cao'); }
+    else if (last <= 5) { scoreT += 1.8; details.push('Cực thấp'); }
+    else if (last >= 14) { scoreX += 1.0; details.push('Cao'); }
+    else if (last <= 7) { scoreT += 1.0; details.push('Thấp'); }
 
-    const last22 = recent.slice(0, 22).map(d => d.result);
-    const tai22 = last22.filter(x => x === 1).length;
-    if (tai22 >= 15) { scoreX += 2.25; details.push('LệchT mạnh'); }
-    else if (tai22 <= 7) { scoreT += 2.25; details.push('LệchX mạnh'); }
-    else if (tai22 >= 14) { scoreX += 1.30; details.push('LệchT'); }
-    else if (tai22 <= 8) { scoreT += 1.30; details.push('LệchX'); }
-
-    let faceHigh12 = 0, faceLow12 = 0;
-    recent.slice(0, 12).forEach(d => {
-      d.faces.forEach(f => { if (f >= 4) faceHigh12++; else faceLow12++; });
-    });
-    const faceRatio12 = faceHigh12 / (faceHigh12 + faceLow12 || 1);
-    if (faceRatio12 >= 0.64) { scoreX += 1.50; details.push('Mặt12 cao'); }
-    else if (faceRatio12 <= 0.36) { scoreT += 1.50; details.push('Mặt12 thấp'); }
+    // Lệch Tài/Xỉu gần
+    const last18 = recent.slice(0, 18).map(d => d.result);
+    const tai18 = last18.filter(x => x === 1).length;
+    if (tai18 >= 13) { scoreX += 2.5; details.push('LệchT mạnh'); }
+    else if (tai18 <= 5) { scoreT += 2.5; details.push('LệchX mạnh'); }
+    else if (tai18 >= 12) { scoreX += 1.4; details.push('LệchT'); }
+    else if (tai18 <= 6) { scoreT += 1.4; details.push('LệchX'); }
 
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
     const dom = Math.abs(scoreT - scoreX) / total;
     return {
-      pred, conf: Math.min(0.92, 0.58 + dom * 0.41),
-      weight: dynamicWeight(2.90, 'dice'),
+      pred, conf: Math.min(0.92, 0.58 + dom * 0.40),
+      weight: dynamicWeight(3.00, 'dice'),
       details: details.slice(0, 5), scoreT, scoreX
     };
   }
 
+  // ---------- 3. TREND + MEAN REVERSION (gần) ----------
+  function expertTrend() {
+    const last15 = R.slice(0, 15);
+    const last10 = R.slice(0, 10);
+    const last6  = R.slice(0, 6);
+    const last4  = R.slice(0, 4);
+
+    const tai15 = last15.filter(x => x === 1).length;
+    const tai10 = last10.filter(x => x === 1).length;
+    const tai6  = last6.filter(x => x === 1).length;
+    const tai4  = last4.filter(x => x === 1).length;
+
+    let scoreT = 0, scoreX = 0;
+    const details = [];
+
+    // Mean reversion ưu tiên
+    if (tai15 >= 11) { scoreX += 2.8; details.push('ReversionT15'); }
+    else if (tai15 <= 4) { scoreT += 2.8; details.push('ReversionX15'); }
+    else if (tai15 >= 10) { scoreX += 1.6; details.push('ReversionT'); }
+    else if (tai15 <= 5) { scoreT += 1.6; details.push('ReversionX'); }
+
+    if (tai10 >= 8) { scoreX += 2.0; details.push('ReversionT10'); }
+    else if (tai10 <= 2) { scoreT += 2.0; details.push('ReversionX10'); }
+
+    // Momentum ngắn
+    if (tai4 >= 4) { scoreX += 1.9; details.push('MomentumT4'); }
+    else if (tai4 <= 0) { scoreT += 1.9; details.push('MomentumX4'); }
+
+    if (tai6 >= 5) { scoreX += 1.5; details.push('MomentumT6'); }
+    else if (tai6 <= 1) { scoreT += 1.5; details.push('MomentumX6'); }
+
+    const pred = scoreT >= scoreX ? 1 : 0;
+    const total = scoreT + scoreX || 1;
+    const conf = 0.56 + Math.abs(scoreT - scoreX) / total * 0.38;
+    return {
+      pred, conf,
+      weight: dynamicWeight(2.70, 'trend'),
+      details, scoreT, scoreX
+    };
+  }
+
+  // ---------- 4. MARKOV (chỉ gần) ----------
+  function expertMarkov() {
+    let scoreT = 0, scoreX = 0;
+    const details = [];
+    const orders = [
+      { o: 1, baseW: 1.3 },
+      { o: 2, baseW: 2.2 },
+      { o: 3, baseW: 2.8 },
+      { o: 4, baseW: 3.0 }
+    ];
+    for (const { o, baseW } of orders) {
+      if (H.length < o + 25) continue;
+      const pat = H.slice(-o).join('');
+      let t = 0, x = 0;
+      // chỉ 70 phiên gần nhất
+      const start = Math.max(0, H.length - 70);
+      for (let i = start; i <= H.length - o - 1; i++) {
+        if (H.slice(i, i + o).join('') === pat) {
+          if (H[i + o] === 1) t++; else x++;
+        }
+      }
+      const tot = t + x;
+      if (tot < 4) continue;
+      const pT = t / tot;
+      const conf = 0.55 + Math.abs(pT - 0.5) * 0.95;
+      const w = baseW * conf * Math.min(1.3, tot / 7);
+      if (pT >= 0.52) scoreT += w;
+      else if (pT <= 0.48) scoreX += w;
+      details.push('M' + o + ':' + (pT >= 0.5 ? 'T' : 'X') + '(' + Math.round(conf * 100) + '%)');
+    }
+    const pred = scoreT >= scoreX ? 1 : 0;
+    const total = scoreT + scoreX || 1;
+    const dom = Math.abs(scoreT - scoreX) / total;
+    return {
+      pred, conf: Math.min(0.90, 0.55 + dom * 0.40),
+      weight: dynamicWeight(2.60, 'markov'),
+      details: details.slice(0, 3), scoreT, scoreX
+    };
+  }
+
+  // ---------- 5. PATTERN ----------
+  function expertPattern() {
+    let bestLen = 0, next = null, matches = 0, memBoost = 0;
+    for (let len = Math.min(10, H.length - 5); len >= 3; len--) {
+      const suffix = H.slice(-len).join('');
+      let t = 0, x = 0;
+      const start = Math.max(0, H.length - 80);
+      for (let i = start; i <= H.length - len - 1; i++) {
+        if (H.slice(i, i + len).join('') === suffix) {
+          if (H[i + len] === 1) t++; else x++;
+        }
+      }
+      const tot = t + x;
+      if (tot >= 3) {
+        bestLen = len;
+        next = t >= x ? 1 : 0;
+        matches = tot;
+        if (mem[suffix]) {
+          const m = mem[suffix];
+          memBoost = Math.min(1.8, (m.hangLen || 0) * 0.15 + (m.count || 0) * 0.08);
+          if (m.success > m.fail) memBoost += 0.35;
+        }
+        break;
+      }
+    }
+    if (bestLen === 0) {
+      return { pred: R[0], conf: 0.52, weight: dynamicWeight(1.4, 'pattern'), details: ['Pattern yếu'], scoreT: 0.5, scoreX: 0.5 };
+    }
+    const conf = 0.57 + Math.min(0.22, bestLen * 0.015) + Math.min(0.12, matches * 0.012) + memBoost * 0.07;
+    return {
+      pred: next,
+      conf: Math.min(0.88, conf),
+      weight: dynamicWeight(2.20 + memBoost * 0.4, 'pattern'),
+      details: ['Ptn' + bestLen + '→' + (next === 1 ? 'T' : 'X')],
+      scoreT: next === 1 ? conf : 1 - conf,
+      scoreX: next === 0 ? conf : 1 - conf
+    };
+  }
+
+  // ---------- 6. BALANCE ----------
   function expertBalance() {
     let scoreT = 0, scoreX = 0;
     const details = [];
-    [14, 20, 32, 48].forEach(w => {
+    [12, 18, 28].forEach(w => {
       if (R.length < w) return;
       const slice = R.slice(0, w);
       const tai = slice.filter(x => x === 1).length;
       const ratio = tai / w;
-      if (ratio >= 0.67) {
-        scoreX += 1.70 * (w / 24);
+      if (ratio >= 0.70) {
+        scoreX += 1.9 * (w / 18);
         details.push('LệchT' + w);
-      } else if (ratio <= 0.33) {
-        scoreT += 1.70 * (w / 24);
+      } else if (ratio <= 0.30) {
+        scoreT += 1.9 * (w / 18);
         details.push('LệchX' + w);
       }
     });
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
-    const conf = 0.54 + Math.abs(scoreT - scoreX) / total * 0.35;
+    const conf = 0.54 + Math.abs(scoreT - scoreX) / total * 0.34;
     return {
       pred, conf,
-      weight: dynamicWeight(1.75, 'balance'),
+      weight: dynamicWeight(1.80, 'balance'),
       details: details.slice(0, 3), scoreT, scoreX
     };
   }
 
+  // ---------- 7. CYCLE ----------
   function expertCycle() {
     let scoreT = 0, scoreX = 0;
     const details = [];
     let bestSc = 0, cyclePred = null, bestP = 0;
-    for (const p of [2, 3, 4, 5, 6, 7, 8]) {
-      if (R.length < p * 8) continue;
+    for (const p of [2, 3, 4, 5, 6]) {
+      if (R.length < p * 7) continue;
       let match = 0;
-      const chk = p * 5;
+      const chk = p * 4;
       for (let i = 0; i < chk; i++) {
         if (R[i] === R[i + p]) match++;
       }
       const sc = match / chk;
-      if (sc > 0.67 && sc > bestSc) {
+      if (sc > 0.72 && sc > bestSc) {
         bestSc = sc;
         cyclePred = R[p - 1];
         bestP = p;
       }
     }
     if (cyclePred !== null) {
-      const w = 2.25 * bestSc;
+      const w = 2.3 * bestSc;
       if (cyclePred === 1) scoreT += w; else scoreX += w;
-      details.push('Chu kỳ ' + bestP + ' (' + Math.round(bestSc * 100) + '%)');
+      details.push('Chu kỳ ' + bestP);
     }
     const pred = scoreT >= scoreX ? 1 : 0;
     const total = scoreT + scoreX || 1;
-    const conf = 0.53 + Math.abs(scoreT - scoreX) / total * 0.38;
+    const conf = 0.53 + Math.abs(scoreT - scoreX) / total * 0.35;
     return {
       pred, conf,
-      weight: dynamicWeight(1.90, 'cycle'),
+      weight: dynamicWeight(1.70, 'cycle'),
       details, scoreT, scoreX
     };
   }
 
-  function expertChaos() {
-    const last20 = R.slice(0, 20);
-    let changes = 0;
-    for (let i = 1; i < last20.length; i++) {
-      if (last20[i] !== last20[i - 1]) changes++;
-    }
-    const volatility = changes / (last20.length - 1);
-    let scoreT = 0, scoreX = 0;
-    const details = [];
-    if (volatility >= 0.67) {
-      const w = 1.95; if (R[0] === 1) scoreX += w; else scoreT += w;
-      details.push('Hỗn loạn cao');
-    } else if (volatility <= 0.33) {
-      const w = 1.70; if (R[0] === 1) scoreT += w; else scoreX += w;
-      details.push('Ổn định');
-    }
-    const pred = scoreT >= scoreX ? 1 : 0;
-    const total = scoreT + scoreX || 1;
-    const conf = 0.52 + Math.abs(scoreT - scoreX) / total * 0.32;
-    return {
-      pred, conf,
-      weight: dynamicWeight(1.40, 'chaos'),
-      details, scoreT, scoreX
-    };
-  }
-
-  function expertTrend() {
-    const last12 = R.slice(0, 12);
-    const last8  = R.slice(0, 8);
-    const last5  = R.slice(0, 5);
-    const tai12 = last12.filter(x => x === 1).length;
-    const tai8  = last8.filter(x => x === 1).length;
-    const tai5  = last5.filter(x => x === 1).length;
-
-    let scoreT = 0, scoreX = 0;
-    const details = [];
-
-    if (tai5 >= 4) { scoreX += 2.05; details.push('MomentumT5'); }
-    else if (tai5 <= 1) { scoreT += 2.05; details.push('MomentumX5'); }
-
-    if (tai8 >= 6) { scoreX += 1.65; details.push('MomentumT8'); }
-    else if (tai8 <= 2) { scoreT += 1.65; details.push('MomentumX8'); }
-
-    if (tai12 >= 9) { scoreX += 1.80; details.push('ReversionT12'); }
-    else if (tai12 <= 3) { scoreT += 1.80; details.push('ReversionX12'); }
-
-    const pred = scoreT >= scoreX ? 1 : 0;
-    const total = scoreT + scoreX || 1;
-    const conf = 0.55 + Math.abs(scoreT - scoreX) / total * 0.37;
-    return {
-      pred, conf,
-      weight: dynamicWeight(2.20, 'trend'),
-      details, scoreT, scoreX
-    };
-  }
-
-  // Tổng hợp
-  const m  = expertMarkov();
-  const p  = expertPattern();
+  // ===================== TỔNG HỢP – ƯU TIÊN GẦN + BẺ THUA =====================
   const s  = expertStreak();
   const d  = expertDice();
+  const tr = expertTrend();
+  const m  = expertMarkov();
+  const p  = expertPattern();
   const b  = expertBalance();
   const c  = expertCycle();
-  const ch = expertChaos();
-  const tr = expertTrend();
 
   let finalT = 0, finalX = 0;
   const factors = [];
   const reasons = [];
 
   const team = [
-    { name: 'Markov',  e: m,  key: 'markov'  },
-    { name: 'Pattern', e: p,  key: 'pattern' },
     { name: 'Streak',  e: s,  key: 'streak'  },
     { name: 'Dice',    e: d,  key: 'dice'    },
+    { name: 'Trend',   e: tr, key: 'trend'   },
+    { name: 'Markov',  e: m,  key: 'markov'  },
+    { name: 'Pattern', e: p,  key: 'pattern' },
     { name: 'Balance', e: b,  key: 'balance' },
-    { name: 'Cycle',   e: c,  key: 'cycle'   },
-    { name: 'Chaos',   e: ch, key: 'chaos'   },
-    { name: 'Trend',   e: tr, key: 'trend'   }
+    { name: 'Cycle',   e: c,  key: 'cycle'   }
   ];
 
   team.forEach(({ name, e }) => {
@@ -551,46 +541,50 @@ function analyze(data, type) {
     }
   });
 
-  // Anti-Loss mạnh
+  // Anti-Loss cực mạnh
   const wrong = learningData[type].recentWrongStreak || 0;
   const lastDir = learningData[type].lastPredDirection;
 
   if (wrong >= 3 && lastDir !== null) {
-    if (lastDir === 1) { finalX += 9.0; finalT *= 0.10; }
-    else { finalT += 9.0; finalX *= 0.10; }
-    factors.unshift('BẺ-' + wrong + 'SAI');
+    if (lastDir === 1) { finalX += 11.0; finalT *= 0.08; }
+    else { finalT += 11.0; finalX *= 0.08; }
+    factors.unshift('BẺ-' + wrong);
     reasons.push('Thua ' + wrong + ' phiên → BẺ CỰC MẠNH');
   } else if (wrong >= 2 && lastDir !== null) {
-    if (lastDir === 1) finalX += 3.2; else finalT += 3.2;
+    if (lastDir === 1) finalX += 4.0; else finalT += 4.0;
     factors.unshift('Nghiêng-' + wrong);
-    reasons.push('Sai ' + wrong + ' phiên → nghiêng đảo');
+    reasons.push('Sai ' + wrong + ' → nghiêng đảo');
   }
+
+  // Nếu 3 expert mạnh nhất đồng thuận thì tăng tin cậy
+  const top3 = [s, d, tr];
+  const topAgree = top3.filter(e => e.pred === (finalT >= finalX ? 1 : 0)).length;
 
   const finalPred = finalT >= finalX ? 1 : 0;
   const totalScore = finalT + finalX || 1;
   const dominance = Math.abs(finalT - finalX) / totalScore;
   const agreeCount = team.filter(t => t.e.pred === finalPred).length;
 
-  let conf = 56 + dominance * 29 + (agreeCount - 4) * 2.7;
-  if (m.pred === finalPred && d.pred === finalPred) conf += 6.0;
-  if (m.pred === finalPred && p.pred === finalPred) conf += 4.2;
-  if (s.pred === finalPred && s.conf > 0.75) conf += 3.6;
-  if (d.pred === finalPred && d.conf > 0.77) conf += 3.2;
-  if (tr.pred === finalPred) conf += 2.4;
+  let conf = 55 + dominance * 30 + (agreeCount - 3.5) * 2.8;
+  if (topAgree === 3) conf += 6.5;
+  if (s.pred === finalPred && s.conf > 0.75) conf += 4.0;
+  if (d.pred === finalPred && d.conf > 0.76) conf += 3.5;
+  if (tr.pred === finalPred) conf += 2.8;
 
-  if (wrong >= 2) conf -= 4.8;
-  if (wrong >= 4) conf -= 7.0;
+  if (wrong >= 2) conf -= 5.0;
+  if (wrong >= 4) conf -= 8.0;
 
+  // Soften khi recent kém
   const recentAccArr = learningData[type].recentAccuracy || [];
-  if (recentAccArr.length >= 15) {
-    const recentAcc = recentAccArr.slice(-15).reduce((a, b) => a + b, 0) / 15;
-    if (recentAcc < 0.47) conf = Math.min(conf, 73);
+  if (recentAccArr.length >= 12) {
+    const recentAcc = recentAccArr.slice(-12).reduce((a, b) => a + b, 0) / 12;
+    if (recentAcc < 0.45) conf = Math.min(conf, 70);
   }
 
-  conf = Math.max(54, Math.min(92, Math.round(conf)));
+  conf = Math.max(55, Math.min(90, Math.round(conf)));
 
   // Update memory
-  const currentSuffix = H.slice(-Math.min(10, H.length)).join('');
+  const currentSuffix = H.slice(-Math.min(8, H.length)).join('');
   if (!mem[currentSuffix]) {
     mem[currentSuffix] = { count: 1, hangLen: 1, success: 0, fail: 0, lastSeen: Date.now() };
   } else {
@@ -599,35 +593,33 @@ function analyze(data, type) {
     mem[currentSuffix].lastSeen = Date.now();
   }
   const keys = Object.keys(mem);
-  if (keys.length > 520) {
+  if (keys.length > 450) {
     keys.sort((a, b) => (mem[a].lastSeen || 0) - (mem[b].lastSeen || 0));
-    for (let i = 0; i < 130; i++) delete mem[keys[i]];
+    for (let i = 0; i < 100; i++) delete mem[keys[i]];
   }
   learningData[type].patternMemory = mem;
   learningData[type].lastPredDirection = finalPred;
 
   if (d.details.length) reasons.push('Xúc xắc: ' + d.details.slice(0, 2).join(', '));
   if (s.details.length) reasons.push('Cầu: ' + s.details[0]);
-  if (p.details.length) reasons.push('Pattern: ' + p.details[0]);
   if (tr.details.length) reasons.push('Trend: ' + tr.details[0]);
-  if (agreeCount >= 6) reasons.push('Đồng thuận ' + agreeCount + '/8');
+  if (agreeCount >= 5) reasons.push('Đồng thuận ' + agreeCount + '/7');
 
   return {
     prediction: finalPred === 1 ? 'Tài' : 'Xỉu',
     confidence: conf,
-    factors: [...new Set(factors)].slice(0, 8),
+    factors: [...new Set(factors)].slice(0, 7),
     reasons: reasons.slice(0, 4),
     agree: (finalT > finalX ? 'T' : 'X') + '(' + Math.round(dominance * 100) + '%)',
     experts: {
-      markov:  m.pred  === 1 ? 'Tài' : 'Xỉu',
-      pattern: p.pred  === 1 ? 'Tài' : 'Xỉu',
       streak:  s.pred  === 1 ? 'Tài' : 'Xỉu',
       dice:    d.pred  === 1 ? 'Tài' : 'Xỉu',
+      trend:   tr.pred === 1 ? 'Tài' : 'Xỉu',
+      markov:  m.pred  === 1 ? 'Tài' : 'Xỉu',
+      pattern: p.pred  === 1 ? 'Tài' : 'Xỉu',
       balance: b.pred  === 1 ? 'Tài' : 'Xỉu',
       cycle:   c.pred  === 1 ? 'Tài' : 'Xỉu',
-      chaos:   ch.pred === 1 ? 'Tài' : 'Xỉu',
-      trend:   tr.pred === 1 ? 'Tài' : 'Xỉu',
-      agreement: agreeCount + '/8'
+      agreement: agreeCount + '/7'
     }
   };
 }
@@ -647,8 +639,8 @@ function record(type, phien, pred, conf, factors) {
     timestamp: new Date().toISOString(), verified: false
   });
   learningData[type].totalPredictions++;
-  if (learningData[type].predictions.length > 900) {
-    learningData[type].predictions = learningData[type].predictions.slice(0, 900);
+  if (learningData[type].predictions.length > 1000) {
+    learningData[type].predictions = learningData[type].predictions.slice(0, 1000);
   }
   saveL();
 }
@@ -665,16 +657,16 @@ async function verify(type, data) {
 
     const exp = learningData[type].expertPerformance;
     if (exp) {
-      ['markov', 'pattern', 'streak', 'dice', 'balance', 'cycle', 'chaos', 'trend'].forEach(k => {
+      ['markov', 'pattern', 'streak', 'dice', 'balance', 'cycle', 'trend'].forEach(k => {
         if (!exp[k]) exp[k] = { correct: 0, total: 0, recent: [] };
         exp[k].total = (exp[k].total || 0) + 1;
         if (pred.isCorrect) exp[k].correct = (exp[k].correct || 0) + 1;
         if (!Array.isArray(exp[k].recent)) exp[k].recent = [];
         exp[k].recent.push(pred.isCorrect ? 1 : 0);
-        if (exp[k].recent.length > 22) exp[k].recent.shift();
-        if (exp[k].total > 85) {
-          exp[k].correct = Math.round(exp[k].correct * 0.76);
-          exp[k].total   = Math.round(exp[k].total   * 0.76);
+        if (exp[k].recent.length > 20) exp[k].recent.shift();
+        if (exp[k].total > 90) {
+          exp[k].correct = Math.round(exp[k].correct * 0.75);
+          exp[k].total   = Math.round(exp[k].total   * 0.75);
         }
       });
     }
@@ -700,7 +692,7 @@ async function verify(type, data) {
       learningData[type].recentWrongStreak = (learningData[type].recentWrongStreak || 0) + 1;
     }
     learningData[type].recentAccuracy.push(pred.isCorrect ? 1 : 0);
-    if (learningData[type].recentAccuracy.length > 75) learningData[type].recentAccuracy.shift();
+    if (learningData[type].recentAccuracy.length > 80) learningData[type].recentAccuracy.shift();
     changed = true;
   }
   if (changed) saveL();
@@ -789,7 +781,7 @@ async function handle(type, fn, req, res) {
     record(type, next, r.prediction, r.confidence, r.factors);
     lastProcessed[type] = next;
     saveH();
-    setTimeout(() => updateStatus(type), 2000);
+    setTimeout(() => updateStatus(type), 1800);
 
     res.json({
       Phien: rec.Phien, Xuc_xac_1: rec.Xuc_xac_1, Xuc_xac_2: rec.Xuc_xac_2, Xuc_xac_3: rec.Xuc_xac_3,
@@ -841,7 +833,7 @@ app.get('/api/reset-learning', (req, res) => {
   res.json({ message: 'Reset OK' });
 });
 
-// ===================== CYBER NEON UI =====================
+// ===================== PREMIUM CYBER UI =====================
 app.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!DOCTYPE html>
@@ -853,12 +845,12 @@ app.get('/', (req, res) => {
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #05050a;
-    --cyan: #00f0ff;
-    --pink: #ff2d6a;
-    --blue: #3b82f6;
-    --green: #22c55e;
-    --card: rgba(10,12,22,0.92);
+    --bg: #06060c;
+    --cyan: #22d3ee;
+    --pink: #f43f5e;
+    --violet: #a78bfa;
+    --green: #34d399;
+    --card: rgba(12,14,24,0.94);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -874,231 +866,226 @@ app.get('/', (req, res) => {
   /* HOME */
   .home {
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    min-height: 100vh; padding: 24px; text-align: center;
+    min-height: 100vh; padding: 28px 20px; text-align: center;
     background:
-      radial-gradient(ellipse 80% 50% at 50% -10%, rgba(0,240,255,0.12), transparent),
-      radial-gradient(ellipse 60% 40% at 80% 100%, rgba(255,45,106,0.08), transparent);
+      radial-gradient(ellipse 90% 55% at 50% -15%, rgba(34,211,238,0.14), transparent),
+      radial-gradient(ellipse 60% 45% at 90% 100%, rgba(244,63,94,0.10), transparent);
   }
   .home-logo {
-    width: 90px; height: 90px; border-radius: 50%;
-    background: linear-gradient(135deg, #00f0ff, #3b82f6);
+    width: 96px; height: 96px; border-radius: 28px;
+    background: linear-gradient(145deg, #22d3ee, #6366f1, #f43f5e);
     display: flex; align-items: center; justify-content: center;
-    font-family: 'Orbitron', sans-serif; font-weight: 900; font-size: 28px; color: #000;
-    box-shadow: 0 0 40px rgba(0,240,255,0.4);
-    margin-bottom: 20px;
+    font-family: 'Orbitron', sans-serif; font-weight: 900; font-size: 30px; color: #0f172a;
+    box-shadow: 0 0 50px rgba(34,211,238,0.35);
+    margin-bottom: 22px;
   }
   .home h1 {
-    font-family: 'Orbitron', sans-serif; font-size: 26px; font-weight: 800;
-    letter-spacing: 2px; margin-bottom: 8px;
-    background: linear-gradient(90deg, #00f0ff, #fff, #ff2d6a);
+    font-family: 'Orbitron', sans-serif; font-size: 28px; font-weight: 800;
+    letter-spacing: 3px; margin-bottom: 8px;
+    background: linear-gradient(90deg, #22d3ee, #e2e8f0, #f43f5e);
     -webkit-background-clip: text; -webkit-text-fill-color: transparent;
   }
-  .home p { color: #94a3b8; font-size: 14px; margin-bottom: 40px; }
+  .home p { color: #94a3b8; font-size: 14px; margin-bottom: 42px; letter-spacing: 0.5px; }
   .mode-btn {
-    width: 100%; max-width: 320px; padding: 18px 24px; margin: 10px 0;
-    border-radius: 16px; border: 1px solid rgba(0,240,255,0.25);
-    background: rgba(0,20,40,0.6); color: #fff;
+    width: 100%; max-width: 340px; padding: 20px 26px; margin: 11px 0;
+    border-radius: 18px; border: 1px solid rgba(34,211,238,0.22);
+    background: rgba(8,15,30,0.75); color: #f1f5f9;
     font-family: 'Orbitron', sans-serif; font-size: 16px; font-weight: 700;
-    letter-spacing: 1px; cursor: pointer; transition: all 0.25s;
+    letter-spacing: 1.5px; cursor: pointer; transition: all 0.28s cubic-bezier(0.22,1,0.36,1);
     display: flex; align-items: center; justify-content: space-between;
   }
   .mode-btn:hover, .mode-btn:active {
-    background: rgba(0,240,255,0.12); border-color: #00f0ff;
-    box-shadow: 0 0 25px rgba(0,240,255,0.25); transform: scale(1.02);
+    background: rgba(34,211,238,0.12); border-color: #22d3ee;
+    box-shadow: 0 0 30px rgba(34,211,238,0.28); transform: translateY(-2px);
   }
-  .mode-btn span { font-size: 12px; color: #64748b; font-weight: 500; }
+  .mode-btn span { font-size: 12px; color: #64748b; font-weight: 500; letter-spacing: 0; }
 
   /* DETAIL */
   .detail {
-    padding: 16px 14px 30px; max-width: 420px; margin: 0 auto;
+    padding: 18px 16px 36px; max-width: 420px; margin: 0 auto;
   }
   .topbar {
-    display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px;
+    display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;
   }
   .back-btn {
-    width: 40px; height: 40px; border-radius: 12px;
-    background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08);
+    width: 42px; height: 42px; border-radius: 14px;
+    background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.07);
     color: #94a3b8; font-size: 18px; cursor: pointer;
     display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
   }
+  .back-btn:active { background: rgba(255,255,255,0.08); }
   .mode-label {
     font-family: 'Orbitron', sans-serif; font-size: 13px; font-weight: 700;
-    color: #00f0ff; letter-spacing: 1px;
+    color: #22d3ee; letter-spacing: 1.5px;
   }
   .clock { font-size: 12px; color: #64748b; font-variant-numeric: tabular-nums; }
 
   /* AI CIRCLE */
-  .ai-wrap {
-    display: flex; justify-content: center; margin: 10px 0 22px;
-  }
+  .ai-wrap { display: flex; justify-content: center; margin: 8px 0 24px; }
   .ai-circle {
-    width: 130px; height: 130px; border-radius: 50%;
-    border: 3px solid rgba(0,240,255,0.3);
-    background: radial-gradient(circle, rgba(0,30,50,0.9), rgba(5,5,15,0.95));
+    width: 138px; height: 138px; border-radius: 50%;
+    border: 3px solid rgba(34,211,238,0.28);
+    background: radial-gradient(circle at 40% 35%, rgba(20,40,70,0.95), rgba(8,10,20,0.98));
     display: flex; flex-direction: column; align-items: center; justify-content: center;
-    position: relative; box-shadow: 0 0 40px rgba(0,240,255,0.15);
+    position: relative;
+    box-shadow: 0 0 45px rgba(34,211,238,0.12);
   }
   .ai-circle::before {
-    content: ''; position: absolute; inset: -8px; border-radius: 50%;
-    border: 1px solid rgba(0,240,255,0.15);
-    animation: spin 8s linear infinite;
+    content: ''; position: absolute; inset: -10px; border-radius: 50%;
+    border: 1px solid rgba(34,211,238,0.12);
+    animation: spin 10s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
   .ai-label {
-    font-family: 'Orbitron', sans-serif; font-size: 28px; font-weight: 900;
-    color: #00f0ff; letter-spacing: 2px; text-shadow: 0 0 20px rgba(0,240,255,0.6);
+    font-family: 'Orbitron', sans-serif; font-size: 30px; font-weight: 900;
+    color: #22d3ee; letter-spacing: 2px;
+    text-shadow: 0 0 22px rgba(34,211,238,0.55);
   }
   .ai-sub {
-    font-size: 10px; color: #64748b; margin-top: 4px; letter-spacing: 1px;
+    font-size: 10px; color: #64748b; margin-top: 5px; letter-spacing: 1.2px;
   }
-  .ai-circle.pred-tai .ai-label { color: #ff2d6a; text-shadow: 0 0 20px rgba(255,45,106,0.6); }
-  .ai-circle.pred-xiu .ai-label { color: #00f0ff; text-shadow: 0 0 20px rgba(0,240,255,0.6); }
+  .ai-circle.pred-tai .ai-label { color: #f43f5e; text-shadow: 0 0 22px rgba(244,63,94,0.55); }
+  .ai-circle.pred-xiu .ai-label { color: #22d3ee; text-shadow: 0 0 22px rgba(34,211,238,0.55); }
   .ai-circle.blink-tai {
-    animation: blinkTai 0.9s ease-in-out infinite;
-    border-color: #ff2d6a;
+    animation: blinkTai 1s ease-in-out infinite;
+    border-color: #f43f5e;
   }
   .ai-circle.blink-xiu {
-    animation: blinkXiu 0.9s ease-in-out infinite;
-    border-color: #00f0ff;
+    animation: blinkXiu 1s ease-in-out infinite;
+    border-color: #22d3ee;
   }
   @keyframes blinkTai {
-    0%,100% { box-shadow: 0 0 20px rgba(255,45,106,0.3); }
-    50% { box-shadow: 0 0 50px rgba(255,45,106,0.7); }
+    0%,100% { box-shadow: 0 0 22px rgba(244,63,94,0.25); }
+    50% { box-shadow: 0 0 55px rgba(244,63,94,0.65); }
   }
   @keyframes blinkXiu {
-    0%,100% { box-shadow: 0 0 20px rgba(0,240,255,0.3); }
-    50% { box-shadow: 0 0 50px rgba(0,240,255,0.7); }
+    0%,100% { box-shadow: 0 0 22px rgba(34,211,238,0.25); }
+    50% { box-shadow: 0 0 55px rgba(34,211,238,0.65); }
   }
 
-  /* TÀI / XỈU CARDS */
+  /* TÀI / XỈU */
   .pred-row {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px;
-  }
-  .pred-card {
-    border-radius: 16px; padding: 18px 12px; text-align: center;
-    border: 1px solid rgba(255,255,255,0.08); background: rgba(8,10,20,0.8);
-    transition: all 0.3s;
-  }
-  .pred-card.tai {
-    border-color: rgba(255,45,106,0.25);
-  }
-  .pred-card.xiu {
-    border-color: rgba(0,240,255,0.25);
-  }
-  .pred-card.active-tai {
-    border-color: #ff2d6a;
-    box-shadow: 0 0 30px rgba(255,45,106,0.35);
-    background: rgba(40,5,20,0.7);
-    animation: pulseTai 1s ease-in-out infinite;
-  }
-  .pred-card.active-xiu {
-    border-color: #00f0ff;
-    box-shadow: 0 0 30px rgba(0,240,255,0.35);
-    background: rgba(5,20,35,0.7);
-    animation: pulseXiu 1s ease-in-out infinite;
-  }
-  @keyframes pulseTai {
-    0%,100% { box-shadow: 0 0 20px rgba(255,45,106,0.25); }
-    50% { box-shadow: 0 0 40px rgba(255,45,106,0.55); }
-  }
-  @keyframes pulseXiu {
-    0%,100% { box-shadow: 0 0 20px rgba(0,240,255,0.25); }
-    50% { box-shadow: 0 0 40px rgba(0,240,255,0.55); }
-  }
-  .pred-title {
-    font-family: 'Orbitron', sans-serif; font-size: 26px; font-weight: 800;
-    letter-spacing: 2px;
-  }
-  .pred-card.tai .pred-title { color: #ff2d6a; }
-  .pred-card.xiu .pred-title { color: #00f0ff; }
-  .pred-sum {
-    font-size: 11px; color: #64748b; margin-top: 6px; letter-spacing: 0.5px;
-  }
-  .pred-conf {
-    font-family: 'Orbitron', sans-serif; font-size: 18px; font-weight: 700;
-    margin-top: 8px; color: #94a3b8;
-  }
-  .pred-card.active-tai .pred-conf,
-  .pred-card.active-xiu .pred-conf { color: #fff; }
-
-  /* STATS ROW */
-  .stats-row {
     display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px;
   }
+  .pred-card {
+    border-radius: 18px; padding: 20px 14px; text-align: center;
+    border: 1px solid rgba(255,255,255,0.07); background: rgba(10,12,22,0.88);
+    transition: all 0.35s cubic-bezier(0.22,1,0.36,1);
+  }
+  .pred-card.tai { border-color: rgba(244,63,94,0.22); }
+  .pred-card.xiu { border-color: rgba(34,211,238,0.22); }
+  .pred-card.active-tai {
+    border-color: #f43f5e;
+    box-shadow: 0 0 32px rgba(244,63,94,0.32);
+    background: rgba(40,8,18,0.75);
+    animation: pulseTai 1.1s ease-in-out infinite;
+  }
+  .pred-card.active-xiu {
+    border-color: #22d3ee;
+    box-shadow: 0 0 32px rgba(34,211,238,0.32);
+    background: rgba(6,25,40,0.75);
+    animation: pulseXiu 1.1s ease-in-out infinite;
+  }
+  @keyframes pulseTai {
+    0%,100% { box-shadow: 0 0 18px rgba(244,63,94,0.22); }
+    50% { box-shadow: 0 0 42px rgba(244,63,94,0.50); }
+  }
+  @keyframes pulseXiu {
+    0%,100% { box-shadow: 0 0 18px rgba(34,211,238,0.22); }
+    50% { box-shadow: 0 0 42px rgba(34,211,238,0.50); }
+  }
+  .pred-title {
+    font-family: 'Orbitron', sans-serif; font-size: 27px; font-weight: 800;
+    letter-spacing: 2px;
+  }
+  .pred-card.tai .pred-title { color: #f43f5e; }
+  .pred-card.xiu .pred-title { color: #22d3ee; }
+  .pred-sum {
+    font-size: 11px; color: #64748b; margin-top: 7px; letter-spacing: 0.6px;
+  }
+  .pred-conf {
+    font-family: 'Orbitron', sans-serif; font-size: 19px; font-weight: 700;
+    margin-top: 10px; color: #94a3b8;
+  }
+  .pred-card.active-tai .pred-conf,
+  .pred-card.active-xiu .pred-conf { color: #f8fafc; }
+
+  /* STATS */
+  .stats-row {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px;
+  }
   .stat-box {
-    border-radius: 14px; padding: 14px; text-align: center;
-    background: rgba(8,10,20,0.85); border: 1px solid rgba(255,255,255,0.06);
+    border-radius: 16px; padding: 15px; text-align: center;
+    background: rgba(10,12,22,0.9); border: 1px solid rgba(255,255,255,0.05);
   }
   .stat-label {
-    font-size: 10px; color: #64748b; letter-spacing: 1.5px; margin-bottom: 6px;
+    font-size: 10px; color: #64748b; letter-spacing: 1.6px; margin-bottom: 7px;
     font-family: 'Orbitron', sans-serif;
   }
   .stat-value {
-    font-family: 'Orbitron', sans-serif; font-size: 22px; font-weight: 700;
-    color: #00f0ff;
+    font-family: 'Orbitron', sans-serif; font-size: 23px; font-weight: 700;
+    color: #22d3ee;
   }
   .stat-bar {
-    height: 3px; border-radius: 99px; background: rgba(255,255,255,0.08);
-    margin-top: 10px; overflow: hidden;
+    height: 3px; border-radius: 99px; background: rgba(255,255,255,0.07);
+    margin-top: 11px; overflow: hidden;
   }
   .stat-bar > div {
     height: 100%; border-radius: 99px;
-    background: linear-gradient(90deg, #00f0ff, #3b82f6);
-    transition: width 0.6s ease;
+    background: linear-gradient(90deg, #22d3ee, #6366f1);
+    transition: width 0.7s cubic-bezier(0.22,1,0.36,1);
   }
 
   /* LOG */
   .log-box {
-    border-radius: 16px; background: rgba(8,10,20,0.9);
-    border: 1px solid rgba(0,240,255,0.12); overflow: hidden;
+    border-radius: 18px; background: rgba(10,12,22,0.94);
+    border: 1px solid rgba(34,211,238,0.12); overflow: hidden;
   }
   .log-header {
     display: flex; justify-content: space-between; align-items: center;
-    padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,0.05);
+    padding: 13px 15px; border-bottom: 1px solid rgba(255,255,255,0.04);
   }
   .log-title {
     font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 700;
-    color: #00f0ff; letter-spacing: 1px;
+    color: #22d3ee; letter-spacing: 1.2px;
   }
   .log-count { font-size: 11px; color: #64748b; }
-  .log-table {
-    width: 100%; font-size: 11px; border-collapse: collapse;
-  }
+  .log-table { width: 100%; font-size: 11px; border-collapse: collapse; }
   .log-table th {
-    padding: 8px 6px; text-align: center; color: #64748b;
+    padding: 9px 5px; text-align: center; color: #64748b;
     font-weight: 600; font-size: 10px; letter-spacing: 0.5px;
     border-bottom: 1px solid rgba(255,255,255,0.04);
   }
   .log-table td {
-    padding: 9px 6px; text-align: center;
-    border-bottom: 1px solid rgba(255,255,255,0.03);
+    padding: 10px 5px; text-align: center;
+    border-bottom: 1px solid rgba(255,255,255,0.025);
   }
   .log-table tr:last-child td { border-bottom: none; }
   .badge {
-    display: inline-block; padding: 2px 8px; border-radius: 6px;
+    display: inline-block; padding: 3px 9px; border-radius: 7px;
     font-weight: 600; font-size: 10px;
   }
-  .badge-tai { background: rgba(255,45,106,0.15); color: #ff2d6a; }
-  .badge-xiu { background: rgba(0,240,255,0.15); color: #00f0ff; }
-  .badge-win { background: rgba(34,197,94,0.15); color: #22c55e; }
-  .badge-lose { background: rgba(239,68,68,0.15); color: #ef4444; }
-  .badge-wait { background: rgba(100,116,139,0.2); color: #94a3b8; }
+  .badge-tai { background: rgba(244,63,94,0.14); color: #f43f5e; }
+  .badge-xiu { background: rgba(34,211,238,0.14); color: #22d3ee; }
+  .badge-win { background: rgba(52,211,153,0.14); color: #34d399; }
+  .badge-lose { background: rgba(239,68,68,0.14); color: #ef4444; }
+  .badge-wait { background: rgba(100,116,139,0.18); color: #94a3b8; }
 
   .info-line {
-    text-align: center; font-size: 11px; color: #475569; margin-top: 14px;
+    text-align: center; font-size: 11px; color: #475569; margin-top: 16px;
   }
   .xx-info {
-    text-align: center; font-size: 12px; color: #64748b; margin-bottom: 12px;
+    text-align: center; font-size: 12px; color: #64748b; margin-bottom: 14px;
   }
 </style>
 </head>
 <body>
 
-<!-- ==================== HOME ==================== -->
 <div id="page-home" class="page active home">
   <div class="home-logo">PK</div>
   <h1>PHẠM KHÔI</h1>
-  <p>Ultra VIP Adaptive Engine v5</p>
+  <p>Ultra VIP Engine v6 • Recent-First</p>
   <button class="mode-btn" onclick="goMode('hu')">
     TÀI XỈU HŨ
     <span>Chọn →</span>
@@ -1109,7 +1096,6 @@ app.get('/', (req, res) => {
   </button>
 </div>
 
-<!-- ==================== DETAIL ==================== -->
 <div id="page-detail" class="page">
   <div class="detail">
     <div class="topbar">
@@ -1148,7 +1134,7 @@ app.get('/', (req, res) => {
       </div>
       <div class="stat-box">
         <div class="stat-label">AI_OUTPUT</div>
-        <div class="stat-value" id="aiOutput" style="font-size:16px;color:#a78bfa">—</div>
+        <div class="stat-value" id="aiOutput" style="font-size:17px;color:#a78bfa">—</div>
       </div>
     </div>
 
@@ -1157,7 +1143,7 @@ app.get('/', (req, res) => {
         <div class="log-title">▣ PREDICTION_LOG</div>
         <div class="log-count" id="logCount">0 records</div>
       </div>
-      <div style="max-height:280px;overflow-y:auto">
+      <div style="max-height:290px;overflow-y:auto">
         <table class="log-table">
           <thead>
             <tr>
@@ -1196,7 +1182,6 @@ function goMode(mode) {
   $('page-home').classList.remove('active');
   $('page-detail').classList.add('active');
   $('modeLabel').textContent = mode === 'hu' ? 'TÀI XỈU HŨ' : 'TÀI XỈU MD5';
-  // reset UI
   $('aiPred').textContent = '—';
   $('aiSub').textContent = 'LOADING...';
   $('aiCircle').className = 'ai-circle';
@@ -1226,12 +1211,10 @@ async function loadData() {
     const pred = d.Du_doan;
     const conf = parseInt(d.Do_tin_cay) || 0;
 
-    // AI Circle
     $('aiPred').textContent = pred === 'Tài' ? 'TÀI' : pred === 'Xỉu' ? 'XỈU' : '—';
     $('aiSub').textContent = '#' + (d.Phien_hien_tai || '—');
     $('aiCircle').className = 'ai-circle ' + (pred === 'Tài' ? 'pred-tai blink-tai' : pred === 'Xỉu' ? 'pred-xiu blink-xiu' : '');
 
-    // Cards
     $('cardTai').className = 'pred-card tai' + (pred === 'Tài' ? ' active-tai' : '');
     $('cardXiu').className = 'pred-card xiu' + (pred === 'Xỉu' ? ' active-xiu' : '');
     if (pred === 'Tài') {
@@ -1242,17 +1225,14 @@ async function loadData() {
       $('confTai').textContent = (100 - conf) + '%';
     }
 
-    // XX info
     $('xxInfo').textContent = 'XX ' + d.Xuc_xac_1 + ' ' + d.Xuc_xac_2 + ' ' + d.Xuc_xac_3 + ' · Tổng ' + d.Tong + ' · ' + d.Ket_qua;
     $('phienInfo').textContent = 'Phiên hiện tại: #' + d.Phien + ' → Dự đoán #' + d.Phien_hien_tai;
 
-    // Stats
     const acc = l.overallAccuracy || '0.0%';
     $('winRate').textContent = acc;
     $('winBar').style.width = parseFloat(acc) + '%';
     $('aiOutput').textContent = pred || 'NULL';
 
-    // Log
     const hist = (h.history || []).slice(0, 30);
     $('logCount').textContent = hist.length + ' records';
     $('logBody').innerHTML = hist.map(r => {
@@ -1261,7 +1241,6 @@ async function loadData() {
       let evalBadge = 'badge-wait', evalText = '…';
       if (r.ket_qua_du_doan === 'Đúng') { evalBadge = 'badge-win'; evalText = 'Thắng'; }
       else if (r.ket_qua_du_doan === 'Sai') { evalBadge = 'badge-lose'; evalText = 'Thua'; }
-
       const time = r.timestamp ? new Date(r.timestamp).toLocaleTimeString('vi-VN', { hour12: false }) : '—';
       return '<tr>' +
         '<td style="color:#64748b">#' + r.Phien_hien_tai + '</td>' +
@@ -1276,10 +1255,9 @@ async function loadData() {
   }
 }
 
-// Auto refresh khi đang ở detail
 setInterval(() => {
   if ($('page-detail').classList.contains('active')) loadData();
-}, 10000);
+}, 9500);
 </script>
 </body>
 </html>`);
@@ -1292,11 +1270,11 @@ loadH();
 app.listen(PORT, '0.0.0.0', () => {
   console.log('');
   console.log('══════════════════════════════════════════════════');
-  console.log('  PHẠM KHÔI • ULTRA VIP ENGINE v5.0');
+  console.log('  PHẠM KHÔI • ULTRA VIP ENGINE v6.0');
   console.log('  http://0.0.0.0:' + PORT);
-  console.log('  Cyber Neon UI + Dual Mode (Hũ / MD5)');
-  console.log('  8 Experts + Anti-Decay + Recent Dominance');
+  console.log('  Recent-First + Strong Mean-Reversion + Anti-Loss');
+  console.log('  Premium Cyber Neon UI');
   console.log('══════════════════════════════════════════════════');
-  setTimeout(autoRun, 1500);
+  setTimeout(autoRun, 1400);
   setInterval(autoRun, AUTO_INTERVAL);
 });
